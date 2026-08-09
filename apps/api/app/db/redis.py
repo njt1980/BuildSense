@@ -168,3 +168,7 @@ class RedisClient:
             await self.client.expire(ip_tracking_key, time_window_seconds)
 
         return total_requests <= max_allowed_runs
+
+
+# Instantiate global RedisClient instance
+redis_client = RedisClient()

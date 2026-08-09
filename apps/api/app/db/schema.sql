@@ -1,5 +1,5 @@
 -- SQL Schema migration for BuildSense PostgreSQL database.
--- Installs the pgvector extension and creates namespaces for global knowledge and session memory.
+-- Installs the pgvector extension and creates namespaces for global knowledge, session memory, and session state.
 
 -- Enable the vector extension to support vector similarity operations
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -33,3 +33,10 @@ CREATE INDEX IF NOT EXISTS session_memory_session_id_idx ON session_memory (sess
 -- Index for session memory vector similarity searches (using cosine distance)
 CREATE INDEX IF NOT EXISTS session_memory_embedding_hnsw_idx 
 ON session_memory USING hnsw (embedding vector_cosine_ops);
+
+-- Session State Table (Stateless session persistence)
+CREATE TABLE IF NOT EXISTS session_state (
+    session_id VARCHAR(255) PRIMARY KEY,
+    state_data JSONB NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

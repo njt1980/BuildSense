@@ -1,14 +1,15 @@
 """PostgreSQL database client with pgvector support.
 
 This module implements the async database adapter for PostgreSQL, handling
-connection pooling, table initialization, and dual-namespace vector searches
-(global_knowledge and session_memory).
+connection pooling, table initialization, session state persistence, and
+dual-namespace vector searches (global_knowledge and session_memory).
 """
 
 import os
 import json
 from typing import Any, Dict, List, Optional
 import asyncpg
+from app.models.state import SessionState
 
 
 class PostgresClient:
@@ -91,6 +92,59 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             # Run schema SQL script to set up tables and vector extension
             await connection.execute(schema_sql)
+
+    async def save_session_state(self, state: SessionState) -> None:
+        """
+        Saves or updates a serialized SessionState model inside the database.
+
+        Arguments:
+            state: The SessionState model instance to save.
+
+        Returns:
+            None
+        """
+        if not self.pool:
+            await self.connect()
+
+        assert self.pool is not None
+        state_json_str = state.model_dump_json()
+
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO session_state (session_id, state_data)
+                VALUES ($1, $2)
+                ON CONFLICT (session_id) DO UPDATE
+                SET state_data = $2, updated_at = CURRENT_TIMESTAMP;
+                """,
+                state.session_id,
+                state_json_str,
+            )
+
+    async def get_session_state(self, session_id: str) -> Optional[SessionState]:
+        """
+        Retrieves and deserializes the SessionState model for a given ID.
+
+        Arguments:
+            session_id: Unique UUID string representing the target session.
+
+        Returns:
+            Optional[SessionState]: The parsed SessionState if found, else None.
+        """
+        if not self.pool:
+            await self.connect()
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            state_data_str = await connection.fetchval(
+                """
+                SELECT state_data FROM session_state WHERE session_id = $1;
+                """,
+                session_id,
+            )
+            if not state_data_str:
+                return None
+            return SessionState.model_validate_json(state_data_str)
 
     async def add_global_knowledge(
         self, content: str, embedding: List[float], metadata: Optional[Dict[str, Any]] = None
@@ -251,3 +305,7 @@ class PostgresClient:
                 }
                 for row in records
             ]
+
+
+# Instantiate global PostgresClient instance
+postgres_client = PostgresClient()
