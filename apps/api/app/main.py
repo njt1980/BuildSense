@@ -78,8 +78,8 @@ async def check_global_spend_limit_middleware(
     Returns:
         Response: The response returned by the request chain or 503 JSONResponse.
     """
-    # Skip budget checks on health/root paths
-    if request.url.path in ["/health", "/", "/health/"]:
+    # Skip budget checks on health/root paths and CORS preflight OPTIONS requests
+    if request.method == "OPTIONS" or request.url.path in ["/health", "/", "/health/"]:
         return await call_next(request)
 
     try:
