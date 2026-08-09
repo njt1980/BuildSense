@@ -67,11 +67,16 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200">
+    <main className="min-h-screen bg-[#07090e] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200 relative overflow-hidden">
+      
+      {/* Premium ambient radial glows */}
+      <div className="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] rounded-full bg-gradient-to-br from-amber-500/5 to-orange-500/0 blur-[130px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] rounded-full bg-gradient-to-tr from-emerald-500/5 to-teal-500/0 blur-[130px] pointer-events-none" />
+
       {/* Premium Dashboard Header Banner */}
-      <header className="w-full max-w-6xl text-center md:text-left flex flex-col md:flex-row items-center justify-between gap-6 border-b border-slate-900 pb-6 mt-4">
+      <header className="w-full max-w-6xl text-center md:text-left flex flex-col md:flex-row items-center justify-between gap-6 border-b border-slate-900 pb-6 mt-4 relative z-10">
         <div>
-          <h1 className="text-3xl md:text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-orange-500 to-rose-600">
+          <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500">
             BuildSense
           </h1>
           <p className="text-slate-400 text-sm mt-1">
@@ -82,39 +87,41 @@ export default function Home() {
           <Button
             variant="outline"
             onClick={resetOrchestratorSession}
-            className="border-slate-800 hover:bg-slate-900 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2"
+            className="border-slate-800/80 bg-slate-950/40 hover:bg-slate-900 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2 transition-all"
           >
             Clear Screen
           </Button>
-          <span className="flex h-2.5 w-2.5 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-          </span>
-          <span className="text-xs text-slate-400 font-medium">Core API Engine Online</span>
+          <div className="flex items-center gap-2 bg-slate-900/60 border border-slate-800/60 rounded-full px-3 py-1.5">
+            <span className="flex h-2 w-2 relative">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+            </span>
+            <span className="text-[11px] text-slate-300 font-medium tracking-wide">Core Engine Online</span>
+          </div>
         </div>
       </header>
 
       {/* Primary Dashboard Content Panel Grid */}
-      <section className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <section className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10">
         
         {/* Left Side: Setup Panel */}
         <div className="lg:col-span-5 flex flex-col gap-6">
-          <Card className="bg-slate-900/40 border border-slate-900 shadow-xl rounded-xl backdrop-blur-sm">
-            <CardHeader>
-              <CardTitle className="text-lg font-bold text-slate-200">
+          <Card className="bg-[#0b0f19]/45 border border-slate-900/80 shadow-2xl rounded-xl backdrop-blur-md">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-lg font-bold text-slate-100">
                 🚀 Pipeline Configuration
               </CardTitle>
-              <CardDescription className="text-slate-500">
+              <CardDescription className="text-slate-400">
                 Establish target mode, motivation boundaries, and prompt metadata.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleStartPipeline} className="space-y-5">
+              <form onSubmit={handleStartPipeline} className="space-y-6">
                 
                 {/* Mode Toggles */}
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Mode</label>
-                  <div className="grid grid-cols-3 gap-2 bg-slate-950 p-1 rounded-lg border border-slate-900">
+                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Mode</label>
+                  <div className="grid grid-cols-3 gap-1.5 bg-[#03060d]/80 p-1.5 rounded-lg border border-slate-900/60">
                     {(["SUGGESTER", "EVALUATOR", "OPTIMIZER"] as const).map((m) => (
                       <button
                         key={m}
@@ -122,8 +129,8 @@ export default function Home() {
                         onClick={() => setMode(m)}
                         className={`text-xs font-semibold py-2 px-1 rounded-md transition-all ${
                           mode === m
-                            ? "bg-amber-500 text-slate-950 font-bold shadow-md"
-                            : "text-slate-400 hover:text-slate-200"
+                            ? "bg-slate-800/80 text-amber-400 border border-amber-500/20 shadow-md font-bold"
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/30"
                         }`}
                       >
                         {m}
@@ -134,8 +141,8 @@ export default function Home() {
 
                 {/* Motivation Toggles */}
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Motivation</label>
-                  <div className="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-lg border border-slate-900">
+                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Motivation</label>
+                  <div className="grid grid-cols-2 gap-1.5 bg-[#03060d]/80 p-1.5 rounded-lg border border-slate-900/60">
                     {(["REVENUE", "EDUCATION"] as const).map((mot) => (
                       <button
                         key={mot}
@@ -143,8 +150,8 @@ export default function Home() {
                         onClick={() => setMotivation(mot)}
                         className={`text-xs font-semibold py-2 px-1 rounded-md transition-all ${
                           motivation === mot
-                            ? "bg-amber-500 text-slate-950 font-bold shadow-md"
-                            : "text-slate-400 hover:text-slate-200"
+                            ? "bg-slate-800/80 text-amber-400 border border-amber-500/20 shadow-md font-bold"
+                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/30"
                         }`}
                       >
                         {mot}
@@ -155,13 +162,13 @@ export default function Home() {
 
                 {/* User Prompt Text Area */}
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Prompt</label>
+                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
                   <textarea
                     rows={4}
                     placeholder="Enter your SaaS product idea, business challenge, or workflow details..."
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-900 text-slate-200 text-sm placeholder:text-slate-700 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-amber-500 focus:border-transparent transition-all leading-relaxed resize-none"
+                    className="w-full bg-[#03060d]/60 border border-slate-900 text-slate-200 text-sm placeholder:text-slate-700 rounded-lg p-3.5 focus:outline-none focus:ring-1 focus:ring-amber-500/40 focus:border-transparent transition-all leading-relaxed resize-none shadow-inner"
                     required
                   />
                 </div>
@@ -170,9 +177,9 @@ export default function Home() {
                 <Button
                   type="submit"
                   disabled={!prompt.trim() || isOrchestratorLoopActive}
-                  className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-600 hover:from-amber-600 hover:via-orange-600 hover:to-rose-700 text-slate-950 font-extrabold py-3 rounded-lg shadow-lg hover:shadow-xl transition-all"
+                  className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs"
                 >
-                  {isOrchestratorLoopActive ? "Running..." : "Start Orchestration"}
+                  {isOrchestratorLoopActive ? "Running Pipeline..." : "Start Orchestration"}
                 </Button>
               </form>
             </CardContent>
@@ -182,21 +189,21 @@ export default function Home() {
         {/* Right Side: Log Console / Output Dossier View */}
         <div className="lg:col-span-7 flex flex-col gap-6">
           {/* Real-time Thought Logs Terminal Console */}
-          <Card className="bg-slate-950 border border-slate-900 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px]">
-            <CardHeader className="bg-slate-950 border-b border-slate-900 py-3 flex flex-row items-center justify-between">
+          <Card className="bg-[#03060d]/90 border border-slate-900/80 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px]">
+            <CardHeader className="bg-[#03060d] border-b border-slate-900/60 py-3.5 flex flex-row items-center justify-between px-5">
               <div>
-                <CardTitle className="text-xs uppercase font-extrabold tracking-widest text-slate-400 flex items-center gap-2">
+                <CardTitle className="text-[10px] uppercase font-extrabold tracking-widest text-slate-400 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
                   Agent Thought Console
                 </CardTitle>
               </div>
               {isOrchestratorLoopActive && (
-                <span className="text-[10px] text-amber-500 font-bold animate-pulse">Stream Active</span>
+                <span className="text-[9px] uppercase tracking-wider text-amber-500 font-extrabold animate-pulse">Stream Active</span>
               )}
             </CardHeader>
-            <CardContent className="p-0 flex-1 bg-slate-950/20 font-mono text-xs text-slate-300">
-              <ScrollArea className="h-full p-4">
-                <div className="space-y-2">
+            <CardContent className="p-0 flex-1 font-mono text-xs text-slate-300">
+              <ScrollArea className="h-full p-5">
+                <div className="space-y-2.5">
                   {orchestratorLogs.length === 0 ? (
                     <p className="text-slate-700 italic">No console logs streamed yet. Start a session...</p>
                   ) : (
@@ -208,7 +215,7 @@ export default function Home() {
                       else if (logLine.includes("[CLIENT]")) colorClass = "text-sky-400";
                       
                       return (
-                        <div key={index} className={`whitespace-pre-wrap ${colorClass}`}>
+                        <div key={index} className={`whitespace-pre-wrap leading-relaxed ${colorClass}`}>
                           {logLine}
                         </div>
                       );
@@ -226,7 +233,7 @@ export default function Home() {
 
           {/* Errors Indicator Banner */}
           {errorDetails && (
-            <div className="bg-rose-950/20 border border-rose-900 text-rose-400 text-xs p-4 rounded-lg flex items-start gap-2 shadow-lg">
+            <div className="bg-rose-950/20 border border-rose-900/60 text-rose-400 text-xs p-4 rounded-lg flex items-start gap-2 shadow-lg">
               <span className="font-bold text-rose-500">Error:</span> {errorDetails}
             </div>
           )}
