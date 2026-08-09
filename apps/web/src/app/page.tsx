@@ -67,14 +67,14 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#07090e] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200 relative overflow-hidden">
+    <main className="min-h-screen bg-[#03060d] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200 relative overflow-hidden">
       
       {/* Premium ambient radial glows */}
-      <div className="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] rounded-full bg-gradient-to-br from-amber-500/5 to-orange-500/0 blur-[130px] pointer-events-none" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[60%] h-[60%] rounded-full bg-gradient-to-tr from-emerald-500/5 to-teal-500/0 blur-[130px] pointer-events-none" />
+      <div className="absolute top-[-10%] left-[-15%] w-[60%] h-[60%] rounded-full bg-gradient-to-br from-amber-500/5 to-orange-500/0 blur-[130px] pointer-events-none" />
+      <div className="absolute bottom-[-10%] right-[-15%] w-[60%] h-[60%] rounded-full bg-gradient-to-tr from-emerald-500/5 to-teal-500/0 blur-[130px] pointer-events-none" />
 
       {/* Premium Dashboard Header Banner */}
-      <header className="w-full max-w-6xl text-center md:text-left flex flex-col md:flex-row items-center justify-between gap-6 border-b border-slate-900 pb-6 mt-4 relative z-10">
+      <header className="w-full max-w-6xl text-center md:text-left flex flex-col md:flex-row items-center justify-between gap-6 border-b border-slate-900/60 pb-6 mt-4 relative z-10">
         <div>
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500">
             BuildSense
@@ -87,11 +87,11 @@ export default function Home() {
           <Button
             variant="outline"
             onClick={resetOrchestratorSession}
-            className="border-slate-800/80 bg-slate-950/40 hover:bg-slate-900 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2 transition-all"
+            className="border-slate-800/80 bg-slate-950/20 hover:bg-slate-900/40 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2 transition-all"
           >
             Clear Screen
           </Button>
-          <div className="flex items-center gap-2 bg-slate-900/60 border border-slate-800/60 rounded-full px-3 py-1.5">
+          <div className="flex items-center gap-2 bg-slate-900/30 border border-slate-800/30 rounded-full px-3 py-1.5">
             <span className="flex h-2 w-2 relative">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -106,7 +106,7 @@ export default function Home() {
         
         {/* Left Side: Setup Panel */}
         <div className="lg:col-span-5 flex flex-col gap-6">
-          <Card className="bg-[#0b0f19]/45 border border-slate-900/80 shadow-2xl rounded-xl backdrop-blur-md">
+          <Card className="bg-[#0b0f19]/25 border border-slate-900/40 shadow-2xl rounded-xl backdrop-blur-md">
             <CardHeader className="pb-4">
               <CardTitle className="text-lg font-bold text-slate-100">
                 🚀 Pipeline Configuration
@@ -121,16 +121,16 @@ export default function Home() {
                 {/* Mode Toggles */}
                 <div className="space-y-2">
                   <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Mode</label>
-                  <div className="grid grid-cols-3 gap-1.5 bg-[#03060d]/80 p-1.5 rounded-lg border border-slate-900/60">
+                  <div className="grid grid-cols-3 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
                     {(["SUGGESTER", "EVALUATOR", "OPTIMIZER"] as const).map((m) => (
                       <button
                         key={m}
                         type="button"
                         onClick={() => setMode(m)}
-                        className={`text-xs font-semibold py-2 px-1 rounded-md transition-all ${
+                        className={`text-xs font-semibold py-2 px-1 rounded-md transition-all border ${
                           mode === m
-                            ? "bg-slate-800/80 text-amber-400 border border-amber-500/20 shadow-md font-bold"
-                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/30"
+                            ? "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-md font-bold"
+                            : "text-slate-400 border-transparent hover:text-slate-200 hover:bg-slate-900/20"
                         }`}
                       >
                         {m}
@@ -142,16 +142,16 @@ export default function Home() {
                 {/* Motivation Toggles */}
                 <div className="space-y-2">
                   <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Motivation</label>
-                  <div className="grid grid-cols-2 gap-1.5 bg-[#03060d]/80 p-1.5 rounded-lg border border-slate-900/60">
+                  <div className="grid grid-cols-2 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
                     {(["REVENUE", "EDUCATION"] as const).map((mot) => (
                       <button
                         key={mot}
                         type="button"
                         onClick={() => setMotivation(mot)}
-                        className={`text-xs font-semibold py-2 px-1 rounded-md transition-all ${
+                        className={`text-xs font-semibold py-2 px-1 rounded-md transition-all border ${
                           motivation === mot
-                            ? "bg-slate-800/80 text-amber-400 border border-amber-500/20 shadow-md font-bold"
-                            : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/30"
+                            ? "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-md font-bold"
+                            : "text-slate-400 border-transparent hover:text-slate-200 hover:bg-slate-900/20"
                         }`}
                       >
                         {mot}
@@ -168,7 +168,7 @@ export default function Home() {
                     placeholder="Enter your SaaS product idea, business challenge, or workflow details..."
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    className="w-full bg-[#03060d]/60 border border-slate-900 text-slate-200 text-sm placeholder:text-slate-700 rounded-lg p-3.5 focus:outline-none focus:ring-1 focus:ring-amber-500/40 focus:border-transparent transition-all leading-relaxed resize-none shadow-inner"
+                    className="w-full bg-[#03060d]/30 border border-slate-900/30 text-slate-200 text-sm placeholder:text-slate-800 rounded-lg p-3.5 focus:outline-none focus:ring-1 focus:ring-amber-500/30 focus:border-transparent transition-all leading-relaxed resize-none shadow-inner"
                     required
                   />
                 </div>
@@ -189,8 +189,8 @@ export default function Home() {
         {/* Right Side: Log Console / Output Dossier View */}
         <div className="lg:col-span-7 flex flex-col gap-6">
           {/* Real-time Thought Logs Terminal Console */}
-          <Card className="bg-[#03060d]/90 border border-slate-900/80 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px]">
-            <CardHeader className="bg-[#03060d] border-b border-slate-900/60 py-3.5 flex flex-row items-center justify-between px-5">
+          <Card className="bg-[#0b0f19]/25 border border-slate-900/40 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px] backdrop-blur-md">
+            <CardHeader className="bg-transparent border-b border-slate-900/40 py-3.5 flex flex-row items-center justify-between px-5">
               <div>
                 <CardTitle className="text-[10px] uppercase font-extrabold tracking-widest text-slate-400 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
