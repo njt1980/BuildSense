@@ -176,3 +176,48 @@ async def test_orchestrator_document_ingestion() -> None:
         assert doc_message is not None
         assert '<untrusted_tool_output source="uploaded_document">' in doc_message.content
         assert 'Parse PDF invoices' in doc_message.content
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_byok_bypass() -> None:
+    """
+    Checks that user BYOK keys successfully bypass global spend limits.
+
+    Arguments:
+        None
+
+    Returns:
+        None
+    """
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-byok-888",
+        mode=SessionMode.SUGGESTER,
+        status=SessionStatus.EXECUTING,
+        max_budget_usd=0.15,
+        max_steps=6,
+        messages=[Message(role="user", content="Prompt content details.")],
+        dag_plan=[{"task_id": "1", "task": "suggest_concepts", "persona": "Test Persona", "done": False}]
+    )
+
+    # We mock live execution to check is_byok bypass of global spend.
+    # If is_byok=True, even when increment_global_spend returns $10.50 (limit breached),
+    # the run should proceed without setting status to FAILED.
+    with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
+         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=10.50)), \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic:
+        
+        # Mock client responses
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        mock_response = AsyncMock()
+        mock_response.stop_reason = "end_turn"
+        mock_response.content = [AsyncMock(text="Final suggest output")]
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+
+        # Call with user_key to trigger BYOK bypass
+        await orchestrator._execute_task_loop(state, user_key="sk-ant-testkey")
+        
+        # Verify that session status is NOT FAILED
+        assert state.status != SessionStatus.FAILED

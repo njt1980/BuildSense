@@ -5,7 +5,7 @@ and CostGuard spend limit middleware, and registers the orchestrator routes.
 """
 
 from typing import Awaitable, Callable, Dict, Optional
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -78,8 +78,9 @@ async def check_global_spend_limit_middleware(
     Returns:
         Response: The response returned by the request chain or 503 JSONResponse.
     """
-    # Skip budget checks on health/root paths and CORS preflight OPTIONS requests
-    if request.method == "OPTIONS" or request.url.path in ["/health", "/", "/health/"]:
+    # Skip budget checks on health/root paths, CORS preflight OPTIONS requests, and custom user keys
+    user_key = request.headers.get("x-user-anthropic-key")
+    if user_key or request.method == "OPTIONS" or request.url.path in ["/health", "/", "/health/"]:
         return await call_next(request)
 
     try:
@@ -151,7 +152,11 @@ async def health() -> dict[str, str]:
 
 @app.post("/api/v1/orchestrate")
 @limiter.limit("3/day")
-async def orchestrate(request: Request, payload: OrchestrationRequest) -> SessionState:
+async def orchestrate(
+    request: Request, 
+    payload: OrchestrationRequest,
+    x_user_anthropic_key: Optional[str] = Header(None)
+) -> SessionState:
     """
     Starts or resumes the orchestrator pipeline for a BuildSense session.
 
@@ -226,7 +231,7 @@ async def orchestrate(request: Request, payload: OrchestrationRequest) -> Sessio
         await postgres_client.save_session_state(state)
 
     # Run the session through the orchestrator pipeline
-    updated_state = await orchestrator.run_pipeline(state)
+    updated_state = await orchestrator.run_pipeline(state, user_key=x_user_anthropic_key)
     return updated_state
 
 

@@ -6,6 +6,13 @@ import { ClarificationModal } from "@/components/clarification-modal";
 import { ReportView } from "@/components/report-view";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /**
  * Main interactive Dashboard page for BuildSense.
@@ -29,6 +36,20 @@ export default function Home() {
   const [motivation, setMotivation] = useState<"REVENUE" | "EDUCATION">("EDUCATION");
   const [isClarificationOpen, setIsClarificationOpen] = useState<boolean>(false);
   const [uploadedFile, setUploadedFile] = useState<{ name: string; content: string } | null>(null);
+
+  // BYOK (Bring Your Own Key) States
+  const [userApiKey, setUserApiKey] = useState<string>("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [hasStoredKey, setHasStoredKey] = useState<boolean>(false);
+
+  // Mount logic: load credentials from localStorage
+  React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("buildsense_user_api_key") || "";
+      setUserApiKey(stored);
+      setHasStoredKey(!!stored);
+    }
+  }, []);
 
   // Auto-open HITL clarification modal if backend status signals AWAITING_CLARIFICATION
   React.useEffect(() => {
@@ -88,6 +109,29 @@ export default function Home() {
 
   const clearUploadedFile = () => {
     setUploadedFile(null);
+  };
+
+  /**
+   * Saves credentials config changes back to localStorage cache bounds.
+   */
+  const handleSaveApiKey = () => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("buildsense_user_api_key", userApiKey);
+      setHasStoredKey(!!userApiKey);
+    }
+    setIsSettingsOpen(false);
+  };
+
+  /**
+   * Clears credentials config from cache bounds.
+   */
+  const handleClearApiKey = () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("buildsense_user_api_key");
+      setUserApiKey("");
+      setHasStoredKey(false);
+    }
+    setIsSettingsOpen(false);
   };
 
   // Dynamic scenario guidance text mapping
@@ -155,15 +199,30 @@ export default function Home() {
             Agentic Business Ideation, Evaluation, and Workflow Optimization
           </p>
         </div>
-        <div className="flex items-center gap-4">
+        
+        {/* Navigation configuration settings actions */}
+        <div className="flex items-center gap-3">
           <Button
             variant="outline"
             onClick={resetOrchestratorSession}
-            className="border-slate-800/80 bg-slate-950/20 hover:bg-slate-900/40 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2 transition-all"
+            className="border-slate-800/80 bg-slate-950/20 hover:bg-slate-900/40 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2.5 transition-all"
           >
             Clear Screen
           </Button>
-          <div className="flex items-center gap-2 bg-slate-900/30 border border-slate-800/30 rounded-full px-3 py-1.5">
+
+          {/* BYOK Settings Modal Trigger Button */}
+          <Button
+            variant="outline"
+            onClick={() => setIsSettingsOpen(true)}
+            className={`border-slate-800/80 bg-slate-950/20 hover:bg-slate-900/40 rounded-lg px-3 py-2.5 transition-all text-sm flex items-center gap-1.5 ${
+              hasStoredKey ? "text-emerald-400 border-emerald-500/20 bg-emerald-500/5" : "text-slate-400"
+            }`}
+            title="Configure Custom API Credentials"
+          >
+            🔑 <span className="text-xs font-semibold hidden sm:inline">{hasStoredKey ? "BYOK Active" : "Set API Key"}</span>
+          </Button>
+
+          <div className="flex items-center gap-2 bg-slate-900/30 border border-slate-800/30 rounded-full px-3 py-2">
             <span className="flex h-2 w-2 relative">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -279,7 +338,7 @@ export default function Home() {
               <div className="space-y-2.5">
                 <div className="flex justify-between items-center">
                   <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
-                  <span className="text-[10px] text-slate-500">Mode helper</span>
+                  <span className="text-[10px] text-slate-500 font-mono">Mode helper</span>
                 </div>
                 
                 {/* Example pills */}
@@ -385,6 +444,64 @@ export default function Home() {
           onClose={() => setIsClarificationOpen(false)}
         />
       )}
+
+      {/* BYOK Settings Modal Panel Dialog */}
+      <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+        <DialogContent className="sm:max-w-[450px] bg-slate-900 border border-slate-800 text-slate-100 shadow-2xl backdrop-blur-md rounded-xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold text-slate-100 flex items-center gap-2">
+              🔑 API Credentials Settings
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 text-xs">
+              Provide a custom Anthropic key to pay for API usage directly and bypass global daily server thresholds.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">
+                Anthropic API Key
+              </label>
+              <input
+                type="password"
+                placeholder="sk-ant-..."
+                value={userApiKey}
+                onChange={(e) => setUserApiKey(e.target.value)}
+                className="w-full bg-[#03060d]/60 border border-slate-800 text-slate-200 text-sm placeholder:text-slate-700 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-amber-500/40 transition-all font-mono"
+              />
+              <p className="text-[10px] text-slate-500">
+                Stored locally in your browser&apos;s localStorage. Never sent to database tables or logged.
+              </p>
+            </div>
+            <div className="flex items-center justify-between text-xs pt-2">
+              <span className="text-slate-400 font-medium">Status:</span>
+              {hasStoredKey ? (
+                <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full px-2.5 py-0.5 font-bold tracking-wide">
+                  Custom Key Configured
+                </span>
+              ) : (
+                <span className="bg-slate-800/80 text-slate-400 border border-slate-700/30 rounded-full px-2.5 py-0.5 font-bold tracking-wide">
+                  Server Default Fallback
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <Button
+              variant="outline"
+              onClick={handleClearApiKey}
+              className="border-slate-800 bg-slate-950/20 text-slate-400 hover:bg-rose-950/20 hover:text-rose-400 rounded-lg text-xs"
+            >
+              Remove Key
+            </Button>
+            <Button
+              onClick={handleSaveApiKey}
+              className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs px-4"
+            >
+              Save Settings
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }

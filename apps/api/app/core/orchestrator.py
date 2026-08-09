@@ -6,7 +6,7 @@ untrusted output XML boundaries, and cost controls.
 """
 
 import os
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from app.core.config import settings
 from app.db.postgres import postgres_client
 from app.db.redis import redis_client
@@ -40,12 +40,13 @@ class Orchestrator:
         self.db = postgres_client
         self.cache = redis_client
 
-    async def run_pipeline(self, state: SessionState) -> SessionState:
+    async def run_pipeline(self, state: SessionState, user_key: Optional[str] = None) -> SessionState:
         """
         Executes state machine transitions for the BuildSense orchestrator.
 
         Arguments:
             state: The active SessionState to process.
+            user_key: Optional custom user Anthropic API key.
 
         Returns:
             SessionState: The updated SessionState after transitioning.
@@ -82,7 +83,7 @@ class Orchestrator:
 
             # 3. Execution Phase
             if state.status == SessionStatus.EXECUTING:
-                await self._execute_task_loop(state)
+                await self._execute_task_loop(state, user_key=user_key)
                 
                 # Check status via local variable assignment to prevent mypy narrow-type comparison errors
                 current_pipeline_status: SessionStatus = state.status
@@ -155,30 +156,34 @@ class Orchestrator:
                 {"task_id": "2", "task": "architect_integrations", "persona": "Tech Architect Persona", "done": False}
             ]
 
-    async def _execute_task_loop(self, state: SessionState) -> None:
+    async def _execute_task_loop(self, state: SessionState, user_key: Optional[str] = None) -> None:
         """
         Native execution loop running tasks sequentially. Uses live SDK if key exists.
 
         Arguments:
             state: The active SessionState.
+            user_key: Optional custom user Anthropic API key.
 
         Returns:
             None
         """
-        api_key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+        api_key = user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
 
         if api_key and HAS_ANTHROPIC:
-            await self._execute_live_sdk_loop(state, api_key)
+            await self._execute_live_sdk_loop(state, api_key, is_byok=bool(user_key))
         else:
             await self._execute_mock_simulation_loop(state)
 
-    async def _execute_live_sdk_loop(self, state: SessionState, api_key: str) -> None:
+    async def _execute_live_sdk_loop(
+        self, state: SessionState, api_key: str, is_byok: bool = False
+    ) -> None:
         """
         Invokes the live Anthropic Claude API tool use event-loop.
 
         Arguments:
             state: The active SessionState.
             api_key: String credential for Anthropic client authorization.
+            is_byok: Boolean indicating if custom user key is active.
 
         Returns:
             None
@@ -274,7 +279,8 @@ class Orchestrator:
                             state.metadata["failure_reason"] = "Maximum session budget cap exceeded."
                             return
 
-                        if total_spend_today >= 10.00:
+                        # Only enforce daily spend cap check if not using custom user BYOK key
+                        if not is_byok and total_spend_today >= 10.00:
                             state.status = SessionStatus.FAILED
                             state.metadata["failure_reason"] = "Global daily system budget limit reached."
                             return

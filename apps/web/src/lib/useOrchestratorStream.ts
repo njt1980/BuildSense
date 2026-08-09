@@ -88,12 +88,18 @@ export function useOrchestratorStream() {
     ]);
 
     try {
+      const userApiKey = typeof window !== "undefined" ? localStorage.getItem("buildsense_user_api_key") || "" : "";
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (userApiKey) {
+        headers["X-User-Anthropic-Key"] = userApiKey;
+      }
+
       // Endpoint is hosted on backend port 9000
       const response = await fetch("http://localhost:9000/api/v1/orchestrate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(params),
       });
 
