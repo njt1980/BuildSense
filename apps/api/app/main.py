@@ -96,6 +96,8 @@ class OrchestrationRequest(BaseModel):
     clarification_responses: Optional[Dict[str, str]] = Field(
         None, description="Human-in-the-loop responses to questions."
     )
+    file_name: Optional[str] = Field(None, description="Optional uploaded document file name.")
+    file_content: Optional[str] = Field(None, description="Optional parsed uploaded document file content.")
 
 
 @app.get("/")
@@ -200,7 +202,9 @@ async def orchestrate(request: Request, payload: OrchestrationRequest) -> Sessio
             dag_plan=[],
             metadata={
                 "motivation": payload.motivation or "EDUCATION"
-            }
+            },
+            file_name=payload.file_name,
+            file_content=payload.file_content
         )
         # Store initial state in PostgreSQL
         await postgres_client.save_session_state(state)

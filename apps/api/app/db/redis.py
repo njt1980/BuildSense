@@ -29,7 +29,12 @@ class MockRedis:
         self.data[key] = str(value)
         return True
 
-    async def expire(self, key: str, time: int) -> bool:
+    async def incrbyfloat(self, key: str, amount: float) -> float:
+        val = float(self.data.get(key, 0.0)) + amount
+        self.data[key] = str(val)
+        return val
+
+    async def expire(self, key: str, time: int, *args: Any, **kwargs: Any) -> bool:
         return True
 
     async def close(self) -> None:

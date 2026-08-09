@@ -140,3 +140,39 @@ async def test_orchestrator_budget_exhaustion_limits() -> None:
         assert state.status == SessionStatus.FAILED
         assert "failure_reason" in state.metadata
         assert "budget cap exceeded" in state.metadata["failure_reason"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_document_ingestion() -> None:
+    """
+    Checks that uploaded document content is parsed and injected in routing phase.
+
+    Arguments:
+        None
+
+    Returns:
+        None
+    """
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-doc-999",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Workflow optimization prompt.")],
+        file_name="invoice_sop.txt",
+        file_content="Step 1: Parse PDF invoices\nStep 2: Save to Excel"
+    )
+
+    with patch.object(orchestrator.db, "save_session_state", AsyncMock()):
+        updated_state = await orchestrator.run_pipeline(state)
+        
+        # Check that state has reached planning
+        assert updated_state.status in [SessionStatus.PLANNING, SessionStatus.EXECUTING, SessionStatus.COMPLETED]
+        
+        # Search messages for document context
+        doc_message = next(msg for msg in updated_state.messages if "invoice_sop.txt" in msg.content)
+        assert doc_message is not None
+        assert '<untrusted_tool_output source="uploaded_document">' in doc_message.content
+        assert 'Parse PDF invoices' in doc_message.content

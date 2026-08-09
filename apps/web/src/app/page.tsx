@@ -28,6 +28,7 @@ export default function Home() {
   const [mode, setMode] = useState<"SUGGESTER" | "EVALUATOR" | "OPTIMIZER">("SUGGESTER");
   const [motivation, setMotivation] = useState<"REVENUE" | "EDUCATION">("EDUCATION");
   const [isClarificationOpen, setIsClarificationOpen] = useState<boolean>(false);
+  const [uploadedFile, setUploadedFile] = useState<{ name: string; content: string } | null>(null);
 
   // Auto-open HITL clarification modal if backend status signals AWAITING_CLARIFICATION
   React.useEffect(() => {
@@ -49,6 +50,8 @@ export default function Home() {
       prompt,
       mode,
       motivation,
+      file_name: uploadedFile?.name,
+      file_content: uploadedFile?.content,
     });
   };
 
@@ -65,17 +68,75 @@ export default function Home() {
     });
   };
 
-  // Inline help tip metadata mapping
-  const modeTips = {
-    SUGGESTER: "Suggests raw business models and SaaS product definitions (Max budget: $0.15).",
-    EVALUATOR: "Examines financial economics, market demands, and defense structures (Max budget: $1.25).",
-    OPTIMIZER: "Audits manually repetitive sheets or workflows to draft systems automations (Max budget: $1.25).",
+  /**
+   * Reads target document content via browser FileReader API.
+   */
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      setUploadedFile({
+        name: file.name,
+        content: content || "",
+      });
+    };
+    reader.readAsText(file);
   };
 
-  const motivationTips = {
-    REVENUE: "Focuses recommendations on profit maximizations, CAC limits, and commercial conversions.",
-    EDUCATION: "Guides outputs to detail educational steps, system tech stacks, and learning guides.",
+  const clearUploadedFile = () => {
+    setUploadedFile(null);
   };
+
+  // Dynamic scenario guidance text mapping
+  const scenarioGuidance = {
+    "SUGGESTER_REVENUE": "Focusing on market gaps, B2B SaaS opportunities, high margins, and defensibility.",
+    "SUGGESTER_EDUCATION": "Focusing on hands-on skill building, portfolio value, and zero-cost free-tier tech stacks.",
+    "EVALUATOR_REVENUE": "Auditing commercial viability, demand signals, competitive moats, and LTV:CAC payback.",
+    "EVALUATOR_EDUCATION": "Auditing technical design, architectural elegance, learning milestones, and open-source stacks.",
+    "OPTIMIZER_REVENUE": "Focusing on operational cost reduction, error reduction, manual labor elimination, and ROI.",
+    "OPTIMIZER_EDUCATION": "Focusing on personal productivity, custom automation scripts, API integrations, and self-hosted tools.",
+  };
+
+  // Clickable example prompt pills list mapping
+  const examplePrompts = {
+    "SUGGESTER_REVENUE": [
+      "Suggest 3 B2B micro-SaaS opportunities in supply chain logistics with high profit margins.",
+      "Suggest 3 underserved software niches for tracking real-time regional commodity prices.",
+      "Suggest 3 AI-driven financial tools aimed at making stock analysis accessible to retail investors."
+    ],
+    "SUGGESTER_EDUCATION": [
+      "Suggest 3 weekend projects to master multi-agent orchestration loops in Python.",
+      "Suggest 3 zero-cost free-tier project ideas to learn vector databases and RAG architectures.",
+      "Suggest 3 fun IoT or local automation ideas that utilize lightweight open-source LLMs."
+    ],
+    "EVALUATOR_REVENUE": [
+      "Audit my idea: A web application that explains complex stock filings in plain English for everyday investors.",
+      "Audit my idea: An AI platform tracking real-time industrial steel prices across major regional hubs.",
+      "Audit my idea: An automated micro-SaaS that generates hyper-local SEO campaigns for dental practices."
+    ],
+    "EVALUATOR_EDUCATION": [
+      "Audit my project: A personal workout and macro tracker running entirely on local open-source models.",
+      "Audit my project: A browser extension that summarizes GitHub pull requests using Gemini 3.5 Flash.",
+      "Audit my project: A retro 8-bit game engine built with TypeScript to master the HTML5 Canvas API."
+    ],
+    "OPTIMIZER_REVENUE": [
+      "Our team manually transcribes 50+ PDF vendor invoices into Excel weekly. Show us how to automate this.",
+      "We manually triage incoming customer support emails into Jira tickets. Draft an AI routing roadmap.",
+      "We copy-paste daily market prices from multiple websites into a master spreadsheet. Design an automated pipeline."
+    ],
+    "OPTIMIZER_EDUCATION": [
+      "I manually copy workout logs from my notes app into a spreadsheet. How can I build a quick script to automate this?",
+      "How can I set up an automated local script to summarize daily RSS news feeds directly into my terminal?",
+      "Draft a simple workflow to automatically categorize and rename PDF downloads in my local folder."
+    ]
+  };
+
+  const guidanceKey = `${mode}_${motivation}` as keyof typeof scenarioGuidance;
+  const currentGuidance = scenarioGuidance[guidanceKey];
+  const currentPills = examplePrompts[guidanceKey];
 
   return (
     <main className="min-h-screen bg-[#03060d] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200 relative overflow-hidden">
@@ -112,10 +173,10 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Primary Dashboard Content Panel Grid */}
+      {/* Primary Dashboard Content Grid */}
       <section className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10">
         
-        {/* Left Side: Setup Panel (Border-free flat panel) */}
+        {/* Left Side: Setup Panel */}
         <div className="lg:col-span-5 flex flex-col gap-6">
           <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl backdrop-blur-md p-6 flex flex-col gap-5">
             <div>
@@ -148,10 +209,6 @@ export default function Home() {
                     </button>
                   ))}
                 </div>
-                {/* Dynamically switching Mode help tip */}
-                <p className="text-[11px] text-slate-500 italic mt-1.5 leading-relaxed">
-                  💡 {modeTips[mode]}
-                </p>
               </div>
 
               {/* Motivation Toggles */}
@@ -173,15 +230,73 @@ export default function Home() {
                     </button>
                   ))}
                 </div>
-                {/* Dynamically switching Motivation help tip */}
-                <p className="text-[11px] text-slate-500 italic mt-1.5 leading-relaxed">
-                  💡 {motivationTips[motivation]}
-                </p>
               </div>
 
-              {/* User Prompt Text Area */}
+              {/* Dynamic Scenario Guidance Banner */}
+              <div className="bg-[#03060d]/40 border border-slate-900/40 rounded-lg p-3 text-[11px] leading-relaxed text-slate-300">
+                <span className="font-semibold text-amber-400">Target Focus:</span> {currentGuidance}
+              </div>
+
+              {/* Document Upload Area (with Optimizer emphasis) */}
               <div className="space-y-2">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Document Attachment</label>
+                <div 
+                  className={`border-2 border-dashed rounded-lg p-4 transition-all duration-300 text-center relative ${
+                    mode === "OPTIMIZER"
+                      ? "border-amber-500/45 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.05)] animate-pulse"
+                      : "border-slate-800/40 bg-slate-950/20 hover:border-slate-800"
+                  }`}
+                >
+                  <input
+                    type="file"
+                    accept=".pdf,.txt,.csv,.md"
+                    onChange={handleFileUpload}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  {!uploadedFile ? (
+                    <div>
+                      <p className="text-xs font-semibold text-slate-300">
+                        {mode === "OPTIMIZER" ? "★ RECOMMENDED: Drop SOP / Workflow File" : "Upload File (PDF, TXT, CSV, MD)"}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-1">Click or drag file to attach context</p>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between bg-[#03060d]/60 px-3 py-1.5 rounded border border-slate-900 text-xs">
+                      <span className="text-slate-300 truncate max-w-[200px] font-mono">📎 {uploadedFile.name}</span>
+                      <button
+                        type="button"
+                        onClick={clearUploadedFile}
+                        className="text-rose-400 hover:text-rose-300 font-bold ml-2 relative z-10"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* User Prompt Text Area & Clickable Example Pills */}
+              <div className="space-y-2.5">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
+                  <span className="text-[10px] text-slate-500">Mode helper</span>
+                </div>
+                
+                {/* Example pills */}
+                <div className="flex flex-col gap-1.5 max-h-[120px] overflow-y-auto pr-1">
+                  {currentPills.map((pillText, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setPrompt(pillText)}
+                      className="text-left text-[10px] text-slate-400 bg-[#03060d]/50 hover:bg-slate-900 hover:text-slate-200 border border-slate-950 p-2 rounded-md transition-all truncate"
+                      title={pillText}
+                    >
+                      💡 &ldquo;{pillText}&rdquo;
+                    </button>
+                  ))}
+                </div>
+
                 <textarea
                   rows={4}
                   placeholder="Enter your SaaS product idea, business challenge, or workflow details..."
@@ -199,7 +314,7 @@ export default function Home() {
               <Button
                 type="submit"
                 disabled={!prompt.trim() || isOrchestratorLoopActive}
-                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs animate-in fade-in duration-300"
+                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs"
               >
                 {isOrchestratorLoopActive ? "Running Pipeline..." : "Start Orchestration"}
               </Button>
@@ -209,7 +324,7 @@ export default function Home() {
 
         {/* Right Side: Log Console / Output Dossier View */}
         <div className="lg:col-span-7 flex flex-col gap-6">
-          {/* Real-time Thought Logs Terminal Console (Border-free flat panel) */}
+          {/* Real-time Thought Logs Terminal Console */}
           <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px] backdrop-blur-md">
             <div className="border-b border-slate-900/40 py-3.5 flex flex-row items-center justify-between px-5">
               <div>

@@ -92,3 +92,5 @@ class SessionState(BaseModel):
     clarification_responses: Dict[str, str] = Field(default_factory=dict, description="Answers from the user.")
     dag_plan: List[Dict[str, Any]] = Field(default_factory=list, description="List of tasks in the execution plan.")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Operational metadata and results.")
+    file_name: Optional[str] = Field(None, description="Optional uploaded document file name.")
+    file_content: Optional[str] = Field(None, description="Optional parsed uploaded document file content.")

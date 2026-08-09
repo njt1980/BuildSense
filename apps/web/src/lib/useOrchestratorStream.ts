@@ -75,6 +75,8 @@ export function useOrchestratorStream() {
     motivation?: string;
     session_id?: string;
     clarification_responses?: Record<string, string>;
+    file_name?: string;
+    file_content?: string;
   }) => {
     setIsOrchestratorLoopActive(true);
     setErrorDetails(null);

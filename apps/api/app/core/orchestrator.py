@@ -59,6 +59,19 @@ class Orchestrator:
                     state.status = SessionStatus.AWAITING_CLARIFICATION
                     await self.db.save_session_state(state)
                     return state
+                
+                # Document ingestion logic: parse and append to messages history wrapped in XML
+                if state.file_content:
+                    parsed_text = document_parser_mcp(state.file_content)
+                    wrapped_text = self._wrap_untrusted_output(parsed_text, source="uploaded_document")
+                    state.messages.append(
+                        Message(
+                            role="user",
+                            content=f"Context from uploaded document '{state.file_name or 'unnamed'}':\n{wrapped_text}",
+                            name=None,
+                            tool_call_id=None
+                        )
+                    )
                 state.status = SessionStatus.PLANNING
 
             # 2. Planning Phase
