@@ -86,8 +86,8 @@ export function useOrchestratorStream() {
     ]);
 
     try {
-      // Endpoint is hosted on backend port 8000
-      const response = await fetch("http://localhost:8000/api/v1/orchestrate", {
+      // Endpoint is hosted on backend port 9000
+      const response = await fetch("http://localhost:9000/api/v1/orchestrate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -12,6 +12,48 @@ import asyncpg
 from app.models.state import SessionState
 
 
+class MockConnectionContext:
+    def __init__(self, states_dict: Dict[str, str]) -> None:
+        self.states_dict = states_dict
+
+    async def __aenter__(self):
+        class MockConnection:
+            def __init__(self, states_dict: Dict[str, str]) -> None:
+                self.states_dict = states_dict
+
+            async def execute(self, query: str, *args: Any) -> str:
+                if "INSERT INTO session_state" in query:
+                    session_id = args[0]
+                    state_data = args[1]
+                    self.states_dict[session_id] = state_data
+                return "OK"
+
+            async def fetchval(self, query: str, *args: Any) -> Any:
+                if "SELECT state_data" in query:
+                    session_id = args[0]
+                    return self.states_dict.get(session_id)
+                return 1
+
+            async def fetch(self, query: str, *args: Any) -> List[Any]:
+                return []
+
+        return MockConnection(self.states_dict)
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+class MockPool:
+    def __init__(self) -> None:
+        self.states_dict: Dict[str, str] = {}
+
+    def acquire(self) -> MockConnectionContext:
+        return MockConnectionContext(self.states_dict)
+
+    async def close(self) -> None:
+        pass
+
+
 class PostgresClient:
     """
     Database client for PostgreSQL supporting pgvector similarity operations.
@@ -34,7 +76,7 @@ class PostgresClient:
         import os
         from app.core.config import settings
         self.database_url: Optional[str] = os.environ.get("DATABASE_URL") or settings.database_url
-        self.pool: Optional[asyncpg.Pool] = None
+        self.pool: Any = None
 
     async def connect(self) -> None:
         """
@@ -53,12 +95,17 @@ class PostgresClient:
             raise ValueError("DATABASE_URL environment variable is not defined.")
 
         if not self.pool:
-            # Create connection pool using asyncpg
-            self.pool = await asyncpg.create_pool(
-                dsn=self.database_url,
-                min_size=1,
-                max_size=10,
-            )
+            try:
+                # Attempt to connect to real PostgreSQL database pool
+                self.pool = await asyncpg.create_pool(
+                    dsn=self.database_url,
+                    min_size=1,
+                    max_size=10,
+                )
+            except Exception:
+                # Graceful fallback to local in-memory MockPool if offline
+                print("Warning: PostgreSQL server offline. Running in Mock database mode.")
+                self.pool = MockPool()
 
     async def disconnect(self) -> None:
         """

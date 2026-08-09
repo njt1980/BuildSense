@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     """
     # Host and port configuration
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 9000
 
     # API Keys & Integrations
     anthropic_api_key: Optional[str] = None
