@@ -30,8 +30,10 @@ class PostgresClient:
         Returns:
             None
         """
-        # Fetch the database connection string from environment variables
-        self.database_url: Optional[str] = os.environ.get("DATABASE_URL")
+        # Fetch the database connection string from environment or global settings fallback
+        import os
+        from app.core.config import settings
+        self.database_url: Optional[str] = os.environ.get("DATABASE_URL") or settings.database_url
         self.pool: Optional[asyncpg.Pool] = None
 
     async def connect(self) -> None:

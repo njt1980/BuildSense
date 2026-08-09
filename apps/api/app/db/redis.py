@@ -28,7 +28,10 @@ class RedisClient:
         Returns:
             None
         """
-        self.redis_url: Optional[str] = os.environ.get("REDIS_URL")
+        # Extract setting values from environment or global configuration fallback
+        import os
+        from app.core.config import settings
+        self.redis_url: Optional[str] = os.environ.get("REDIS_URL") or settings.redis_url
         self.client: Optional[aioredis.Redis] = None
 
     async def connect(self) -> None:
