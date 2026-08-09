@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Vague Pet Tracker (HITL Pause Test)",
+    "prompt": "AI pet tracker",
+    "mode": "SUGGESTER",
+    "motivation": "EDUCATION",
+    "expected_routing_status": "AWAITING_CLARIFICATION",
+    "expects_questions": true
+  },
+  {
+    "name": "Tax Billing SaaS (Suggster Mode)",
+    "prompt": "Build a SaaS billing engine for developers that calculates localized value-added taxes dynamically.",
+    "mode": "SUGGESTER",
+    "motivation": "REVENUE",
+    "expected_routing_status": "COMPLETED",
+    "expects_questions": false
+  },
+  {
+    "name": "SMB Appointments Reminder (Optimizer Mode)",
+    "prompt": "Every day we open Google Sheets, check client appointment list, copy client email addresses, and draft manual payment reminder emails in Outlook.",
+    "mode": "OPTIMIZER",
+    "motivation": "REVENUE",
+    "expected_routing_status": "COMPLETED",
+    "expects_questions": false
+  }
+]
