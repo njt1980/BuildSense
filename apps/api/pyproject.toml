@@ -1,0 +1,26 @@
+[tool.pytest.ini_options]
+testpaths = ["tests", "evals"]
+python_files = ["test_*.py", "eval_*.py"]
+asyncio_mode = "auto"
+addopts = "-v --strict-markers"
+markers = [
+    "evals: mark a test as an agentic evaluation (run-evals)"
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = ["venv", ".venv", "tests", "evals"]
+
+[[tool.mypy.overrides]]
+module = "slowapi.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "fastmcp.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "mcp.*"
+ignore_missing_imports = true

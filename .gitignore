@@ -1,0 +1,46 @@
+# Dependency directories
+node_modules/
+/jspm_packages/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Testing & Evals
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+*,cover
+
+# System / OS files
+.DS_Store
+Thumbs.db
+
+# Environments / Secrets
+.env
+.env*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
