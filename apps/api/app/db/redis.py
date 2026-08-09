@@ -196,7 +196,7 @@ class RedisClient:
         ip_tracking_key = f"buildsense:rate_limit:{client_ip_address}:{current_date_suffix}"
 
         # Increment call count
-        total_requests = await self.client.incr(ip_tracking_key)
+        total_requests = int(await self.client.incr(ip_tracking_key))
         
         # Set key expiry on first creation
         if total_requests == 1:

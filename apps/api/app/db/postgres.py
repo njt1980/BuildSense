@@ -16,7 +16,7 @@ class MockConnectionContext:
     def __init__(self, states_dict: Dict[str, str]) -> None:
         self.states_dict = states_dict
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Any:
         class MockConnection:
             def __init__(self, states_dict: Dict[str, str]) -> None:
                 self.states_dict = states_dict
@@ -39,7 +39,7 @@ class MockConnectionContext:
 
         return MockConnection(self.states_dict)
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         pass
 
 
