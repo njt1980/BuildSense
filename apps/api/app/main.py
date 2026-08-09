@@ -25,10 +25,26 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Synchronous helper to determine Limiter backend storage
+def get_limiter_storage_uri(url: str) -> str:
+    if not url:
+        return "memory://"
+    try:
+        from urllib.parse import urlparse
+        import socket
+        parsed = urlparse(url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6379
+        with socket.create_connection((host, port), timeout=0.5):
+            return url
+    except Exception:
+        print("Warning: Redis is unreachable. Falling back to local memory storage for rate limiting.")
+        return "memory://"
+
 # Initialize Slowapi Rate Limiter using Redis as the backend storage
 limiter = Limiter(
     key_func=get_remote_address,
-    storage_uri=settings.redis_url,
+    storage_uri=get_limiter_storage_uri(settings.redis_url),
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
