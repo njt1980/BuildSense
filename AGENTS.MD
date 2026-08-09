@@ -143,3 +143,4 @@ Before presenting a task as complete in Antigravity:
 - [ ] UI rendered in Antigravity browser confirms the Dual-View toggle works seamlessly.
 - [ ] No hardcoded secrets, API keys, or unhandled debug logs (`print()`, `console.log()`) remain.
 - [ ] All changes have been committed to git with a descriptive conventional commit message.
+- [ ] All work has been committed using the '.antigravity/skills/secure-checkpoint.md' skill.
