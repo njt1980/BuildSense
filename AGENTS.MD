@@ -82,6 +82,8 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 **Plain-English Rule**: System prompts for synthesis MUST enforce zero-jargon rules. Any industry term (CAC, LTV, Moat, 90/10 MVP) must include an immediate everyday analogy.
 
+**Defect Tracking**: If a bug is discovered, or if a test fails during the Secure Checkpoint phase, you must fix the issue and immediately invoke the '.antigravity/skills/log-defect.md' skill before attempting to commit again.
+
 ---
 
 ## 5. Engineering Patterns & Code Standards
