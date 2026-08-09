@@ -4,7 +4,6 @@ import React, { useState } from "react";
 import { useOrchestratorStream } from "@/lib/useOrchestratorStream";
 import { ClarificationModal } from "@/components/clarification-modal";
 import { ReportView } from "@/components/report-view";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -66,6 +65,18 @@ export default function Home() {
     });
   };
 
+  // Inline help tip metadata mapping
+  const modeTips = {
+    SUGGESTER: "Suggests raw business models and SaaS product definitions (Max budget: $0.15).",
+    EVALUATOR: "Examines financial economics, market demands, and defense structures (Max budget: $1.25).",
+    OPTIMIZER: "Audits manually repetitive sheets or workflows to draft systems automations (Max budget: $1.25).",
+  };
+
+  const motivationTips = {
+    REVENUE: "Focuses recommendations on profit maximizations, CAC limits, and commercial conversions.",
+    EDUCATION: "Guides outputs to detail educational steps, system tech stacks, and learning guides.",
+  };
+
   return (
     <main className="min-h-screen bg-[#03060d] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200 relative overflow-hidden">
       
@@ -104,104 +115,114 @@ export default function Home() {
       {/* Primary Dashboard Content Panel Grid */}
       <section className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10">
         
-        {/* Left Side: Setup Panel */}
+        {/* Left Side: Setup Panel (Border-free flat panel) */}
         <div className="lg:col-span-5 flex flex-col gap-6">
-          <Card className="bg-[#0b0f19]/25 border border-slate-900/40 shadow-2xl rounded-xl backdrop-blur-md">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-lg font-bold text-slate-100">
+          <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl backdrop-blur-md p-6 flex flex-col gap-5">
+            <div>
+              <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
                 🚀 Pipeline Configuration
-              </CardTitle>
-              <CardDescription className="text-slate-400">
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
                 Establish target mode, motivation boundaries, and prompt metadata.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleStartPipeline} className="space-y-6">
-                
-                {/* Mode Toggles */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Mode</label>
-                  <div className="grid grid-cols-3 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
-                    {(["SUGGESTER", "EVALUATOR", "OPTIMIZER"] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => setMode(m)}
-                        className={`text-xs font-semibold py-2 px-1 rounded-md transition-all border ${
-                          mode === m
-                            ? "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-md font-bold"
-                            : "text-slate-400 border-transparent hover:text-slate-200 hover:bg-slate-900/20"
-                        }`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+              </p>
+            </div>
 
-                {/* Motivation Toggles */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Motivation</label>
-                  <div className="grid grid-cols-2 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
-                    {(["REVENUE", "EDUCATION"] as const).map((mot) => (
-                      <button
-                        key={mot}
-                        type="button"
-                        onClick={() => setMotivation(mot)}
-                        className={`text-xs font-semibold py-2 px-1 rounded-md transition-all border ${
-                          motivation === mot
-                            ? "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-md font-bold"
-                            : "text-slate-400 border-transparent hover:text-slate-200 hover:bg-slate-900/20"
-                        }`}
-                      >
-                        {mot}
-                      </button>
-                    ))}
-                  </div>
+            <form onSubmit={handleStartPipeline} className="space-y-6">
+              
+              {/* Mode Toggles */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Mode</label>
+                <div className="grid grid-cols-3 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
+                  {(["SUGGESTER", "EVALUATOR", "OPTIMIZER"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setMode(m)}
+                      className={`text-xs font-semibold py-2 px-1 rounded-md transition-all border ${
+                        mode === m
+                          ? "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-md font-bold"
+                          : "text-slate-400 border-transparent hover:text-slate-200 hover:bg-slate-900/20"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
                 </div>
+                {/* Dynamically switching Mode help tip */}
+                <p className="text-[11px] text-slate-500 italic mt-1.5 leading-relaxed">
+                  💡 {modeTips[mode]}
+                </p>
+              </div>
 
-                {/* User Prompt Text Area */}
-                <div className="space-y-2">
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
-                  <textarea
-                    rows={4}
-                    placeholder="Enter your SaaS product idea, business challenge, or workflow details..."
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
-                    className="w-full bg-[#03060d]/30 border border-slate-900/30 text-slate-200 text-sm placeholder:text-slate-800 rounded-lg p-3.5 focus:outline-none focus:ring-1 focus:ring-amber-500/30 focus:border-transparent transition-all leading-relaxed resize-none shadow-inner"
-                    required
-                  />
+              {/* Motivation Toggles */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Motivation</label>
+                <div className="grid grid-cols-2 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
+                  {(["REVENUE", "EDUCATION"] as const).map((mot) => (
+                    <button
+                      key={mot}
+                      type="button"
+                      onClick={() => setMotivation(mot)}
+                      className={`text-xs font-semibold py-2 px-1 rounded-md transition-all border ${
+                        motivation === mot
+                          ? "bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-md font-bold"
+                          : "text-slate-400 border-transparent hover:text-slate-200 hover:bg-slate-900/20"
+                      }`}
+                    >
+                      {mot}
+                    </button>
+                  ))}
                 </div>
+                {/* Dynamically switching Motivation help tip */}
+                <p className="text-[11px] text-slate-500 italic mt-1.5 leading-relaxed">
+                  💡 {motivationTips[motivation]}
+                </p>
+              </div>
 
-                {/* Submit Action Trigger Button */}
-                <Button
-                  type="submit"
-                  disabled={!prompt.trim() || isOrchestratorLoopActive}
-                  className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs"
-                >
-                  {isOrchestratorLoopActive ? "Running Pipeline..." : "Start Orchestration"}
-                </Button>
-              </form>
-            </CardContent>
-          </Card>
+              {/* User Prompt Text Area */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
+                <textarea
+                  rows={4}
+                  placeholder="Enter your SaaS product idea, business challenge, or workflow details..."
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  className="w-full bg-[#03060d]/30 border border-slate-900/30 text-slate-200 text-sm placeholder:text-slate-800 rounded-lg p-3.5 focus:outline-none focus:ring-1 focus:ring-amber-500/30 focus:border-transparent transition-all leading-relaxed resize-none shadow-inner"
+                  required
+                />
+                <p className="text-[10px] text-slate-600 mt-1 leading-normal">
+                  Note: Prompts containing less than 15 characters will trigger a clarification request.
+                </p>
+              </div>
+
+              {/* Submit Action Trigger Button */}
+              <Button
+                type="submit"
+                disabled={!prompt.trim() || isOrchestratorLoopActive}
+                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs animate-in fade-in duration-300"
+              >
+                {isOrchestratorLoopActive ? "Running Pipeline..." : "Start Orchestration"}
+              </Button>
+            </form>
+          </div>
         </div>
 
         {/* Right Side: Log Console / Output Dossier View */}
         <div className="lg:col-span-7 flex flex-col gap-6">
-          {/* Real-time Thought Logs Terminal Console */}
-          <Card className="bg-[#0b0f19]/25 border border-slate-900/40 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px] backdrop-blur-md">
-            <CardHeader className="bg-transparent border-b border-slate-900/40 py-3.5 flex flex-row items-center justify-between px-5">
+          {/* Real-time Thought Logs Terminal Console (Border-free flat panel) */}
+          <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px] backdrop-blur-md">
+            <div className="border-b border-slate-900/40 py-3.5 flex flex-row items-center justify-between px-5">
               <div>
-                <CardTitle className="text-[10px] uppercase font-extrabold tracking-widest text-slate-400 flex items-center gap-2">
+                <h2 className="text-[10px] uppercase font-extrabold tracking-widest text-slate-400 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
                   Agent Thought Console
-                </CardTitle>
+                </h2>
               </div>
               {isOrchestratorLoopActive && (
                 <span className="text-[9px] uppercase tracking-wider text-amber-500 font-extrabold animate-pulse">Stream Active</span>
               )}
-            </CardHeader>
-            <CardContent className="p-0 flex-1 font-mono text-xs text-slate-300">
+            </div>
+            <div className="p-0 flex-1 font-mono text-xs text-slate-300">
               <ScrollArea className="h-full p-5">
                 <div className="space-y-2.5">
                   {orchestratorLogs.length === 0 ? (
@@ -223,8 +244,8 @@ export default function Home() {
                   )}
                 </div>
               </ScrollArea>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
           {/* Final Generated Output View */}
           {activeSessionState && activeSessionState.status === "COMPLETED" && (
