@@ -24,8 +24,12 @@ export const mockAuthService = {
       id: "d3b07384-d113-4e4e-9c29-ba4f2a74c2e6",
       email,
     };
-    if (typeof window !== "undefined") {
-      localStorage.setItem("buildsense_mock_session", JSON.stringify({ user: mockUser, token: "mock-jwt-token" }));
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("buildsense_mock_session", JSON.stringify({ user: mockUser, token: "mock-jwt-token" }));
+      }
+    } catch (e) {
+      console.warn("Mock auth signUp localStorage error:", e);
     }
     return { data: { user: mockUser }, error: null };
   },
@@ -35,24 +39,36 @@ export const mockAuthService = {
       id: "d3b07384-d113-4e4e-9c29-ba4f2a74c2e6",
       email,
     };
-    if (typeof window !== "undefined") {
-      localStorage.setItem("buildsense_mock_session", JSON.stringify({ user: mockUser, token: "mock-jwt-token" }));
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("buildsense_mock_session", JSON.stringify({ user: mockUser, token: "mock-jwt-token" }));
+      }
+    } catch (e) {
+      console.warn("Mock auth signIn localStorage error:", e);
     }
     return { data: { user: mockUser }, error: null };
   },
   signOut: async () => {
     console.log("Mock Sign Out");
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("buildsense_mock_session");
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("buildsense_mock_session");
+      }
+    } catch (e) {
+      console.warn("Mock auth signOut localStorage error:", e);
     }
     return { error: null };
   },
   getSession: async () => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("buildsense_mock_session");
-      if (stored) {
-        return { data: { session: JSON.parse(stored) }, error: null };
+    try {
+      if (typeof window !== "undefined") {
+        const stored = localStorage.getItem("buildsense_mock_session");
+        if (stored) {
+          return { data: { session: JSON.parse(stored) }, error: null };
+        }
       }
+    } catch (e) {
+      console.warn("Mock auth getSession localStorage error:", e);
     }
     return { data: { session: null }, error: null };
   }

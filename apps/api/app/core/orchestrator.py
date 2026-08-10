@@ -50,6 +50,9 @@ class AgentState(TypedDict):
     file_content: Optional[str]
     business_vertical: Optional[str]
     evidence_ledger: List[Dict[str, Any]]
+    company_name: Optional[str]
+    company_industry: Optional[str]
+    company_core_tools: Optional[str]
 
 
 def classify_vertical(prompt: str) -> str:
@@ -249,7 +252,10 @@ class Orchestrator:
                 file_name=state.get("file_name"),
                 file_content=state.get("file_content"),
                 business_vertical=state.get("business_vertical"),
-                evidence_ledger=state.get("evidence_ledger", [])
+                evidence_ledger=state.get("evidence_ledger", []),
+                company_name=state.get("company_name"),
+                company_industry=state.get("company_industry"),
+                company_core_tools=state.get("company_core_tools")
             )
             await self.db.save_session_state(state_obj)
         except Exception as e:
@@ -393,7 +399,8 @@ class Orchestrator:
 
     async def _node_route_intent(self, state: AgentState) -> Dict[str, Any]:
         """
-        Node: Classifies prompt completeness and routes next steps.
+        Node: Classifies user vertical and operational mode dynamically, checks completeness,
+        and saves/syncs the session variables.
         """
         user_prompt = ""
         # Find the latest user message content
@@ -404,8 +411,17 @@ class Orchestrator:
                 break
 
         # Dynamic/local defaults
-        vertical = classify_vertical(user_prompt)
+        vertical = state.get("business_vertical") or classify_vertical(user_prompt)
         is_complete = len(user_prompt.strip()) >= 15
+
+        # Deterministic keyword fallback for mode classification
+        lower_prompt = user_prompt.lower()
+        if any(w in lower_prompt for w in ["suggest", "recommend", "brainstorm", "idea", "concept", "opportunity", "opportunities", "niche", "niches"]):
+            mode_val = "SUGGESTER"
+        elif any(w in lower_prompt for w in ["audit", "evaluate", "viability", "critique"]):
+            mode_val = "EVALUATOR"
+        else:
+            mode_val = "OPTIMIZER"
 
         ontology_questions = {
             "LOGISTICS": [
@@ -436,22 +452,23 @@ class Orchestrator:
             try:
                 client = AsyncAnthropic(api_key=api_key)
                 prompt = (
-                    "You are an intent router and completeness classifier. Your job is to classify the user's business description "
-                    "into one of the following verticals: LOGISTICS, MANUFACTURING, WHOLESALE, or GENERIC.\n"
-                    "Also, evaluate if the description contains enough specific operational details to build an optimization roadmap. "
+                    "You are an intent router, mode classifier, and completeness classifier.\n"
+                    "Your job is to:\n"
+                    "1. Classify the user's business description into one of the following verticals: LOGISTICS, MANUFACTURING, WHOLESALE, or GENERIC.\n"
+                    f"Note: The user's pre-selected vertical is {state.get('business_vertical') or 'not specified'}. Prefer this vertical unless the user's description clearly points to another vertical.\n"
+                    "2. Classify the operational mode of the user's request into one of the following:\n"
+                    "   - SUGGESTER: Choose this if the user is asking for suggestions, new business ideas, recommendations, or brainstorming new concepts (e.g. 'Suggest ideas for...', 'What are some opportunities in...').\n"
+                    "   - EVALUATOR: Choose this if the user has an existing business idea, concept, or project and wants an audit, evaluation, viability check, or critique of it (e.g. 'Evaluate my idea of...', 'Audit my project...').\n"
+                    "   - OPTIMIZER: Choose this if the user describes an existing manual workflow, process, operational bottleneck, or time-wasting task and wants to automate or optimize it (e.g. 'We manually transcribe invoices...', 'Our route planning takes too long...', 'optimize this workflow...').\n"
+                    "3. Evaluate if the description contains enough specific operational details to build an optimization roadmap. "
                     "If the prompt has fewer than 15 characters, or lacks concrete operational details, classify it as incomplete (is_complete = false).\n\n"
                     "You must output ONLY a valid JSON object matching this schema:\n"
                     "{\n"
                     '  "vertical": "LOGISTICS" | "MANUFACTURING" | "WHOLESALE" | "GENERIC",\n'
+                    '  "mode": "SUGGESTER" | "EVALUATOR" | "OPTIMIZER",\n'
                     '  "is_complete": true | false,\n'
                     '  "clarification_questions": ["question 1", "question 2", ...]\n'
                     "}\n\n"
-                    "Guidelines for clarification_questions:\n"
-                    "- If the vertical is LOGISTICS, ask about transport modes, route optimization, or warehouse management systems.\n"
-                    "- If the vertical is MANUFACTURING, ask about production processes, quality control, or machine maintenance.\n"
-                    "- If the vertical is WHOLESALE, ask about supplier authorization, buyer credit terms, or shrinkage tracking.\n"
-                    "- If the vertical is GENERIC, ask about value proposition, target customers, or core cost drivers.\n"
-                    "- Provide 3 high-quality questions only if is_complete is false. Otherwise, return an empty list.\n\n"
                     f"User Prompt: {user_prompt}"
                 )
                 response = await client.messages.create(
@@ -464,6 +481,8 @@ class Orchestrator:
                 result = json.loads(res_text)
                 
                 vertical = result.get("vertical", vertical)
+                existing_mode = state.get("mode").value if hasattr(state.get("mode"), "value") else state.get("mode")
+                mode_val = result.get("mode") or existing_mode or mode_val
                 is_complete = result.get("is_complete", is_complete)
                 if not is_complete:
                     questions = result.get("clarification_questions", questions)
@@ -491,11 +510,22 @@ class Orchestrator:
             except Exception as e:
                 print(f"Routing LLM error ({e}). Using deterministic fallback.")
 
+        # Determine budget and steps based on final classified mode
+        max_budget = 0.15 if mode_val == "SUGGESTER" else 1.25
+        max_steps = 6 if mode_val == "SUGGESTER" else 15
+
+        # Update project record mode and title in the database
+        title = user_prompt[:30] + "..." if user_prompt else "New Discovery Run"
+        await self.db.update_project_mode_and_title(state["session_id"], mode_val, title)
+
         if not is_complete:
             updates = {
                 "status": SessionStatus.AWAITING_CLARIFICATION,
                 "clarification_questions": questions,
                 "business_vertical": vertical,
+                "mode": SessionMode(mode_val),
+                "max_budget_usd": max_budget,
+                "max_steps": max_steps,
                 "metadata": state.get("metadata", {}),
                 "budget_spent_usd": state.get("budget_spent_usd", 0.0)
             }
@@ -520,6 +550,9 @@ class Orchestrator:
             "status": SessionStatus.PLANNING,
             "messages": updated_messages,
             "business_vertical": vertical,
+            "mode": SessionMode(mode_val),
+            "max_budget_usd": max_budget,
+            "max_steps": max_steps,
             "metadata": state.get("metadata", {}),
             "budget_spent_usd": state.get("budget_spent_usd", 0.0)
         }
@@ -597,11 +630,21 @@ class Orchestrator:
                     for msg in state["messages"]
                 ])
                 
+                company_context_str = ""
+                if state.get("company_name"):
+                    company_context_str = (
+                        f"Active Company Context:\n"
+                        f"- Company Name: {state['company_name']}\n"
+                        f"- Industry: {state.get('company_industry') or 'Unknown'}\n"
+                        f"- Core Tools: {state.get('company_core_tools') or 'None'}\n\n"
+                    )
+
                 system_prompt = (
                     "You are an expert business report writer and software architect. Synthesize the final report "
                     "for the user. You must adhere to the Zero-Jargon rule: any industry term (LTV, CAC, ROI, MRR) must include "
                     "an immediate everyday analogy in parentheses.\n"
                     f"Target Persona Guidelines: {persona_rule}\n\n"
+                    f"{company_context_str}"
                     "Output the report in a valid JSON object matching this structure:\n"
                     "{\n"
                     '  "quick_insights": "Markdown text for Quick Insights (2-min summary with traffic-light status badges, bullet points)",\n'
@@ -915,6 +958,17 @@ class Orchestrator:
                 "cache_control": {"type": "ephemeral"}
             }
         ]
+
+        if state.get("company_name"):
+            system_prompt_blocks.append({
+                "type": "text",
+                "text": (
+                    f"Active Company Context:\n"
+                    f"- Company Name: {state['company_name']}\n"
+                    f"- Industry: {state.get('company_industry') or 'Unknown'}\n"
+                    f"- Core Tools: {state.get('company_core_tools') or 'None'}"
+                )
+            })
 
         # Run Claude model request
         response = await client.messages.create(

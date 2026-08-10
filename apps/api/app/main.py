@@ -94,6 +94,12 @@ async def check_global_spend_limit_middleware(
     return await call_next(request)
 
 
+class CompanyCreate(BaseModel):
+    name: str
+    industry: str
+    core_tools: str
+
+
 class OrchestrationRequest(BaseModel):
     """
     Pydantic schema representing the user's incoming orchestration query request.
@@ -108,6 +114,9 @@ class OrchestrationRequest(BaseModel):
     file_name: Optional[str] = Field(None, description="Optional uploaded document file name.")
     file_content: Optional[str] = Field(None, description="Optional parsed uploaded document file content.")
     user_persona: Optional[str] = Field("Solo Founder", description="User persona for customized evaluation tone.")
+    industry_vertical: Optional[str] = Field(None, description="The user-selected industry vertical.")
+    raw_input_text_or_audio: Optional[str] = Field(None, description="The user's raw text description or audio transcript.")
+    company_id: Optional[str] = Field(None, description="The optional associated company UUID.")
 
 
 class ProjectCreate(BaseModel):
@@ -116,6 +125,7 @@ class ProjectCreate(BaseModel):
     mode: SessionMode
     motivation: str
     user_persona: str
+    company_id: Optional[str] = None
 
 
 @app.get("/")
@@ -131,6 +141,37 @@ async def health() -> dict[str, str]:
     return {
         "status": "ok",
     }
+
+
+# --- Multi-Tenant Companies Router Endpoints ---
+
+@app.post("/api/v1/companies")
+async def create_company_endpoint(
+    payload: CompanyCreate,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Creates a new company associated with the user.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    company_id = await postgres_client.create_company(
+        user_id=current_user.id,
+        name=payload.name,
+        industry=payload.industry,
+        core_tools=payload.core_tools
+    )
+    return {"company_id": company_id, "status": "created"}
+
+
+@app.get("/api/v1/companies")
+async def list_companies_endpoint(
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> List[Dict[str, Any]]:
+    """
+    Lists all companies associated with the user.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    return await postgres_client.get_user_companies(current_user.id)
 
 
 # --- Multi-Tenant Projects Router Endpoints ---
@@ -150,7 +191,8 @@ async def create_project(
         description=payload.description or "",
         mode=payload.mode.value,
         motivation=payload.motivation,
-        user_persona=payload.user_persona
+        user_persona=payload.user_persona,
+        company_id=payload.company_id
     )
     return {"project_id": project_id, "status": "created"}
 
@@ -286,14 +328,56 @@ async def orchestrate(
             )
     else:
         # Create a new project corresponding to this request run
-        title = payload.prompt[:30] + "..." if payload.prompt else "New Ideation Run"
+        prompt_text = payload.raw_input_text_or_audio or payload.prompt or ""
+        title = prompt_text[:30] + "..." if prompt_text else "New Discovery Run"
+        
+        # Determine the company_id and company context
+        company_id = payload.company_id
+        if not company_id:
+            companies = await postgres_client.get_user_companies(current_user.id)
+            if companies:
+                company_id = companies[0]["id"]
+
+        company = None
+        if company_id:
+            company = await postgres_client.get_company(company_id)
+
+        # Parse vertical selection
+        if company:
+            user_vertical = company["industry"]
+        else:
+            user_vertical = payload.industry_vertical
+
+        db_vertical = "GENERIC"
+        if user_vertical:
+            v_clean = user_vertical.lower().strip()
+            if "logistics" in v_clean or "fleet" in v_clean:
+                db_vertical = "LOGISTICS"
+            elif "manufacturing" in v_clean:
+                db_vertical = "MANUFACTURING"
+            elif "wholesale" in v_clean or "distribution" in v_clean:
+                db_vertical = "WHOLESALE"
+            elif "general" in v_clean or "business" in v_clean or "generic" in v_clean:
+                db_vertical = "GENERIC"
+            else:
+                db_vertical = user_vertical
+
+        # Default all analyses to real business efficiency and ROI (REVENUE motivation)
+        motivation_val = payload.motivation or "REVENUE"
+        
+        # The backend LangGraph orchestrator handles intent classification silently.
+        # Default the project mode initially to OPTIMIZER (required non-null DB field),
+        # which will be dynamically updated in route_intent.
+        mode_val = (payload.mode or SessionMode.OPTIMIZER).value
+
         project_id = await postgres_client.create_project(
             user_id=current_user.id,
             title=title,
-            description=payload.prompt or "",
-            mode=(payload.mode or SessionMode.SUGGESTER).value,
-            motivation=payload.motivation or "EDUCATION",
-            user_persona=payload.user_persona or "Solo Founder"
+            description=prompt_text,
+            mode=mode_val,
+            motivation=motivation_val,
+            user_persona=payload.user_persona or "Solo Founder",
+            company_id=company_id
         )
         project = await postgres_client.get_project(project_id)
 
@@ -305,6 +389,18 @@ async def orchestrate(
         max_budget = 0.15 if project["mode"] == "SUGGESTER" else 1.25
         max_steps = 6 if project["mode"] == "SUGGESTER" else 15
 
+        # Fetch company info for injection
+        company_name = None
+        company_industry = None
+        company_tools = None
+        p_company_id = project.get("company_id")
+        if p_company_id:
+            company = await postgres_client.get_company(str(p_company_id))
+            if company:
+                company_name = company["name"]
+                company_industry = company["industry"]
+                company_tools = company["core_tools"]
+
         state = SessionState(
             session_id=project_id,
             mode=SessionMode(project["mode"]),
@@ -314,19 +410,26 @@ async def orchestrate(
             steps_taken=0,
             max_steps=max_steps,
             messages=[
-                Message(role="user", content=payload.prompt, name=None, tool_call_id=None)
-            ] if payload.prompt else [],
+                Message(role="user", content=prompt_text, name=None, tool_call_id=None)
+            ] if prompt_text else [],
             clarification_questions=[],
             clarification_responses={},
             dag_plan=[],
             metadata={
                 "motivation": project["motivation"],
-                "user_persona": project["user_persona"]
+                "user_persona": project["user_persona"],
+                "industry_vertical": company_industry or payload.industry_vertical or "GENERIC",
+                "company_name": company_name,
+                "company_industry": company_industry,
+                "company_core_tools": company_tools
             },
             file_name=payload.file_name,
             file_content=payload.file_content,
-            business_vertical=None,
-            evidence_ledger=[]
+            business_vertical=db_vertical,
+            evidence_ledger=[],
+            company_name=company_name,
+            company_industry=company_industry,
+            company_core_tools=company_tools
         )
         await postgres_client.save_session_state(state)
         await postgres_client.save_chat_messages(project_id, state.messages)

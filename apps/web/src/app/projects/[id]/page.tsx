@@ -291,6 +291,13 @@ export default function ProjectWorkspacePage() {
     setActiveTab("stepper");
   };
 
+  const handleRunAnalysis = () => {
+    if (!token || isOrchestratorLoopActive) return;
+    executeOrchestratorRequest({
+      session_id: projectId
+    });
+  };
+
   const handleClarificationSubmit = (answers: Record<string, string>) => {
     setIsClarificationOpen(false);
     executeOrchestratorRequest({

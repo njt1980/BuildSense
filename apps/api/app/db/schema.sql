@@ -11,10 +11,24 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 1.5 Companies Table
+CREATE TABLE IF NOT EXISTS companies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    industry VARCHAR(255) NOT NULL,
+    core_tools TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for fast company lookup
+CREATE INDEX IF NOT EXISTS companies_user_id_idx ON companies (user_id);
+
 -- 2. Projects Table (Multi-tenant container for sessions)
 CREATE TABLE IF NOT EXISTS projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
     mode VARCHAR(50) NOT NULL, -- SUGGESTER, EVALUATOR, OPTIMIZER
@@ -23,6 +37,9 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Migration statement to ensure existing databases get the company_id column
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies(id) ON DELETE SET NULL;
 
 -- Index for fast tenant lookup
 CREATE INDEX IF NOT EXISTS projects_user_id_idx ON projects (user_id);
@@ -108,6 +125,7 @@ CREATE TABLE IF NOT EXISTS session_state (
 
 -- Enable Row Level Security (RLS) on Postgres tables
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE companies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE graph_nodes ENABLE ROW LEVEL SECURITY;
@@ -123,6 +141,13 @@ BEGIN
     ) THEN
         CREATE POLICY user_self_read_write ON users 
             FOR ALL USING (auth.uid() = id);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE policyname = 'companies_tenant_isolation'
+    ) THEN
+        CREATE POLICY companies_tenant_isolation ON companies 
+            FOR ALL USING (auth.uid() = user_id);
     END IF;
 
     IF NOT EXISTS (

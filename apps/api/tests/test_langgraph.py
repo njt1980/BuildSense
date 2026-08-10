@@ -41,7 +41,7 @@ async def test_langgraph_checkpoint_persistence_and_resumption() -> None:
         max_steps=6,
         messages=[
             Message(role="user", content="too short"),
-            Message(role="user", content="Here is a very long descriptive product idea prompt containing more than fifteen characters.")
+            Message(role="user", content="Suggest a very long descriptive product idea prompt containing more than fifteen characters.")
         ]
     )
 

@@ -30,32 +30,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const checkUser = async () => {
       setLoading(true);
-      if (isMockAuth()) {
-        const { data } = await mockAuthService.getSession();
-        if (data?.session) {
-          setUser(data.session.user);
-          setToken(data.session.token);
+      try {
+        if (isMockAuth()) {
+          const { data } = await mockAuthService.getSession();
+          if (data?.session) {
+            setUser(data.session.user);
+            setToken(data.session.token);
+          } else {
+            setUser(null);
+            setToken(null);
+            if (pathname !== "/login") {
+              router.push("/login");
+            }
+          }
         } else {
-          setUser(null);
-          setToken(null);
-          if (pathname !== "/login") {
-            router.push("/login");
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session) {
+            setUser(session.user);
+            setToken(session.access_token);
+          } else {
+            setUser(null);
+            setToken(null);
+            if (pathname !== "/login") {
+              router.push("/login");
+            }
           }
         }
-      } else {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          setUser(session.user);
-          setToken(session.access_token);
-        } else {
-          setUser(null);
-          setToken(null);
-          if (pathname !== "/login") {
-            router.push("/login");
-          }
+      } catch (err) {
+        console.error("Authentication check failed:", err);
+        // Fallback: reset auth and redirect to login
+        setUser(null);
+        setToken(null);
+        if (pathname !== "/login") {
+          router.push("/login");
         }
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     checkUser();

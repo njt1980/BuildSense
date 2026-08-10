@@ -33,6 +33,7 @@ class PostgresClient:
         # In-memory mock store for offline/local testing
         self.mock_store: Dict[str, Any] = {
             "users": {},
+            "companies": {},
             "projects": {},
             "chat_messages": {},
             "graph_nodes": {},
@@ -149,6 +150,113 @@ class PostgresClient:
                 return None
             return SessionState.model_validate_json(state_data_str)
 
+    # --- Companies Layer Methods ---
+
+    async def create_company(
+        self,
+        user_id: str,
+        name: str,
+        industry: str,
+        core_tools: str
+    ) -> str:
+        """
+        Creates a new company record associated with the user and returns its UUID.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        company_id = str(uuid.uuid4())
+        if self.is_mock:
+            self.mock_store["companies"][company_id] = {
+                "id": company_id,
+                "user_id": user_id,
+                "name": name,
+                "industry": industry,
+                "core_tools": core_tools
+            }
+            return company_id
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO companies (id, user_id, name, industry, core_tools)
+                VALUES ($1, $2, $3, $4, $5);
+                """,
+                uuid.UUID(company_id),
+                uuid.UUID(user_id),
+                name,
+                industry,
+                core_tools
+            )
+        return company_id
+
+    async def get_company(self, company_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves company details dictionary for a given UUID.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            return cast(Optional[Dict[str, Any]], self.mock_store["companies"].get(company_id))
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT id, user_id, name, industry, core_tools FROM companies WHERE id = $1;
+                """,
+                uuid.UUID(company_id)
+            )
+            if not row:
+                return None
+            return {
+                "id": str(row["id"]),
+                "user_id": str(row["user_id"]),
+                "name": row["name"],
+                "industry": row["industry"],
+                "core_tools": row["core_tools"]
+            }
+
+    async def get_user_companies(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Lists all companies belonging to a specific authenticated user.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            return [
+                v for v in self.mock_store["companies"].values()
+                if v["user_id"] == user_id
+            ]
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT id, user_id, name, industry, core_tools FROM companies WHERE user_id = $1 ORDER BY created_at DESC;
+                """,
+                uuid.UUID(user_id)
+            )
+            return [
+                {
+                    "id": str(row["id"]),
+                    "user_id": str(row["user_id"]),
+                    "name": row["name"],
+                    "industry": row["industry"],
+                    "core_tools": row["core_tools"]
+                }
+                for row in rows
+            ]
+
     # --- Multi-Tenant SaaS Methods ---
 
     async def create_user_if_not_exists(self, user_id: str, email: str) -> None:
@@ -186,7 +294,8 @@ class PostgresClient:
         description: str,
         mode: str,
         motivation: str,
-        user_persona: str
+        user_persona: str,
+        company_id: Optional[str] = None
     ) -> str:
         """
         Creates a new project record and returns its UUID.
@@ -205,7 +314,8 @@ class PostgresClient:
                 "description": description,
                 "mode": mode,
                 "motivation": motivation,
-                "user_persona": user_persona
+                "user_persona": user_persona,
+                "company_id": company_id
             }
             return project_id
 
@@ -213,8 +323,8 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             await connection.execute(
                 """
-                INSERT INTO projects (id, user_id, title, description, mode, motivation, user_persona)
-                VALUES ($1, $2, $3, $4, $5, $6, $7);
+                INSERT INTO projects (id, user_id, title, description, mode, motivation, user_persona, company_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
                 """,
                 uuid.UUID(project_id),
                 uuid.UUID(user_id),
@@ -222,9 +332,43 @@ class PostgresClient:
                 description,
                 mode,
                 motivation,
-                user_persona
+                user_persona,
+                uuid.UUID(company_id) if company_id else None
             )
         return project_id
+
+    async def update_project_mode_and_title(
+        self,
+        project_id: str,
+        mode: str,
+        title: str
+    ) -> None:
+        """
+        Updates the mode and title of an existing project.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            if project_id in self.mock_store["projects"]:
+                self.mock_store["projects"][project_id]["mode"] = mode
+                self.mock_store["projects"][project_id]["title"] = title
+            return
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                """
+                UPDATE projects 
+                SET mode = $1, title = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE id = $3;
+                """,
+                mode,
+                title,
+                uuid.UUID(project_id)
+            )
 
     async def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -242,7 +386,7 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT id, user_id, title, description, mode, motivation, user_persona, created_at, updated_at
+                SELECT id, user_id, title, description, mode, motivation, user_persona, created_at, updated_at, company_id
                 FROM projects WHERE id = $1;
                 """,
                 uuid.UUID(project_id),
@@ -259,6 +403,7 @@ class PostgresClient:
                 "user_persona": row["user_persona"],
                 "created_at": row["created_at"].isoformat() if row["created_at"] else None,
                 "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                "company_id": str(row["company_id"]) if row["company_id"] else None,
             }
 
     async def get_user_projects(self, user_id: str) -> List[Dict[str, Any]]:
@@ -280,7 +425,7 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             rows = await connection.fetch(
                 """
-                SELECT id, user_id, title, description, mode, motivation, user_persona, created_at
+                SELECT id, user_id, title, description, mode, motivation, user_persona, created_at, company_id
                 FROM projects WHERE user_id = $1 ORDER BY created_at DESC;
                 """,
                 uuid.UUID(user_id),
@@ -294,6 +439,7 @@ class PostgresClient:
                     "mode": row["mode"],
                     "motivation": row["motivation"],
                     "user_persona": row["user_persona"],
+                    "company_id": str(row["company_id"]) if row["company_id"] else None,
                 }
                 for row in rows
             ]
