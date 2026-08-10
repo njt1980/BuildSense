@@ -221,3 +221,106 @@ async def test_orchestrator_byok_bypass() -> None:
         
         # Verify that session status is NOT FAILED
         assert state.status != SessionStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_tiered_routing_and_caching() -> None:
+    """
+    Verifies that route_intent invokes Claude 3.5 Haiku, execute_tools uses Claude 3.5 Sonnet,
+    and cache control parameters are correctly configured.
+    """
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-routing-caching",
+        mode=SessionMode.SUGGESTER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=0.15,
+        max_steps=6,
+        messages=[Message(role="user", content="Here is a very long descriptive product idea prompt containing more than fifteen characters.")]
+    )
+
+    with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
+         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)), \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic:
+        
+        # Mock client responses
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        
+        # Mock response for sanitize_input (Haiku)
+        mock_sanitize = AsyncMock()
+        mock_sanitize.content = [AsyncMock(text="Here is a very long descriptive product idea prompt containing more than fifteen characters.")]
+        mock_sanitize.usage = AsyncMock(input_tokens=80, output_tokens=15)
+        
+        # Mock response for route_intent (Haiku)
+        mock_haiku_response = AsyncMock()
+        mock_haiku_response.content = [AsyncMock(text='{"vertical": "LOGISTICS", "is_complete": true, "clarification_questions": []}')]
+        mock_haiku_response.usage = AsyncMock(input_tokens=100, output_tokens=20)
+        
+        # Mock response for execute_tools (Sonnet)
+        mock_sonnet_response = AsyncMock()
+        mock_sonnet_response.stop_reason = "end_turn"
+        mock_sonnet_response.content = [AsyncMock(text="Final suggest output")]
+        mock_sonnet_response.usage = AsyncMock(input_tokens=1200, output_tokens=150, cache_read_input_tokens=1000, cache_creation_input_tokens=0)
+        
+        # Mock response for synthesize_report (Sonnet)
+        mock_synthesis_response = AsyncMock()
+        mock_synthesis_response.content = [AsyncMock(text='{"quick_insights": "Quick summary", "deep_dive": "Deep summary"}')]
+        mock_synthesis_response.usage = AsyncMock(input_tokens=1500, output_tokens=300)
+        
+        # mock_client.messages.create will be called 4 times in the full pipeline
+        mock_client.messages.create = AsyncMock(side_effect=[
+            mock_sanitize,
+            mock_haiku_response,
+            mock_sonnet_response,
+            mock_synthesis_response
+        ])
+
+        # Execute - pass user_key so API key is present for routing and sanitization LLM calls
+        updated_state = await orchestrator.run_pipeline(state, user_key="sk-ant-testkey")
+        
+        # Verify model calls
+        assert mock_client.messages.create.call_count == 4
+        
+        # First call (Haiku in sanitize_input)
+        call1_kwargs = mock_client.messages.create.call_args_list[0].kwargs
+        assert call1_kwargs["model"] == "claude-3-5-haiku-20241022"
+        
+        # Second call (Haiku in route_intent)
+        call2_kwargs = mock_client.messages.create.call_args_list[1].kwargs
+        assert call2_kwargs["model"] == "claude-3-5-haiku-20241022"
+        
+        # Third call (Sonnet in execute_tools)
+        call3_kwargs = mock_client.messages.create.call_args_list[2].kwargs
+        assert call3_kwargs["model"] == "claude-3-5-sonnet-20241022"
+        
+        # Fourth call (Sonnet in synthesize_report)
+        call4_kwargs = mock_client.messages.create.call_args_list[3].kwargs
+        assert call4_kwargs["model"] == "claude-3-5-sonnet-20241022"
+        
+        # Verify caching control elements in tools execution (Call 3)
+        system_blocks = call3_kwargs["system"]
+        assert isinstance(system_blocks, list)
+        assert system_blocks[1]["cache_control"] == {"type": "ephemeral"}
+        
+        # Verify last tool schema has cache control (Call 3)
+        tools_schema = call3_kwargs["tools"]
+        assert tools_schema[-1]["cache_control"] == {"type": "ephemeral"}
+        
+        # Verify cache metrics are tracked in metadata
+        cache_metrics = updated_state.metadata.get("cache_metrics", [])
+        assert len(cache_metrics) > 0
+        
+        # Find execute_tools step metrics
+        sonnet_metrics = next(m for m in cache_metrics if m.get("model") == "claude-3-5-sonnet-20241022" and m.get("node") == "execute_tools")
+        assert sonnet_metrics["cache_read_tokens"] == 1000
+        
+        # Check budget spent uses cached rate
+        # Cost is calculated as:
+        # Call 1 (Haiku): (80 * 0.8 + 15 * 4.0) / 1_000_000 = 0.000124
+        # Call 2 (Haiku): (100 * 0.8 + 20 * 4.0) / 1_000_000 = 0.00016
+        # Call 3 (Sonnet): ((1200 - 1000) * 3.0 + 1000 * 0.3 + 150 * 15.0) / 1_000_000 = 0.00315
+        # Call 4 (Sonnet): (1500 * 3.0 + 300 * 15.0) / 1_000_000 = 0.009
+        # Total cost: 0.000124 + 0.00016 + 0.00315 + 0.009 = 0.012434
+        assert abs(updated_state.budget_spent_usd - 0.012434) < 1e-6
