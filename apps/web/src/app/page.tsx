@@ -329,18 +329,12 @@ export default function Home() {
     setIsSettingsOpen(false);
   };
  
-  const getStarterChips = (industry: string) => {
-    switch (industry) {
-      case "Logistics & Fleet":
-        return ["Manual dispatch routing", "Fuel invoice auditing", "Driver log compliance checks"];
-      case "Manufacturing":
-        return ["Machine downtime reports", "Raw material QC checklists", "Production schedule adjustments"];
-      case "Wholesale & Distribution":
-        return ["Purchase order processing", "Inventory count reconciliation", "Supplier invoicing cycles"];
-      default:
-        return ["Manual data entry", "Approval delays", "Client onboarding paperwork"];
-    }
-  };
+  const workflowStarters = [
+    { label: "💬 Walk through a typical customer order", text: "Walk through a typical customer order" },
+    { label: "💬 How we manage stock & inventory", text: "How we manage stock & inventory" },
+    { label: "💬 How invoices & payments get reconciled", text: "How invoices & payments get reconciled" },
+    { label: "🔍 Unsure where time is lost? Run a 2-min workflow check", text: "Help me identify hidden bottlenecks in my business. Ask me 3 quick questions about how my team handles daily operations." }
+  ];
  
   const handleChipClick = (chipText: string) => {
     setPrompt(chipText);
@@ -403,7 +397,65 @@ export default function Home() {
       {/* Centered Horizontal Hero & Workspaces Layout */}
       <section className="w-full max-w-4xl flex flex-col gap-8 relative z-10">
         
-        {/* Top: Wide, Centered Process Intake Form */}
+        {/* Top Section: Horizontal Grid of Active Workspaces */}
+        <div className="bg-[#0b0f19]/25 shadow-2xl rounded-2xl border border-slate-900/50 p-6 md:p-8 backdrop-blur-md flex flex-col gap-5 w-full">
+          <div>
+            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+              📁 Your Active Workspaces
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Select any existing project to view reports, graphs, and chat history.
+            </p>
+          </div>
+ 
+          {loadingProjects ? (
+            <div className="flex flex-col items-center justify-center p-12 gap-2 text-slate-400">
+              <div className="w-5 h-5 rounded-full border border-t-amber-500 animate-spin" />
+              <span className="text-[10px]">Loading projects...</span>
+            </div>
+          ) : projects.length === 0 ? (
+            <div className="text-center p-6 border border-slate-800/40 bg-slate-900/10 rounded-xl">
+              <p className="text-xs text-slate-400">No active workspace runs found. Begin a discovery below.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {projects.map((proj) => (
+                <div
+                  key={proj.id}
+                  onClick={() => router.push(`/projects/${proj.id}`)}
+                  className="group bg-[#03060d]/50 hover:bg-slate-900/30 border border-slate-900 hover:border-slate-800 rounded-xl p-4 transition-all duration-300 cursor-pointer flex flex-col justify-between gap-4 relative overflow-hidden"
+                >
+                  <div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[8px] bg-amber-500/10 text-amber-400 font-extrabold px-1.5 py-0.5 rounded tracking-wide uppercase">
+                        {proj.mode}
+                      </span>
+                    </div>
+                    <h3 className="text-xs font-bold text-slate-200 mt-2.5 truncate group-hover:text-amber-400 transition-colors">
+                      {proj.title}
+                    </h3>
+                    <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
+                      {proj.description || "No project description."}
+                    </p>
+                  </div>
+ 
+                  <div className="flex items-center justify-between border-t border-slate-950 pt-2.5 mt-1 text-[9px] text-slate-400">
+                    <span className="hover:text-amber-400 transition-all font-semibold">Open Workspace →</span>
+                    <button
+                      onClick={(e) => handleDeleteProject(proj.id, e)}
+                      className="text-slate-600 hover:text-rose-400 transition-all p-1"
+                      title="Delete project"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+ 
+        {/* Bottom: Wide, Centered Process Intake Form */}
         <div className="bg-[#0b0f19]/25 shadow-2xl rounded-2xl border border-slate-900/50 backdrop-blur-md p-6 md:p-8 flex flex-col gap-6 w-full">
           
           {/* Active Company Status Panel */}
@@ -478,13 +530,13 @@ export default function Home() {
  
             {/* Process Description Text Area */}
             <div className="space-y-2 border-t border-slate-900/60 pt-4">
-              <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest block">
-                What process is slowing {activeCompany?.name || "your business"} down today?
+              <label className="text-xs font-semibold text-slate-300 block">
+                Tell us how work gets done at {activeCompany?.name || "MyCompany"}—or where your team spends the most time.
               </label>
               
               <textarea
                 rows={4}
-                placeholder={`Describe the bottleneck slowing down ${activeCompany?.name || "your organization"}...`}
+                placeholder="Describe a routine process or daily workflow (e.g., 'We take orders on WhatsApp and copy them into Excel and Tally every afternoon')..."
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 className="w-full bg-[#03060d]/40 border border-slate-800 text-slate-200 text-xs rounded-xl p-4 focus:outline-none focus:ring-1 focus:ring-amber-500/40 resize-none shadow-inner leading-relaxed"
@@ -492,20 +544,18 @@ export default function Home() {
               />
  
               {/* Starter Chips */}
-              {activeCompany && (
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {getStarterChips(activeCompany.industry).map((chip, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => handleChipClick(chip)}
-                      className="text-[10px] bg-slate-950/60 hover:bg-amber-500/10 border border-slate-900 hover:border-amber-500/30 text-slate-400 hover:text-amber-400 font-medium px-3 py-1.5 rounded-full transition-all duration-200"
-                    >
-                      💡 {chip}
-                    </button>
-                  ))}
-                </div>
-              )}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {workflowStarters.map((starter, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => handleChipClick(starter.text)}
+                    className="text-[10px] bg-slate-950/60 hover:bg-amber-500/10 border border-slate-900 hover:border-amber-500/30 text-slate-400 hover:text-amber-400 font-medium px-3 py-1.5 rounded-full transition-all duration-200 text-left"
+                  >
+                    {starter.label}
+                  </button>
+                ))}
+              </div>
             </div>
  
             {/* Attachment option */}
@@ -543,65 +593,6 @@ export default function Home() {
               <p className="text-rose-400 text-[10px] bg-rose-950/15 border border-rose-900/35 p-2.5 rounded-lg text-center font-medium">{errorText}</p>
             )}
           </form>
-        </div>
- 
-        {/* Bottom Section: Horizontal Grid of Active Workspaces */}
-        <div className="bg-[#0b0f19]/25 shadow-2xl rounded-2xl border border-slate-900/50 p-6 md:p-8 backdrop-blur-md flex flex-col gap-5 w-full">
-          <div>
-            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-              📁 Your Active Workspaces
-            </h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Select any existing project to view reports, graphs, and chat history.
-            </p>
-          </div>
- 
-          {loadingProjects ? (
-            <div className="flex flex-col items-center justify-center p-12 gap-2 text-slate-400">
-              <div className="w-5 h-5 rounded-full border border-t-amber-500 animate-spin" />
-              <span className="text-[10px]">Loading projects...</span>
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="text-center p-16 border border-dashed border-slate-800/60 rounded-2xl">
-              <p className="text-xs text-slate-500 italic">No project workspaces created yet.</p>
-              <p className="text-[10px] text-slate-600 mt-1 leading-normal max-w-sm mx-auto">Fill out the intake form above to start your first process optimization discovery run.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {projects.map((proj) => (
-                <div
-                  key={proj.id}
-                  onClick={() => router.push(`/projects/${proj.id}`)}
-                  className="group bg-[#03060d]/50 hover:bg-slate-900/30 border border-slate-900 hover:border-slate-800 rounded-xl p-4 transition-all duration-300 cursor-pointer flex flex-col justify-between gap-4 relative overflow-hidden"
-                >
-                  <div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[8px] bg-amber-500/10 text-amber-400 font-extrabold px-1.5 py-0.5 rounded tracking-wide uppercase">
-                        {proj.mode}
-                      </span>
-                    </div>
-                    <h3 className="text-xs font-bold text-slate-200 mt-2.5 truncate group-hover:text-amber-400 transition-colors">
-                      {proj.title}
-                    </h3>
-                    <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                      {proj.description || "No project description."}
-                    </p>
-                  </div>
- 
-                  <div className="flex items-center justify-between border-t border-slate-950 pt-2.5 mt-1 text-[9px] text-slate-400">
-                    <span className="hover:text-amber-400 transition-all font-semibold">Open Workspace →</span>
-                    <button
-                      onClick={(e) => handleDeleteProject(proj.id, e)}
-                      className="text-slate-600 hover:text-rose-400 transition-all p-1"
-                      title="Delete project"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </section>
  
