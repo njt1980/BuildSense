@@ -1,11 +1,13 @@
 """Main application module for BuildSense FastAPI backend.
 
-Initializes the FastAPI application, wires up CORS, Slowapi Redis-backed rate-limiting,
-and CostGuard spend limit middleware, and registers the orchestrator routes.
+Initializes the FastAPI application, wires up CORS, Slowapi rate-limiting,
+and registers multi-tenant project and orchestrator routes with JWT authentication.
 """
 
-from typing import Awaitable, Callable, Dict, Optional
-from fastapi import FastAPI, HTTPException, Request, Response, status, Header
+import os
+import uuid
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+from fastapi import FastAPI, HTTPException, Request, Response, status, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -14,6 +16,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
+from app.core.auth import get_current_user, AuthenticatedUser
+from app.core.audio import transcribe_and_translate_audio
 from app.db.redis import redis_client
 from app.db.postgres import postgres_client
 from app.models.state import SessionState, SessionMode, SessionStatus, Message
@@ -22,10 +26,10 @@ from app.models.state import SessionState, SessionMode, SessionStatus, Message
 app = FastAPI(
     title="BuildSense API Engine",
     description="Agentic Intelligence Engine for Idea Suggestion, Evaluation, and SMB Process Optimization.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
-# Synchronous helper to determine Limiter backend storage
+# Determine Limiter storage URI
 def get_limiter_storage_uri(url: str) -> str:
     if not url:
         return "memory://"
@@ -41,7 +45,6 @@ def get_limiter_storage_uri(url: str) -> str:
         print("Warning: Redis is unreachable. Falling back to local memory storage for rate limiting.")
         return "memory://"
 
-# Initialize Slowapi Rate Limiter using Redis as the backend storage
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=get_limiter_storage_uri(settings.redis_url),
@@ -68,15 +71,6 @@ async def check_global_spend_limit_middleware(
 ) -> Response:
     """
     HTTP middleware verifying that the global daily budget cap is not exceeded.
-
-    Intercepts outgoing API calls and blocks execution if spend is >= MAX_GLOBAL_DAILY_SPEND.
-
-    Arguments:
-        request: Incoming HTTP request details.
-        call_next: Next request processing callback in the chain.
-
-    Returns:
-        Response: The response returned by the request chain or 503 JSONResponse.
     """
     # Skip budget checks on health/root paths, CORS preflight OPTIONS requests, and custom user keys
     user_key = request.headers.get("x-user-anthropic-key")
@@ -84,7 +78,6 @@ async def check_global_spend_limit_middleware(
         return await call_next(request)
 
     try:
-        # Check if daily spend cap has been breached
         has_exceeded = await redis_client.has_exceeded_daily_spend_limit(
             settings.max_global_daily_spend
         )
@@ -95,8 +88,7 @@ async def check_global_spend_limit_middleware(
                     "detail": "Global daily spend cap limit has been reached. System paused."
                 },
             )
-    except Exception as connection_error:
-        # Log error locally and proceed or raise to prevent blocking in case of cache issues
+    except Exception:
         pass
 
     return await call_next(request)
@@ -109,25 +101,25 @@ class OrchestrationRequest(BaseModel):
     prompt: Optional[str] = Field(None, description="Initial request prompt or details.")
     motivation: Optional[str] = Field(None, description="Client primary motivation (e.g. REVENUE, EDUCATION).")
     mode: Optional[SessionMode] = Field(None, description="Chosen operational SessionMode.")
-    session_id: Optional[str] = Field(None, description="Existing session UUID (for resuming workflows).")
+    session_id: Optional[str] = Field(None, description="Existing session/project UUID.")
     clarification_responses: Optional[Dict[str, str]] = Field(
         None, description="Human-in-the-loop responses to questions."
     )
     file_name: Optional[str] = Field(None, description="Optional uploaded document file name.")
     file_content: Optional[str] = Field(None, description="Optional parsed uploaded document file content.")
+    user_persona: Optional[str] = Field("Solo Founder", description="User persona for customized evaluation tone.")
+
+
+class ProjectCreate(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    mode: SessionMode
+    motivation: str
+    user_persona: str
 
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    """
-    Root endpoint serving basic API status metadata.
-
-    Arguments:
-        None
-
-    Returns:
-        dict[str, str]: Welcome message and api status.
-    """
     return {
         "message": "Welcome to BuildSense API Engine",
         "status": "online",
@@ -136,80 +128,186 @@ async def root() -> dict[str, str]:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    """
-    Health check endpoint to verify backend service liveness.
-
-    Arguments:
-        None
-
-    Returns:
-        dict[str, str]: A dictionary indicating that the backend service is "ok".
-    """
     return {
         "status": "ok",
     }
 
 
+# --- Multi-Tenant Projects Router Endpoints ---
+
+@app.post("/api/v1/projects")
+async def create_project(
+    payload: ProjectCreate,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Creates a new project record mapped to the authenticated user.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    project_id = await postgres_client.create_project(
+        user_id=current_user.id,
+        title=payload.title,
+        description=payload.description or "",
+        mode=payload.mode.value,
+        motivation=payload.motivation,
+        user_persona=payload.user_persona
+    )
+    return {"project_id": project_id, "status": "created"}
+
+
+@app.get("/api/v1/projects")
+async def list_projects(
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> List[Dict[str, Any]]:
+    """
+    Lists all projects belonging to the authenticated user.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    return await postgres_client.get_user_projects(current_user.id)
+
+
+@app.get("/api/v1/projects/{project_id}")
+async def get_project(
+    project_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Retrieves project details after validating owner credentials.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    project = await postgres_client.get_project(project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found."
+        )
+    if project["user_id"] != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied to requested project resources."
+        )
+    return project
+
+
+@app.delete("/api/v1/projects/{project_id}")
+async def delete_project(
+    project_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Deletes project workspace after validation.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    project = await postgres_client.get_project(project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found."
+        )
+    if project["user_id"] != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Unauthorized deletion request."
+        )
+    await postgres_client.delete_project(project_id)
+    return {"status": "deleted"}
+
+
+@app.post("/api/v1/transcribe")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    language: str = Form("Auto-Detect"),
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Accepts uploaded regional audio files, transcribes & translates them to English,
+    and returns the plain English transcript text.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    try:
+        content = await file.read()
+        transcript = transcribe_and_translate_audio(
+            file_bytes=content,
+            filename=file.filename or "audio.webm",
+            language=language
+        )
+        return {"transcript": transcript}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Audio transcription error: {str(e)}"
+        )
+
+
+@app.get("/api/v1/projects/{project_id}/graph")
+async def get_project_graph(
+    project_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Retrieves the React Flow nodes and edges configuration.
+    """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    project = await postgres_client.get_project(project_id)
+    if not project or project["user_id"] != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied.")
+    
+    nodes, edges = await postgres_client.get_graph(project_id)
+    return {"nodes": nodes, "edges": edges}
+
+
+# --- Mapped /orchestrate endpoints (handles backward compatibility) ---
+
 @app.post("/api/v1/orchestrate")
-@limiter.limit("3/day")
+@limiter.limit("5/day")
 async def orchestrate(
     request: Request, 
     payload: OrchestrationRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     x_user_anthropic_key: Optional[str] = Header(None)
 ) -> SessionState:
     """
-    Starts or resumes the orchestrator pipeline for a BuildSense session.
-
-    Enforces slowapi IP rate-limiting (max 3 runs per IP per 24 hours).
-
-    Arguments:
-        request: FastAPI Request object required by Slowapi rate limiter.
-        payload: The incoming session orchestration properties.
-
-    Returns:
-        SessionState: The updated session state model after executing the pipeline step.
+    Starts or resumes the orchestrator pipeline mapping requests to the user's projects.
     """
-    # Import inside function to prevent circular imports during main module load
     from app.core.orchestrator import orchestrator
 
-    state: Optional[SessionState] = None
+    # Ensure user is tracked in users database table
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
 
-    if payload.session_id:
-        # Retrieve existing session state from PostgreSQL
-        state = await postgres_client.get_session_state(payload.session_id)
-        if not state:
+    project_id = payload.session_id
+    project = None
+
+    if project_id:
+        project = await postgres_client.get_project(project_id)
+        if not project or project["user_id"] != current_user.id:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session with ID '{payload.session_id}' not found.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to requested project session."
             )
-
-        # Merge clarification responses if supplied
-        if payload.clarification_responses:
-            state.clarification_responses.update(payload.clarification_responses)
-            state.status = SessionStatus.PLANNING  # Transition directly to planning
     else:
-        # Enforce required parameters for new sessions
-        if not payload.prompt or not payload.mode:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Prompt and mode are required parameters to initialize a new session.",
-            )
+        # Create a new project corresponding to this request run
+        title = payload.prompt[:30] + "..." if payload.prompt else "New Ideation Run"
+        project_id = await postgres_client.create_project(
+            user_id=current_user.id,
+            title=title,
+            description=payload.prompt or "",
+            mode=(payload.mode or SessionMode.SUGGESTER).value,
+            motivation=payload.motivation or "EDUCATION",
+            user_persona=payload.user_persona or "Solo Founder"
+        )
+        project = await postgres_client.get_project(project_id)
 
-        # Build initial SessionState record
-        import uuid
-        session_id = str(uuid.uuid4())
-        
-        # Configure step/budget constraints based on operational mode
-        if payload.mode == SessionMode.SUGGESTER:
-            max_budget = 0.15
-            max_steps = 6
-        else:
-            max_budget = 1.25
-            max_steps = 15
+    assert project is not None
+
+    # Load session state mapping from database or initialize
+    state = await postgres_client.get_session_state(project_id)
+    if not state:
+        max_budget = 0.15 if project["mode"] == "SUGGESTER" else 1.25
+        max_steps = 6 if project["mode"] == "SUGGESTER" else 15
 
         state = SessionState(
-            session_id=session_id,
-            mode=payload.mode,
+            session_id=project_id,
+            mode=SessionMode(project["mode"]),
             status=SessionStatus.ROUTING,
             budget_spent_usd=0.0,
             max_budget_usd=max_budget,
@@ -217,35 +315,55 @@ async def orchestrate(
             max_steps=max_steps,
             messages=[
                 Message(role="user", content=payload.prompt, name=None, tool_call_id=None)
-            ],
+            ] if payload.prompt else [],
             clarification_questions=[],
             clarification_responses={},
             dag_plan=[],
             metadata={
-                "motivation": payload.motivation or "EDUCATION"
+                "motivation": project["motivation"],
+                "user_persona": project["user_persona"]
             },
             file_name=payload.file_name,
-            file_content=payload.file_content
+            file_content=payload.file_content,
+            business_vertical=None,
+            evidence_ledger=[]
         )
-        # Store initial state in PostgreSQL
         await postgres_client.save_session_state(state)
+        await postgres_client.save_chat_messages(project_id, state.messages)
 
-    # Run the session through the orchestrator pipeline
+    # If resuming clarification answers
+    if payload.clarification_responses:
+        state.clarification_responses.update(payload.clarification_responses)
+        # Add user answers to chat messages log
+        for q, ans in payload.clarification_responses.items():
+            state.messages.append(Message(role="user", content=f"Q: {q}\nA: {ans}", name=None, tool_call_id=None))
+        await postgres_client.save_chat_messages(project_id, state.messages)
+        state.status = SessionStatus.PLANNING
+
+    # Run the session orchestrator pipeline
     updated_state = await orchestrator.run_pipeline(state, user_key=x_user_anthropic_key)
+    
+    # Sync messages back to DB
+    await postgres_client.save_chat_messages(project_id, updated_state.messages)
     return updated_state
 
 
 @app.get("/api/v1/session/{session_id}")
-async def get_session(session_id: str) -> SessionState:
+async def get_session(
+    session_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user)
+) -> SessionState:
     """
-    Retrieves the current SessionState record for a given session ID.
-
-    Arguments:
-        session_id: Unique UUID string representing the target session.
-
-    Returns:
-        SessionState: The serialized session state.
+    Retrieves the current SessionState record for a given session ID (verifying tenant permissions).
     """
+    await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+    project = await postgres_client.get_project(session_id)
+    if not project or project["user_id"] != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Unauthorized access to requested session state details."
+        )
+
     state = await postgres_client.get_session_state(session_id)
     if not state:
         raise HTTPException(
@@ -258,28 +376,21 @@ async def get_session(session_id: str) -> SessionState:
 @app.on_event("startup")
 async def startup_event() -> None:
     """
-    Pre-connects pool resources for Postgres and Redis on app startup.
-
-    Arguments:
-        None
-
-    Returns:
-        None
+    Connects pool resources for Postgres/Redis and runs tables migrations on startup.
     """
     await redis_client.connect()
     await postgres_client.connect()
-
-
+    
+    # Run SQL migration setup
+    schema_path = os.path.join(os.path.dirname(__file__), "db", "schema.sql")
+    if os.path.exists(schema_path):
+        try:
+            await postgres_client.init_db(schema_path)
+            print("Successfully verified PostgreSQL schema tables and RLS configurations.")
+        except Exception as e:
+            print(f"Warning: PostgreSQL migrations setup aborted ({e})")
+            
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    """
-    Closes pool connections on app shutdown.
-
-    Arguments:
-        None
-
-    Returns:
-        None
-    """
     await redis_client.disconnect()
     await postgres_client.disconnect()

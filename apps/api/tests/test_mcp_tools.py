@@ -5,7 +5,7 @@ for search, economics calculator, and SOP parser tools.
 """
 
 import json
-from app.mcp.tools import web_search_mcp, calculator_mcp, document_parser_mcp
+from app.mcp.tools import web_search_mcp, calculator_mcp, document_parser_mcp, market_signal_mcp
 
 
 def test_web_search_mcp_containment_wrapping() -> None:
@@ -85,3 +85,14 @@ def test_document_parser_mcp_sop_lines() -> None:
     assert steps[2]["step_id"] == "3"
     assert steps[2]["description"] == "Send email report"
     assert steps[1]["depends_on"] == ["1"]
+
+
+def test_market_signal_mcp_containment() -> None:
+    """
+    Verifies that the market signals tool wraps findings in standard untrusted XML boundaries.
+    """
+    output = market_signal_mcp("saas marketing")
+    assert output.startswith('<untrusted_tool_output source="market_signal">')
+    assert output.endswith('</untrusted_tool_output>')
+    assert "Real-time research signals found" in output
+

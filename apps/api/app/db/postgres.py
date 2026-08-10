@@ -1,95 +1,53 @@
 """PostgreSQL database client with pgvector support.
 
 This module implements the async database adapter for PostgreSQL, handling
-connection pooling, table initialization, session state persistence, and
-dual-namespace vector searches (global_knowledge and session_memory).
+connection pooling, table initialization, session state persistence,
+multi-tenant project data, chat message history, visual DAG graphs, and
+dual-namespace vector searches.
 """
 
 import os
 import json
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Tuple, cast
 import asyncpg
-from app.models.state import SessionState
-
-
-class MockConnectionContext:
-    def __init__(self, states_dict: Dict[str, str]) -> None:
-        self.states_dict = states_dict
-
-    async def __aenter__(self) -> Any:
-        class MockConnection:
-            def __init__(self, states_dict: Dict[str, str]) -> None:
-                self.states_dict = states_dict
-
-            async def execute(self, query: str, *args: Any) -> str:
-                if "INSERT INTO session_state" in query:
-                    session_id = args[0]
-                    state_data = args[1]
-                    self.states_dict[session_id] = state_data
-                return "OK"
-
-            async def fetchval(self, query: str, *args: Any) -> Any:
-                if "SELECT state_data" in query:
-                    session_id = args[0]
-                    return self.states_dict.get(session_id)
-                return 1
-
-            async def fetch(self, query: str, *args: Any) -> List[Any]:
-                return []
-
-        return MockConnection(self.states_dict)
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        pass
-
-
-class MockPool:
-    def __init__(self) -> None:
-        self.states_dict: Dict[str, str] = {}
-
-    def acquire(self) -> MockConnectionContext:
-        return MockConnectionContext(self.states_dict)
-
-    async def close(self) -> None:
-        pass
+from app.models.state import SessionState, Message
 
 
 class PostgresClient:
     """
-    Database client for PostgreSQL supporting pgvector similarity operations.
-
-    Enforces strict namespace isolation for session-specific RAG queries
-    and provides unified connection pool lifecycle methods.
+    Database client for PostgreSQL supporting pgvector similarity operations
+    and multi-tenant SaaS project separation.
     """
 
     def __init__(self) -> None:
         """
         Initializes the database client and fetches connection details.
-
-        Arguments:
-            None
-
-        Returns:
-            None
         """
-        # Fetch the database connection string from environment or global settings fallback
         import os
         from app.core.config import settings
         self.database_url: Optional[str] = os.environ.get("DATABASE_URL") or settings.database_url
         self.pool: Any = None
+        self.is_mock: bool = False
+        
+        # In-memory mock store for offline/local testing
+        self.mock_store: Dict[str, Any] = {
+            "users": {},
+            "projects": {},
+            "chat_messages": {},
+            "graph_nodes": {},
+            "graph_edges": {},
+            "session_state": {},
+            "session_memory": [],
+            "global_knowledge": []
+        }
 
     async def connect(self) -> None:
         """
         Establishes the database connection pool.
 
-        Arguments:
-            None
-
-        Returns:
-            None
-
         Raises:
-            ValueError: If DATABASE_URL is not set in the environment.
+            ValueError: If DATABASE_URL is not set.
         """
         if not self.database_url:
             raise ValueError("DATABASE_URL environment variable is not defined.")
@@ -102,20 +60,15 @@ class PostgresClient:
                     min_size=1,
                     max_size=10,
                 )
-            except Exception:
-                # Graceful fallback to local in-memory MockPool if offline
-                print("Warning: PostgreSQL server offline. Running in Mock database mode.")
-                self.pool = MockPool()
+                self.is_mock = False
+            except Exception as e:
+                # Graceful fallback to local in-memory Mock mode if offline
+                print(f"Warning: PostgreSQL server offline ({e}). Running in Mock database mode.")
+                self.is_mock = True
 
     async def disconnect(self) -> None:
         """
         Closes the database connection pool.
-
-        Arguments:
-            None
-
-        Returns:
-            None
         """
         if self.pool:
             await self.pool.close()
@@ -124,15 +77,12 @@ class PostgresClient:
     async def init_db(self, schema_filepath: str) -> None:
         """
         Loads schema definitions from SQL file and initializes tables.
-
-        Arguments:
-            schema_filepath: The local path to the schema.sql file.
-
-        Returns:
-            None
         """
-        if not self.pool:
-            await self.connect()
+        await self.connect()
+
+        if self.is_mock:
+            print("Mock database initialized.")
+            return
 
         assert self.pool is not None
         with open(schema_filepath, "r", encoding="utf-8") as schema_file:
@@ -142,18 +92,20 @@ class PostgresClient:
             # Run schema SQL script to set up tables and vector extension
             await connection.execute(schema_sql)
 
+    # --- Legacy Session State Methods (maintained for compatibility) ---
+
     async def save_session_state(self, state: SessionState) -> None:
         """
         Saves or updates a serialized SessionState model inside the database.
-
-        Arguments:
-            state: The SessionState model instance to save.
-
-        Returns:
-            None
         """
-        if not self.pool:
+        try:
             await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            self.mock_store["session_state"][state.session_id] = state.model_dump_json()
+            return
 
         assert self.pool is not None
         state_json_str = state.model_dump_json()
@@ -173,15 +125,17 @@ class PostgresClient:
     async def get_session_state(self, session_id: str) -> Optional[SessionState]:
         """
         Retrieves and deserializes the SessionState model for a given ID.
-
-        Arguments:
-            session_id: Unique UUID string representing the target session.
-
-        Returns:
-            Optional[SessionState]: The parsed SessionState if found, else None.
         """
-        if not self.pool:
+        try:
             await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            state_data_str = self.mock_store["session_state"].get(session_id)
+            if not state_data_str:
+                return None
+            return SessionState.model_validate_json(state_data_str)
 
         assert self.pool is not None
         async with self.pool.acquire() as connection:
@@ -195,28 +149,390 @@ class PostgresClient:
                 return None
             return SessionState.model_validate_json(state_data_str)
 
+    # --- Multi-Tenant SaaS Methods ---
+
+    async def create_user_if_not_exists(self, user_id: str, email: str) -> None:
+        """
+        Saves Supabase authenticated user metadata locally for RLS joins.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            self.mock_store["users"][user_id] = {
+                "id": user_id,
+                "email": email
+            }
+            return
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO users (id, email)
+                VALUES ($1, $2)
+                ON CONFLICT (id) DO UPDATE SET email = $2;
+                """,
+                uuid.UUID(user_id),
+                email,
+            )
+
+    async def create_project(
+        self,
+        user_id: str,
+        title: str,
+        description: str,
+        mode: str,
+        motivation: str,
+        user_persona: str
+    ) -> str:
+        """
+        Creates a new project record and returns its UUID.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        project_id = str(uuid.uuid4())
+        if self.is_mock:
+            self.mock_store["projects"][project_id] = {
+                "id": project_id,
+                "user_id": user_id,
+                "title": title,
+                "description": description,
+                "mode": mode,
+                "motivation": motivation,
+                "user_persona": user_persona
+            }
+            return project_id
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO projects (id, user_id, title, description, mode, motivation, user_persona)
+                VALUES ($1, $2, $3, $4, $5, $6, $7);
+                """,
+                uuid.UUID(project_id),
+                uuid.UUID(user_id),
+                title,
+                description,
+                mode,
+                motivation,
+                user_persona
+            )
+        return project_id
+
+    async def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches the project details dictionary for a given project UUID.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            return cast(Optional[Dict[str, Any]], self.mock_store["projects"].get(project_id))
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT id, user_id, title, description, mode, motivation, user_persona, created_at, updated_at
+                FROM projects WHERE id = $1;
+                """,
+                uuid.UUID(project_id),
+            )
+            if not row:
+                return None
+            return {
+                "id": str(row["id"]),
+                "user_id": str(row["user_id"]),
+                "title": row["title"],
+                "description": row["description"],
+                "mode": row["mode"],
+                "motivation": row["motivation"],
+                "user_persona": row["user_persona"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+            }
+
+    async def get_user_projects(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Lists all project summaries belonging to a specific authenticated user.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            return [
+                v for v in self.mock_store["projects"].values()
+                if v["user_id"] == user_id
+            ]
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT id, user_id, title, description, mode, motivation, user_persona, created_at
+                FROM projects WHERE user_id = $1 ORDER BY created_at DESC;
+                """,
+                uuid.UUID(user_id),
+            )
+            return [
+                {
+                    "id": str(row["id"]),
+                    "user_id": str(row["user_id"]),
+                    "title": row["title"],
+                    "description": row["description"],
+                    "mode": row["mode"],
+                    "motivation": row["motivation"],
+                    "user_persona": row["user_persona"],
+                }
+                for row in rows
+            ]
+
+    async def delete_project(self, project_id: str) -> None:
+        """
+        Deletes a project workspace and cascades dependencies.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            self.mock_store["projects"].pop(project_id, None)
+            self.mock_store["chat_messages"].pop(project_id, None)
+            self.mock_store["graph_nodes"].pop(project_id, None)
+            self.mock_store["graph_edges"].pop(project_id, None)
+            return
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            await connection.execute(
+                "DELETE FROM projects WHERE id = $1;",
+                uuid.UUID(project_id),
+            )
+
+    # --- Chat Message Storage ---
+
+    async def get_chat_messages(self, project_id: str) -> List[Message]:
+        """
+        Fetches conversation history associated with a project thread.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            return cast(List[Message], self.mock_store["chat_messages"].get(project_id, []))
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT role, content, name, tool_call_id
+                FROM chat_messages WHERE project_id = $1 ORDER BY created_at ASC;
+                """,
+                uuid.UUID(project_id),
+            )
+            return [
+                Message(
+                    role=row["role"],
+                    content=row["content"],
+                    name=row["name"],
+                    tool_call_id=row["tool_call_id"]
+                )
+                for row in rows
+            ]
+
+    async def save_chat_messages(self, project_id: str, messages: List[Message]) -> None:
+        """
+        Persists a series of conversation messages associated with a project thread.
+        Does a clean rewrite to maintain chronological alignment.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            self.mock_store["chat_messages"][project_id] = messages
+            return
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                # Delete existing messages for clean rewrite
+                await connection.execute(
+                    "DELETE FROM chat_messages WHERE project_id = $1;",
+                    uuid.UUID(project_id)
+                )
+                
+                # Batch insert updated list
+                for msg in messages:
+                    await connection.execute(
+                        """
+                        INSERT INTO chat_messages (project_id, role, content, name, tool_call_id)
+                        VALUES ($1, $2, $3, $4, $5);
+                        """,
+                        uuid.UUID(project_id),
+                        msg.role,
+                        msg.content,
+                        msg.name,
+                        msg.tool_call_id
+                    )
+
+    # --- React Flow Graph Node/Edge Storage ---
+
+    async def get_graph(self, project_id: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Retrieves serialized React Flow nodes and edges associated with a project workspace.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            nodes = self.mock_store["graph_nodes"].get(project_id, [])
+            edges = self.mock_store["graph_edges"].get(project_id, [])
+            return nodes, edges
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            node_rows = await connection.fetch(
+                """
+                SELECT id, type, position_x, position_y, data
+                FROM graph_nodes WHERE project_id = $1;
+                """,
+                uuid.UUID(project_id)
+            )
+            edge_rows = await connection.fetch(
+                """
+                SELECT id, source, target, label, data
+                FROM graph_edges WHERE project_id = $1;
+                """,
+                uuid.UUID(project_id)
+            )
+            
+            nodes = [
+                {
+                    "id": row["id"],
+                    "type": row["type"],
+                    "position": {"x": row["position_x"], "y": row["position_y"]},
+                    "data": json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
+                }
+                for row in node_rows
+            ]
+            edges = [
+                {
+                    "id": row["id"],
+                    "source": row["source"],
+                    "target": row["target"],
+                    "label": row["label"],
+                    "data": json.loads(row["data"]) if row["data"] and isinstance(row["data"], str) else row["data"]
+                }
+                for row in edge_rows
+            ]
+            
+            return nodes, edges
+
+    async def save_graph(
+        self,
+        project_id: str,
+        nodes: List[Dict[str, Any]],
+        edges: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Saves React Flow nodes and edges representing the workspace workflow visual DAG.
+        """
+        try:
+            await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            self.mock_store["graph_nodes"][project_id] = nodes
+            self.mock_store["graph_edges"][project_id] = edges
+            return
+
+        assert self.pool is not None
+        async with self.pool.acquire() as connection:
+            async with connection.transaction():
+                # Delete existing graph
+                await connection.execute("DELETE FROM graph_nodes WHERE project_id = $1;", uuid.UUID(project_id))
+                await connection.execute("DELETE FROM graph_edges WHERE project_id = $1;", uuid.UUID(project_id))
+                
+                # Insert Nodes
+                for n in nodes:
+                    pos = n.get("position", {"x": 0.0, "y": 0.0})
+                    node_data = json.dumps(n.get("data", {}))
+                    await connection.execute(
+                        """
+                        INSERT INTO graph_nodes (id, project_id, type, position_x, position_y, data)
+                        VALUES ($1, $2, $3, $4, $5, $6);
+                        """,
+                        n["id"],
+                        uuid.UUID(project_id),
+                        n.get("type", "default"),
+                        float(pos.get("x", 0.0)),
+                        float(pos.get("y", 0.0)),
+                        node_data
+                    )
+                
+                # Insert Edges
+                for e in edges:
+                    edge_data = json.dumps(e.get("data", {})) if e.get("data") else None
+                    await connection.execute(
+                        """
+                        INSERT INTO graph_edges (id, project_id, source, target, label, data)
+                        VALUES ($1, $2, $3, $4, $5, $6);
+                        """,
+                        e["id"],
+                        uuid.UUID(project_id),
+                        e["source"],
+                        e["target"],
+                        e.get("label"),
+                        edge_data
+                    )
+
+    # --- Vector RAG pgvector Methods ---
+
     async def add_global_knowledge(
         self, content: str, embedding: List[float], metadata: Optional[Dict[str, Any]] = None
     ) -> int:
         """
         Inserts new content and vector embedding into the global knowledge database.
-
-        Arguments:
-            content: Raw text content to store.
-            embedding: Normalized list of floats representing the text vector.
-            metadata: Optional dictionary containing extra attributes.
-
-        Returns:
-            int: The primary key ID of the inserted record.
         """
-        if not self.pool:
+        try:
             await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            record_id = len(self.mock_store["global_knowledge"]) + 1
+            self.mock_store["global_knowledge"].append({
+                "id": record_id,
+                "content": content,
+                "embedding": embedding,
+                "metadata": metadata
+            })
+            return record_id
 
         assert self.pool is not None
         metadata_json = json.dumps(metadata) if metadata else None
         
         async with self.pool.acquire() as connection:
-            record_id: int = await connection.fetchval(
+            record_id = await connection.fetchval(
                 """
                 INSERT INTO global_knowledge (content, embedding, metadata)
                 VALUES ($1, $2, $3)
@@ -226,23 +542,30 @@ class PostgresClient:
                 embedding,
                 metadata_json,
             )
-            return record_id
+            return int(record_id)
 
     async def search_global_knowledge(
         self, query_embedding: List[float], limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
         Performs vector similarity search (cosine distance) on global knowledge.
-
-        Arguments:
-            query_embedding: Target vector for similarity lookup.
-            limit: Maximum count of results to return.
-
-        Returns:
-            List[Dict[str, Any]]: List of matching records.
         """
-        if not self.pool:
+        try:
             await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            # Simple mock score ordering (simulated distance)
+            return [
+                {
+                    "id": item["id"],
+                    "content": item["content"],
+                    "metadata": item["metadata"] or {},
+                    "distance": 0.1
+                }
+                for item in self.mock_store["global_knowledge"][:limit]
+            ]
 
         assert self.pool is not None
         async with self.pool.acquire() as connection:
@@ -270,16 +593,7 @@ class PostgresClient:
         self, session_id: str, content: str, embedding: List[float], metadata: Optional[Dict[str, Any]] = None
     ) -> int:
         """
-        Inserts new content and vector embedding isolated by a session ID.
-
-        Arguments:
-            session_id: Target session identifier to partition content.
-            content: Raw text content to store.
-            embedding: Normalized list of floats representing the text vector.
-            metadata: Optional dictionary containing extra attributes.
-
-        Returns:
-            int: The primary key ID of the inserted record.
+        Inserts new content and vector embedding isolated by a session/project ID.
 
         Raises:
             ValueError: If session_id is empty or missing.
@@ -287,39 +601,44 @@ class PostgresClient:
         if not session_id or not session_id.strip():
             raise ValueError("session_id must be provided to add session memory.")
 
-        if not self.pool:
+        try:
             await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            record_id = len(self.mock_store["session_memory"]) + 1
+            self.mock_store["session_memory"].append({
+                "id": record_id,
+                "project_id": session_id,
+                "content": content,
+                "embedding": embedding,
+                "metadata": metadata
+            })
+            return record_id
 
         assert self.pool is not None
         metadata_json = json.dumps(metadata) if metadata else None
 
         async with self.pool.acquire() as connection:
-            record_id: int = await connection.fetchval(
+            record_id = await connection.fetchval(
                 """
-                INSERT INTO session_memory (session_id, content, embedding, metadata)
+                INSERT INTO session_memory (project_id, content, embedding, metadata)
                 VALUES ($1, $2, $3, $4)
                 RETURNING id;
                 """,
-                session_id,
+                uuid.UUID(session_id),
                 content,
                 embedding,
                 metadata_json,
             )
-            return record_id
+            return int(record_id)
 
     async def search_session_memory(
         self, session_id: str, query_embedding: List[float], limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Performs vector similarity search strictly isolated to a session ID.
-
-        Arguments:
-            session_id: Target session identifier to filter searches.
-            query_embedding: Target vector for similarity lookup.
-            limit: Maximum count of results to return.
-
-        Returns:
-            List[Dict[str, Any]]: List of matching records isolated to the session.
+        Performs vector similarity search strictly isolated to a session/project ID.
 
         Raises:
             ValueError: If session_id is empty or missing.
@@ -327,22 +646,35 @@ class PostgresClient:
         if not session_id or not session_id.strip():
             raise ValueError("session_id must be provided to search session memory.")
 
-        if not self.pool:
+        try:
             await self.connect()
+        except ValueError:
+            self.is_mock = True
+
+        if self.is_mock:
+            return [
+                {
+                    "id": item["id"],
+                    "content": item["content"],
+                    "metadata": item["metadata"] or {},
+                    "distance": 0.15
+                }
+                for item in self.mock_store["session_memory"]
+                if item["project_id"] == session_id
+            ][:limit]
 
         assert self.pool is not None
         async with self.pool.acquire() as connection:
-            # Enforce strict session namespace isolation filtering on session_id
             records = await connection.fetch(
                 """
                 SELECT id, content, metadata, (embedding <=> $1) as distance
                 FROM session_memory
-                WHERE session_id = $2
+                WHERE project_id = $2
                 ORDER BY distance ASC
                 LIMIT $3;
                 """,
                 query_embedding,
-                session_id,
+                uuid.UUID(session_id),
                 limit,
             )
             return [

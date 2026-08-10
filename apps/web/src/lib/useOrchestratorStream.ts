@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { supabase } from "./supabase";
 
 /**
  * Interface representing a standard chat message in the session state.
@@ -89,11 +90,34 @@ export function useOrchestratorStream() {
 
     try {
       const userApiKey = typeof window !== "undefined" ? localStorage.getItem("buildsense_user_api_key") || "" : "";
+      
+      // Get the token from local mock storage or Supabase
+      let jwtToken = "";
+      if (typeof window !== "undefined") {
+        const mockSessionStr = localStorage.getItem("buildsense_mock_session");
+        if (mockSessionStr) {
+          try {
+            const mockSession = JSON.parse(mockSessionStr);
+            jwtToken = mockSession.token || "";
+          } catch {}
+        }
+      }
+      
+      if (!jwtToken) {
+        try {
+          const { data } = await supabase.auth.getSession();
+          jwtToken = data.session?.access_token || "";
+        } catch {}
+      }
+
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
       if (userApiKey) {
         headers["X-User-Anthropic-Key"] = userApiKey;
+      }
+      if (jwtToken) {
+        headers["Authorization"] = `Bearer ${jwtToken}`;
       }
 
       // Endpoint is hosted on backend port 9000

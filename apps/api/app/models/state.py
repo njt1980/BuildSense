@@ -94,3 +94,5 @@ class SessionState(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Operational metadata and results.")
     file_name: Optional[str] = Field(None, description="Optional uploaded document file name.")
     file_content: Optional[str] = Field(None, description="Optional parsed uploaded document file content.")
+    business_vertical: Optional[str] = Field(None, description="The classified business domain vertical (LOGISTICS, MANUFACTURING, WHOLESALE, GENERIC).")
+    evidence_ledger: List[Dict[str, Any]] = Field(default_factory=list, description="Categorized user claims on the Evidence Ladder.")

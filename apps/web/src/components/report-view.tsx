@@ -3,25 +3,15 @@
 import React from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { SessionState } from "@/lib/useOrchestratorStream";
 
-/**
- * Prop type definitions for the ReportView component.
- */
 interface ReportViewProps {
-  /** The final or active SessionState containing report text and metadata */
-  sessionState: SessionState;
+  sessionState: any;
 }
 
-/**
- * Premium dashboard widget showing session execution costs and compiling the
- * Dual-View report (Quick Insights vs Deep Dive).
- *
- * @param props - Component parameters including SessionState.
- */
 export function ReportView({ sessionState }: ReportViewProps) {
   const quickInsights = (sessionState.metadata.quick_insights as string) || "No quick insights generated.";
   const deepDive = (sessionState.metadata.deep_dive as string) || "No deep dive dossier compiled.";
+  const evidenceLedger = sessionState.evidence_ledger || [];
 
   return (
     <Card className="w-full bg-[#0b0f19]/45 border border-slate-900/80 backdrop-blur-md text-slate-100 rounded-xl shadow-2xl overflow-hidden">
@@ -33,10 +23,15 @@ export function ReportView({ sessionState }: ReportViewProps) {
             </CardTitle>
             <CardDescription className="text-slate-400 mt-1">
               Session ID: <span className="font-mono text-xs text-slate-500">{sessionState.session_id}</span>
+              {sessionState.business_vertical && (
+                <>
+                  <span className="text-slate-600 mx-2">|</span>
+                  Vertical Focus: <span className="text-amber-400 font-bold font-mono text-[11px]">{sessionState.business_vertical}</span>
+                </>
+              )}
             </CardDescription>
           </div>
           
-          {/* Real-time budget spent and step count indicator tags */}
           <div className="flex items-center gap-3">
             <div className="bg-[#03060d]/80 border border-slate-900/60 rounded-lg px-3 py-1.5 text-center">
               <p className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Spend (USD)</p>
@@ -61,13 +56,13 @@ export function ReportView({ sessionState }: ReportViewProps) {
           <TabsList className="bg-[#03060d]/80 border border-slate-900/60 rounded-lg p-1 w-full grid grid-cols-2 max-w-[400px] mb-6">
             <TabsTrigger
               value="quick"
-              className="rounded-md font-medium text-xs data-[state=active]:bg-slate-800/80 data-[state=active]:text-amber-400 data-[state=active]:border data-[state=active]:border-amber-500/20 text-slate-400 py-2 transition-all"
+              className="rounded-md font-medium text-xs data-[active]:bg-slate-800/80 data-[active]:text-amber-400 data-[active]:border data-[active]:border-amber-500/20 text-slate-400 py-2 transition-all"
             >
               ⚡ Quick Insights
             </TabsTrigger>
             <TabsTrigger
               value="deep"
-              className="rounded-md font-medium text-xs data-[state=active]:bg-slate-800/80 data-[state=active]:text-amber-400 data-[state=active]:border data-[state=active]:border-amber-500/20 text-slate-400 py-2 transition-all"
+              className="rounded-md font-medium text-xs data-[active]:bg-slate-800/80 data-[active]:text-amber-400 data-[active]:border data-[active]:border-amber-500/20 text-slate-400 py-2 transition-all"
             >
               🔬 Deep Dive
             </TabsTrigger>
@@ -89,6 +84,49 @@ export function ReportView({ sessionState }: ReportViewProps) {
             </div>
           </TabsContent>
         </Tabs>
+
+        {/* Evidence Ladder Ledger Audit Panel */}
+        {evidenceLedger.length > 0 && (
+          <div className="mt-8 border-t border-slate-900/60 pt-6">
+            <h3 className="text-sm font-bold text-slate-200 mb-3 flex items-center gap-2">
+              ⚖️ Evidence Ladder Audit Log
+            </h3>
+            <p className="text-[11px] text-slate-400 mb-4 leading-normal">
+              Below are operational claims extracted from client intake interviews and categorized on the Evidence Ladder.
+            </p>
+            <div className="overflow-x-auto border border-slate-900/60 rounded-xl bg-slate-950/30">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-900 bg-slate-950/45 text-slate-400">
+                    <th className="p-3 font-semibold">Stated Claim / Bottleneck</th>
+                    <th className="p-3 font-semibold">Stated Source</th>
+                    <th className="p-3 font-semibold text-right">Reliability Level</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-900">
+                  {evidenceLedger.map((item: any, idx: number) => {
+                    const level = item.ladder_level || "Owner Estimate";
+                    let badgeClass = "bg-rose-500/10 text-rose-400 border-rose-500/20";
+                    if (level === "Employee Stated") badgeClass = "bg-orange-500/10 text-orange-400 border-orange-500/20";
+                    else if (level === "System Export") badgeClass = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
+                    
+                    return (
+                      <tr key={idx} className="hover:bg-slate-900/10 transition-colors">
+                        <td className="p-3 text-slate-200 leading-relaxed font-medium">{item.claim}</td>
+                        <td className="p-3 text-slate-400 font-mono text-[11px]">{item.source}</td>
+                        <td className="p-3 text-right">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${badgeClass}`}>
+                            {level}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

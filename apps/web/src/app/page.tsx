@@ -1,49 +1,33 @@
 "use client";
 
-import React, { useState } from "react";
-import { useOrchestratorStream } from "@/lib/useOrchestratorStream";
-import { ClarificationModal } from "@/components/clarification-modal";
-import { ReportView } from "@/components/report-view";
+import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 
-/**
- * Main interactive Dashboard page for BuildSense.
- * Orchestrates form settings inputs, consumes SSE streams, triggers HILT questions modals,
- * and compiles final dual-view insight reports.
- *
- * @returns React node representing the application dashboard.
- */
 export default function Home() {
-  const {
-    activeSessionState,
-    isOrchestratorLoopActive,
-    orchestratorLogs,
-    errorDetails,
-    executeOrchestratorRequest,
-    resetOrchestratorSession,
-  } = useOrchestratorStream();
+  const router = useRouter();
+  const { user, token, signOut } = useAuth();
 
   const [prompt, setPrompt] = useState<string>("");
   const [mode, setMode] = useState<"SUGGESTER" | "EVALUATOR" | "OPTIMIZER">("SUGGESTER");
   const [motivation, setMotivation] = useState<"REVENUE" | "EDUCATION">("EDUCATION");
-  const [isClarificationOpen, setIsClarificationOpen] = useState<boolean>(false);
+  const [userPersona, setUserPersona] = useState<string>("Solo Founder");
   const [uploadedFile, setUploadedFile] = useState<{ name: string; content: string } | null>(null);
 
-  // BYOK (Bring Your Own Key) States
+  // Projects list state
+  const [projects, setProjects] = useState<any[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [errorText, setErrorText] = useState("");
+
+  // BYOK States
   const [userApiKey, setUserApiKey] = useState<string>("");
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [hasStoredKey, setHasStoredKey] = useState<boolean>(false);
 
-  // Mount logic: load credentials from localStorage
-  React.useEffect(() => {
+  // Load BYOK key from localStorage
+  useEffect(() => {
     if (typeof window !== "undefined") {
       const stored = localStorage.getItem("buildsense_user_api_key") || "";
       setUserApiKey(stored);
@@ -51,47 +35,73 @@ export default function Home() {
     }
   }, []);
 
-  // Auto-open HITL clarification modal if backend status signals AWAITING_CLARIFICATION
-  React.useEffect(() => {
-    if (activeSessionState?.status === "AWAITING_CLARIFICATION") {
-      setIsClarificationOpen(true);
-    } else {
-      setIsClarificationOpen(false);
-    }
-  }, [activeSessionState]);
+  // Fetch projects list on mount and when token is ready
+  useEffect(() => {
+    if (!token) return;
+    const fetchProjects = async () => {
+      setLoadingProjects(true);
+      try {
+        const res = await fetch("http://localhost:9000/api/v1/projects", {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setProjects(data || []);
+        }
+      } catch (err) {
+        console.error("Error fetching projects:", err);
+      } finally {
+        setLoadingProjects(false);
+      }
+    };
+    fetchProjects();
+  }, [token]);
 
-  /**
-   * Dispatches initial pipeline start command to FastAPI.
-   */
-  const handleStartPipeline = (e: React.FormEvent) => {
+  const handleStartPipeline = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || isOrchestratorLoopActive) return;
+    if (!prompt.trim() || creatingProject || !token) return;
 
-    executeOrchestratorRequest({
-      prompt,
-      mode,
-      motivation,
-      file_name: uploadedFile?.name,
-      file_content: uploadedFile?.content,
-    });
+    setCreatingProject(true);
+    setErrorText("");
+
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      };
+      if (userApiKey) {
+        headers["X-User-Anthropic-Key"] = userApiKey;
+      }
+
+      // Start orchestration (which returns project_id as session_id)
+      const res = await fetch("http://localhost:9000/api/v1/orchestrate", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          prompt,
+          mode,
+          motivation,
+          user_persona: userPersona,
+          file_name: uploadedFile?.name,
+          file_content: uploadedFile?.content
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Execution error: ${res.statusText}`);
+      }
+
+      const state = await res.json();
+      const newProjectId = state.session_id;
+
+      // Redirect immediately to the project's workspace
+      router.push(`/projects/${newProjectId}`);
+    } catch (err: any) {
+      setErrorText(err.message || "Failed to start orchestration.");
+      setCreatingProject(false);
+    }
   };
 
-  /**
-   * Posts answers back to resume the pipeline loop.
-   */
-  const handleClarificationSubmit = (answers: Record<string, string>) => {
-    if (!activeSessionState) return;
-    setIsClarificationOpen(false);
-
-    executeOrchestratorRequest({
-      session_id: activeSessionState.session_id,
-      clarification_responses: answers,
-    });
-  };
-
-  /**
-   * Reads target document content via browser FileReader API.
-   */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -107,13 +117,23 @@ export default function Home() {
     reader.readAsText(file);
   };
 
-  const clearUploadedFile = () => {
-    setUploadedFile(null);
+  const handleDeleteProject = async (projectId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this project workspace?") || !token) return;
+
+    try {
+      const res = await fetch(`http://localhost:9000/api/v1/projects/${projectId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setProjects(projects.filter(p => p.id !== projectId));
+      }
+    } catch (err) {
+      console.error("Error deleting project:", err);
+    }
   };
 
-  /**
-   * Saves credentials config changes back to localStorage cache bounds.
-   */
   const handleSaveApiKey = () => {
     if (typeof window !== "undefined") {
       localStorage.setItem("buildsense_user_api_key", userApiKey);
@@ -122,9 +142,6 @@ export default function Home() {
     setIsSettingsOpen(false);
   };
 
-  /**
-   * Clears credentials config from cache bounds.
-   */
   const handleClearApiKey = () => {
     if (typeof window !== "undefined") {
       localStorage.removeItem("buildsense_user_api_key");
@@ -134,7 +151,6 @@ export default function Home() {
     setIsSettingsOpen(false);
   };
 
-  // Dynamic scenario guidance text mapping
   const scenarioGuidance = {
     "SUGGESTER_REVENUE": "Focusing on market gaps, B2B SaaS opportunities, high margins, and defensibility.",
     "SUGGESTER_EDUCATION": "Focusing on hands-on skill building, portfolio value, and zero-cost free-tier tech stacks.",
@@ -144,37 +160,30 @@ export default function Home() {
     "OPTIMIZER_EDUCATION": "Focusing on personal productivity, custom automation scripts, API integrations, and self-hosted tools.",
   };
 
-  // Clickable example prompt pills list mapping
   const examplePrompts = {
     "SUGGESTER_REVENUE": [
       "Suggest 3 B2B micro-SaaS opportunities in supply chain logistics with high profit margins.",
-      "Suggest 3 underserved software niches for tracking real-time regional commodity prices.",
-      "Suggest 3 AI-driven financial tools aimed at making stock analysis accessible to retail investors."
+      "Suggest 3 underserved software niches for tracking real-time regional commodity prices."
     ],
     "SUGGESTER_EDUCATION": [
       "Suggest 3 weekend projects to master multi-agent orchestration loops in Python.",
-      "Suggest 3 zero-cost free-tier project ideas to learn vector databases and RAG architectures.",
-      "Suggest 3 fun IoT or local automation ideas that utilize lightweight open-source LLMs."
+      "Suggest 3 zero-cost free-tier project ideas to learn vector databases and RAG."
     ],
     "EVALUATOR_REVENUE": [
-      "Audit my idea: A web application that explains complex stock filings in plain English for everyday investors.",
-      "Audit my idea: An AI platform tracking real-time industrial steel prices across major regional hubs.",
-      "Audit my idea: An automated micro-SaaS that generates hyper-local SEO campaigns for dental practices."
+      "Audit my idea: A web application that explains complex stock filings in plain English.",
+      "Audit my idea: An AI platform tracking real-time industrial steel prices."
     ],
     "EVALUATOR_EDUCATION": [
-      "Audit my project: A personal workout and macro tracker running entirely on local open-source models.",
-      "Audit my project: A browser extension that summarizes GitHub pull requests using Gemini 3.5 Flash.",
-      "Audit my project: A retro 8-bit game engine built with TypeScript to master the HTML5 Canvas API."
+      "Audit my project: A personal workout and macro tracker running on local open-source models.",
+      "Audit my project: A browser extension that summarizes GitHub pull requests using Claude."
     ],
     "OPTIMIZER_REVENUE": [
       "Our team manually transcribes 50+ PDF vendor invoices into Excel weekly. Show us how to automate this.",
-      "We manually triage incoming customer support emails into Jira tickets. Draft an AI routing roadmap.",
-      "We copy-paste daily market prices from multiple websites into a master spreadsheet. Design an automated pipeline."
+      "We manually triage incoming customer support emails into Jira tickets. Draft an AI routing roadmap."
     ],
     "OPTIMIZER_EDUCATION": [
-      "I manually copy workout logs from my notes app into a spreadsheet. How can I build a quick script to automate this?",
-      "How can I set up an automated local script to summarize daily RSS news feeds directly into my terminal?",
-      "Draft a simple workflow to automatically categorize and rename PDF downloads in my local folder."
+      "I manually copy workout logs from my notes app into a spreadsheet. How can I automate this?",
+      "How can I set up an automated local script to summarize daily RSS news feeds?"
     ]
   };
 
@@ -185,11 +194,11 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#03060d] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-8 font-sans selection:bg-amber-500/30 selection:text-amber-200 relative overflow-hidden">
       
-      {/* Premium ambient radial glows */}
+      {/* Ambient background glows */}
       <div className="absolute top-[-10%] left-[-15%] w-[60%] h-[60%] rounded-full bg-gradient-to-br from-amber-500/5 to-orange-500/0 blur-[130px] pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-15%] w-[60%] h-[60%] rounded-full bg-gradient-to-tr from-emerald-500/5 to-teal-500/0 blur-[130px] pointer-events-none" />
 
-      {/* Premium Dashboard Header Banner */}
+      {/* Dashboard Header */}
       <header className="w-full max-w-6xl text-center md:text-left flex flex-col md:flex-row items-center justify-between gap-6 border-b border-slate-900/60 pb-6 mt-4 relative z-10">
         <div>
           <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500">
@@ -200,17 +209,21 @@ export default function Home() {
           </p>
         </div>
         
-        {/* Navigation configuration settings actions */}
         <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            onClick={resetOrchestratorSession}
-            className="border-slate-800/80 bg-slate-950/20 hover:bg-slate-900/40 hover:text-slate-100 text-slate-400 rounded-lg text-xs px-4 py-2.5 transition-all"
-          >
-            Clear Screen
-          </Button>
+          {user && (
+            <div className="flex items-center gap-2 bg-[#0b0f19]/45 border border-slate-900/60 rounded-lg px-3 py-1.5 text-slate-300 font-mono text-xs">
+              <span className="max-w-[140px] truncate" title={user.email}>👤 {user.email}</span>
+              <button 
+                type="button" 
+                onClick={signOut}
+                className="text-[9px] bg-rose-950/20 text-rose-400 border border-rose-950/40 rounded px-1.5 py-0.5 hover:bg-rose-900/30 hover:text-rose-300 font-bold ml-1 transition-all"
+              >
+                Sign Out
+              </button>
+            </div>
+          )}
 
-          {/* BYOK Settings Modal Trigger Button */}
+          {/* BYOK Settings Trigger */}
           <Button
             variant="outline"
             onClick={() => setIsSettingsOpen(true)}
@@ -227,29 +240,43 @@ export default function Home() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
             </span>
-            <span className="text-[11px] text-slate-300 font-medium tracking-wide">Core Engine Online</span>
+            <span className="text-[11px] text-slate-300 font-medium tracking-wide">Multi-Tenant Core Online</span>
           </div>
         </div>
       </header>
 
-      {/* Primary Dashboard Content Grid */}
+      {/* Dashboard Main Grid */}
       <section className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10">
         
-        {/* Left Side: Setup Panel */}
+        {/* Left: Configure new project Form */}
         <div className="lg:col-span-5 flex flex-col gap-6">
           <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl backdrop-blur-md p-6 flex flex-col gap-5">
             <div>
               <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                🚀 Pipeline Configuration
+                🚀 Create Business Analysis
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Establish target mode, motivation boundaries, and prompt metadata.
+                Configure your project boundaries and request LangGraph valuation.
               </p>
             </div>
 
-            <form onSubmit={handleStartPipeline} className="space-y-6">
-              
-              {/* Mode Toggles */}
+            <form onSubmit={handleStartPipeline} className="space-y-5">
+              {/* Persona Select */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">User Persona Focus</label>
+                <select
+                  value={userPersona}
+                  onChange={(e) => setUserPersona(e.target.value)}
+                  className="w-full bg-[#03060d]/60 border border-slate-800 text-slate-200 text-xs rounded-lg p-2.5 focus:outline-none focus:ring-1 focus:ring-amber-500/40"
+                >
+                  <option value="Solo Founder">🚀 Solo Founder (Speed & Tech Moats)</option>
+                  <option value="Small Business Operator">🌾 Small Business Operator (Direct ROI, Jargon-free)</option>
+                  <option value="Enterprise PM">🏢 Enterprise PM (Compliance & Scale)</option>
+                  <option value="Student">🎓 Student (Technical Learning Path)</option>
+                </select>
+              </div>
+
+              {/* Mode Select */}
               <div className="space-y-2">
                 <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Mode</label>
                 <div className="grid grid-cols-3 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
@@ -270,9 +297,9 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Motivation Toggles */}
+              {/* Motivation Select */}
               <div className="space-y-2">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Motivation</label>
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Motivation Focus</label>
                 <div className="grid grid-cols-2 gap-1.5 bg-[#03060d]/30 p-1.5 rounded-lg border border-slate-950">
                   {(["REVENUE", "EDUCATION"] as const).map((mot) => (
                     <button
@@ -291,217 +318,189 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Dynamic Scenario Guidance Banner */}
               <div className="bg-[#03060d]/40 border border-slate-900/40 rounded-lg p-3 text-[11px] leading-relaxed text-slate-300">
                 <span className="font-semibold text-amber-400">Target Focus:</span> {currentGuidance}
               </div>
 
-              {/* Document Upload Area (with Optimizer emphasis) */}
+              {/* SOP Upload Area */}
               <div className="space-y-2">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Document Attachment</label>
-                <div 
-                  className={`border-2 border-dashed rounded-lg p-4 transition-all duration-300 text-center relative ${
-                    mode === "OPTIMIZER"
-                      ? "border-amber-500/45 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.05)] animate-pulse"
-                      : "border-slate-800/40 bg-slate-950/20 hover:border-slate-800"
-                  }`}
-                >
-                  <input
-                    type="file"
-                    accept=".pdf,.txt,.csv,.md"
-                    onChange={handleFileUpload}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Workflow Attachment</label>
+                <div className={`border-2 border-dashed rounded-lg p-3 text-center relative ${
+                  mode === "OPTIMIZER" ? "border-amber-500/40 bg-amber-500/5 animate-pulse" : "border-slate-800 bg-slate-950/20"
+                }`}>
+                  <input type="file" accept=".txt,.pdf,.csv,.md" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                   {!uploadedFile ? (
                     <div>
-                      <p className="text-xs font-semibold text-slate-300">
-                        {mode === "OPTIMIZER" ? "★ RECOMMENDED: Drop SOP / Workflow File" : "Upload File (PDF, TXT, CSV, MD)"}
-                      </p>
-                      <p className="text-[10px] text-slate-500 mt-1">Click or drag file to attach context</p>
+                      <p className="text-xs font-semibold text-slate-300">{mode === "OPTIMIZER" ? "★ Drop SOP Process File Here" : "Attach Context File"}</p>
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between bg-[#03060d]/60 px-3 py-1.5 rounded border border-slate-900 text-xs">
-                      <span className="text-slate-300 truncate max-w-[200px] font-mono">📎 {uploadedFile.name}</span>
-                      <button
-                        type="button"
-                        onClick={clearUploadedFile}
-                        className="text-rose-400 hover:text-rose-300 font-bold ml-2 relative z-10"
-                      >
-                        ✕
-                      </button>
+                    <div className="flex items-center justify-between bg-slate-900 px-3 py-1.5 rounded text-xs">
+                      <span className="truncate max-w-[150px]">📎 {uploadedFile.name}</span>
+                      <button type="button" onClick={() => setUploadedFile(null)} className="text-rose-400">✕</button>
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* User Prompt Text Area & Clickable Example Pills */}
-              <div className="space-y-2.5">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Prompt</label>
-                  <span className="text-[10px] text-slate-500 font-mono">Mode helper</span>
-                </div>
-                
-                {/* Example pills */}
-                <div className="flex flex-col gap-1.5 max-h-[120px] overflow-y-auto pr-1">
-                  {currentPills.map((pillText, idx) => (
+              {/* Prompt Text Area */}
+              <div className="space-y-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Concept Description</label>
+                <div className="flex flex-wrap gap-1 max-h-[80px] overflow-y-auto pr-1">
+                  {currentPills.slice(0, 2).map((pillText, idx) => (
                     <button
                       key={idx}
                       type="button"
                       onClick={() => setPrompt(pillText)}
-                      className="text-left text-[10px] text-slate-400 bg-[#03060d]/50 hover:bg-slate-900 hover:text-slate-200 border border-slate-950 p-2 rounded-md transition-all truncate"
+                      className="text-left text-[10px] text-slate-400 bg-slate-950/50 hover:bg-slate-900 border border-slate-900/40 p-1.5 rounded transition-all truncate max-w-full"
                       title={pillText}
                     >
-                      💡 &ldquo;{pillText}&rdquo;
+                      💡 {pillText}
                     </button>
                   ))}
                 </div>
 
                 <textarea
-                  rows={4}
-                  placeholder="Enter your SaaS product idea, business challenge, or workflow details..."
+                  rows={3}
+                  placeholder="Describe your SaaS product idea or manual workflow..."
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  className="w-full bg-[#03060d]/30 border border-slate-900/30 text-slate-200 text-sm placeholder:text-slate-800 rounded-lg p-3.5 focus:outline-none focus:ring-1 focus:ring-amber-500/30 focus:border-transparent transition-all leading-relaxed resize-none shadow-inner"
+                  className="w-full bg-[#03060d]/30 border border-slate-800 text-slate-200 text-xs rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-amber-500/40 resize-none shadow-inner"
                   required
                 />
-                <p className="text-[10px] text-slate-600 mt-1 leading-normal">
-                  Note: Prompts containing less than 15 characters will trigger a clarification request.
-                </p>
               </div>
 
-              {/* Submit Action Trigger Button */}
               <Button
                 type="submit"
-                disabled={!prompt.trim() || isOrchestratorLoopActive}
-                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs"
+                disabled={!prompt.trim() || creatingProject}
+                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3 rounded-lg shadow-lg transition-all tracking-wide text-xs"
               >
-                {isOrchestratorLoopActive ? "Running Pipeline..." : "Start Orchestration"}
+                {creatingProject ? "Scaffolding Workspace..." : "Create & Start Analysis"}
               </Button>
+
+              {errorText && (
+                <p className="text-rose-500 text-[10px] bg-rose-950/10 border border-rose-900/35 p-2 rounded text-center">{errorText}</p>
+              )}
             </form>
           </div>
         </div>
 
-        {/* Right Side: Log Console / Output Dossier View */}
+        {/* Right: Active Projects Listing */}
         <div className="lg:col-span-7 flex flex-col gap-6">
-          {/* Real-time Thought Logs Terminal Console */}
-          <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl overflow-hidden flex flex-col h-[280px] backdrop-blur-md">
-            <div className="border-b border-slate-900/40 py-3.5 flex flex-row items-center justify-between px-5">
-              <div>
-                <h2 className="text-[10px] uppercase font-extrabold tracking-widest text-slate-400 flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                  Agent Thought Console
-                </h2>
+          <div className="bg-[#0b0f19]/25 shadow-2xl rounded-xl p-6 backdrop-blur-md flex flex-col gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                📁 Your Active Workspaces
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Select any existing project to view reports, graphs, and chat history.
+              </p>
+            </div>
+
+            {loadingProjects ? (
+              <div className="flex flex-col items-center justify-center p-12 gap-2 text-slate-400">
+                <div className="w-5 h-5 rounded-full border border-t-amber-500 animate-spin" />
+                <span className="text-[10px]">Loading projects...</span>
               </div>
-              {isOrchestratorLoopActive && (
-                <span className="text-[9px] uppercase tracking-wider text-amber-500 font-extrabold animate-pulse">Stream Active</span>
-              )}
-            </div>
-            <div className="p-0 flex-1 font-mono text-xs text-slate-300">
-              <ScrollArea className="h-full p-5">
-                <div className="space-y-2.5">
-                  {orchestratorLogs.length === 0 ? (
-                    <p className="text-slate-700 italic">No console logs streamed yet. Start a session...</p>
-                  ) : (
-                    orchestratorLogs.map((logLine, index) => {
-                      let colorClass = "text-slate-300";
-                      if (logLine.includes("[ERROR]")) colorClass = "text-rose-500 font-bold";
-                      else if (logLine.includes("[COMPLETED]")) colorClass = "text-emerald-400 font-bold";
-                      else if (logLine.includes("[HITL]")) colorClass = "text-amber-400";
-                      else if (logLine.includes("[CLIENT]")) colorClass = "text-sky-400";
-                      
-                      return (
-                        <div key={index} className={`whitespace-pre-wrap leading-relaxed ${colorClass}`}>
-                          {logLine}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </ScrollArea>
-            </div>
+            ) : projects.length === 0 ? (
+              <div className="text-center p-16 border border-dashed border-slate-800/60 rounded-xl">
+                <p className="text-xs text-slate-500 italic">No project workspaces created yet.</p>
+                <p className="text-[10px] text-slate-600 mt-1 leading-normal max-w-sm mx-auto">Fill out the configuration form on the left to start your first multi-tenant business analysis run.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-[480px] overflow-y-auto pr-1">
+                {projects.map((proj) => (
+                  <div
+                    key={proj.id}
+                    onClick={() => router.push(`/projects/${proj.id}`)}
+                    className="group bg-[#03060d]/50 hover:bg-slate-900/30 border border-slate-900 hover:border-slate-800 rounded-xl p-4 transition-all duration-300 cursor-pointer flex flex-col justify-between gap-3 relative overflow-hidden"
+                  >
+                    <div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[8px] bg-amber-500/10 text-amber-400 font-extrabold px-1.5 py-0.5 rounded tracking-wide uppercase">
+                          {proj.mode}
+                        </span>
+                        <span className="text-[8px] bg-slate-800/80 text-slate-300 font-extrabold px-1.5 py-0.5 rounded tracking-wide uppercase">
+                          {proj.user_persona}
+                        </span>
+                      </div>
+                      <h3 className="text-xs font-bold text-slate-200 mt-2 truncate group-hover:text-amber-400 transition-colors">
+                        {proj.title}
+                      </h3>
+                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
+                        {proj.description || "No project description."}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-slate-950 pt-2.5 mt-1 text-[9px] text-slate-400">
+                      <span className="hover:text-amber-400 transition-all font-semibold">Open Workspace →</span>
+                      <button
+                        onClick={(e) => handleDeleteProject(proj.id, e)}
+                        className="text-slate-600 hover:text-rose-400 transition-all p-1"
+                        title="Delete project"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-
-          {/* Final Generated Output View */}
-          {activeSessionState && activeSessionState.status === "COMPLETED" && (
-            <ReportView sessionState={activeSessionState} />
-          )}
-
-          {/* Errors Indicator Banner */}
-          {errorDetails && (
-            <div className="bg-rose-950/20 border border-rose-900/60 text-rose-400 text-xs p-4 rounded-lg flex items-start gap-2 shadow-lg">
-              <span className="font-bold text-rose-500">Error:</span> {errorDetails}
-            </div>
-          )}
         </div>
       </section>
 
-      {/* Human-in-the-Loop Clarification Modal */}
-      {activeSessionState && (
-        <ClarificationModal
-          isOpen={isClarificationOpen}
-          questions={activeSessionState.clarification_questions}
-          onSubmit={handleClarificationSubmit}
-          onClose={() => setIsClarificationOpen(false)}
-        />
+      {/* BYOK Settings Dialog Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 text-slate-100 p-6 rounded-xl shadow-2xl flex flex-col gap-4">
+            <div>
+              <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">🔑 API Credentials Settings</h3>
+              <p className="text-slate-400 text-xs mt-1">Provide a custom Anthropic key to pay for API usage directly and bypass global daily server thresholds.</p>
+            </div>
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Anthropic API Key</label>
+                <input
+                  type="password"
+                  placeholder="sk-ant-..."
+                  value={userApiKey}
+                  onChange={(e) => setUserApiKey(e.target.value)}
+                  className="w-full bg-[#03060d]/60 border border-slate-800 text-slate-200 text-sm placeholder:text-slate-700 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-amber-500/40 transition-all font-mono"
+                />
+                <p className="text-[10px] text-slate-500">Stored locally in your browser's localStorage. Never sent to database tables or logged.</p>
+              </div>
+              <div className="flex items-center justify-between text-xs pt-1">
+                <span className="text-slate-400 font-medium">Status:</span>
+                {hasStoredKey ? (
+                  <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full px-2.5 py-0.5 font-bold tracking-wide">Custom Key Configured</span>
+                ) : (
+                  <span className="bg-slate-800/80 text-slate-400 border border-slate-700/30 rounded-full px-2.5 py-0.5 font-bold tracking-wide">Server Default Fallback</span>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={handleClearApiKey}
+                className="border border-slate-800 bg-slate-950/20 text-slate-400 hover:bg-rose-950/20 hover:text-rose-400 rounded-lg text-xs px-3 py-2 transition-all"
+              >
+                Remove Key
+              </button>
+              <button
+                onClick={handleSaveApiKey}
+                className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs px-4 py-2 transition-all"
+              >
+                Save Settings
+              </button>
+              <button
+                onClick={() => setIsSettingsOpen(false)}
+                className="text-slate-400 hover:text-slate-200 text-xs px-2 py-2"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
-
-      {/* BYOK Settings Modal Panel Dialog */}
-      <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
-        <DialogContent className="sm:max-w-[450px] bg-slate-900 border border-slate-800 text-slate-100 shadow-2xl backdrop-blur-md rounded-xl">
-          <DialogHeader>
-            <DialogTitle className="text-lg font-bold text-slate-100 flex items-center gap-2">
-              🔑 API Credentials Settings
-            </DialogTitle>
-            <DialogDescription className="text-slate-400 text-xs">
-              Provide a custom Anthropic key to pay for API usage directly and bypass global daily server thresholds.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">
-                Anthropic API Key
-              </label>
-              <input
-                type="password"
-                placeholder="sk-ant-..."
-                value={userApiKey}
-                onChange={(e) => setUserApiKey(e.target.value)}
-                className="w-full bg-[#03060d]/60 border border-slate-800 text-slate-200 text-sm placeholder:text-slate-700 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-amber-500/40 transition-all font-mono"
-              />
-              <p className="text-[10px] text-slate-500">
-                Stored locally in your browser&apos;s localStorage. Never sent to database tables or logged.
-              </p>
-            </div>
-            <div className="flex items-center justify-between text-xs pt-2">
-              <span className="text-slate-400 font-medium">Status:</span>
-              {hasStoredKey ? (
-                <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full px-2.5 py-0.5 font-bold tracking-wide">
-                  Custom Key Configured
-                </span>
-              ) : (
-                <span className="bg-slate-800/80 text-slate-400 border border-slate-700/30 rounded-full px-2.5 py-0.5 font-bold tracking-wide">
-                  Server Default Fallback
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex justify-end gap-3 pt-2">
-            <Button
-              variant="outline"
-              onClick={handleClearApiKey}
-              className="border-slate-800 bg-slate-950/20 text-slate-400 hover:bg-rose-950/20 hover:text-rose-400 rounded-lg text-xs"
-            >
-              Remove Key
-            </Button>
-            <Button
-              onClick={handleSaveApiKey}
-              className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs px-4"
-            >
-              Save Settings
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </main>
   );
 }

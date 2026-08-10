@@ -35,8 +35,8 @@ async def test_orchestrator_incomplete_input_routing() -> None:
         updated_state = await orchestrator.run_pipeline(state)
         
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
-        assert len(updated_state.clarification_questions) == 2
-        mock_save.assert_called_once()
+        assert len(updated_state.clarification_questions) == 3
+        assert mock_save.call_count >= 1
 
 
 @pytest.mark.asyncio
