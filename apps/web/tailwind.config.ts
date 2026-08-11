@@ -8,6 +8,16 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: [
+          "var(--font-noto-sans)",
+          "var(--font-noto-devanagari)",
+          "var(--font-noto-kannada)",
+          "var(--font-noto-tamil)",
+          "var(--font-noto-malayalam)",
+          "sans-serif",
+        ],
+      },
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",

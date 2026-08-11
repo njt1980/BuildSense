@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, TypedDict, cast
 from app.core.config import settings
 from app.db.postgres import postgres_client
 from app.db.redis import redis_client
-from app.models.state import SessionState, SessionMode, SessionStatus, Message
+from app.models.state import SessionState, SessionMode, SessionStatus, Message, ProcessComponents
 from app.mcp.tools import web_search_mcp, calculator_mcp, document_parser_mcp, market_signal_mcp
 
 # LangGraph imports
@@ -53,6 +53,11 @@ class AgentState(TypedDict):
     company_name: Optional[str]
     company_industry: Optional[str]
     company_core_tools: Optional[str]
+    user_constraints: List[str]
+    lang: str
+    process_components: Dict[str, Optional[str]]
+    playback_confirmed: bool
+    clarification_turns: int
 
 
 def classify_vertical(prompt: str) -> str:
@@ -255,7 +260,12 @@ class Orchestrator:
                 evidence_ledger=state.get("evidence_ledger", []),
                 company_name=state.get("company_name"),
                 company_industry=state.get("company_industry"),
-                company_core_tools=state.get("company_core_tools")
+                company_core_tools=state.get("company_core_tools"),
+                user_constraints=state.get("user_constraints", []),
+                lang=state.get("lang", "en"),
+                process_components=ProcessComponents(**state.get("process_components", {})) if state.get("process_components") else ProcessComponents(),
+                playback_confirmed=bool(state.get("playback_confirmed", False)),
+                clarification_turns=int(state.get("clarification_turns", 0))
             )
             await self.db.save_session_state(state_obj)
         except Exception as e:
@@ -400,7 +410,8 @@ class Orchestrator:
     async def _node_route_intent(self, state: AgentState) -> Dict[str, Any]:
         """
         Node: Classifies user vertical and operational mode dynamically, checks completeness,
-        and saves/syncs the session variables.
+        accumulates process components (Trigger, Actor, Activity, System, Friction) for OPTIMIZER/EVALUATOR,
+        manages the Playback Confirmation Gate, and updates session state variables.
         """
         user_prompt = ""
         # Find the latest user message content
@@ -412,103 +423,20 @@ class Orchestrator:
 
         # Dynamic/local defaults
         vertical = state.get("business_vertical") or classify_vertical(user_prompt)
-        is_complete = len(user_prompt.strip()) >= 15
+        lang_code = state.get("lang", "en")
 
         # Deterministic keyword fallback for mode classification
-        lower_prompt = user_prompt.lower()
-        if any(w in lower_prompt for w in ["suggest", "recommend", "brainstorm", "idea", "concept", "opportunity", "opportunities", "niche", "niches"]):
-            mode_val = "SUGGESTER"
-        elif any(w in lower_prompt for w in ["audit", "evaluate", "viability", "critique"]):
-            mode_val = "EVALUATOR"
+        existing_mode = state.get("mode").value if hasattr(state.get("mode"), "value") else state.get("mode")
+        if existing_mode:
+            mode_val = existing_mode
         else:
-            mode_val = "OPTIMIZER"
-
-        ontology_questions = {
-            "LOGISTICS": [
-                "What transportation modes are utilized (e.g., trucking, ocean, air freight)?",
-                "How are routes optimized and dispatch schedules planned?",
-                "What warehouse management system (WMS) is used to track inventory?"
-            ],
-            "MANUFACTURING": [
-                "What is the production process layout (batch, continuous, or job shop)?",
-                "How is raw material quality validated and tracked?",
-                "What equipment maintenance schedules are in place (preventative vs. reactive)?"
-            ],
-            "WHOLESALE": [
-                "How are suppliers selected and purchase orders authorized?",
-                "What credit terms are extended to retail buyers?",
-                "How is inventory shrinkage (loss or theft) monitored?"
-            ],
-            "GENERIC": [
-                "What is the primary value proposition of the business?",
-                "What customer segments are targeted?",
-                "What are the primary cost drivers of the operation?"
-            ]
-        }
-        questions = ontology_questions.get(vertical, ontology_questions["GENERIC"])
-
-        api_key = self.user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if api_key and HAS_ANTHROPIC:
-            try:
-                client = AsyncAnthropic(api_key=api_key)
-                prompt = (
-                    "You are an intent router, mode classifier, and completeness classifier.\n"
-                    "Your job is to:\n"
-                    "1. Classify the user's business description into one of the following verticals: LOGISTICS, MANUFACTURING, WHOLESALE, or GENERIC.\n"
-                    f"Note: The user's pre-selected vertical is {state.get('business_vertical') or 'not specified'}. Prefer this vertical unless the user's description clearly points to another vertical.\n"
-                    "2. Classify the operational mode of the user's request into one of the following:\n"
-                    "   - SUGGESTER: Choose this if the user is asking for suggestions, new business ideas, recommendations, or brainstorming new concepts (e.g. 'Suggest ideas for...', 'What are some opportunities in...').\n"
-                    "   - EVALUATOR: Choose this if the user has an existing business idea, concept, or project and wants an audit, evaluation, viability check, or critique of it (e.g. 'Evaluate my idea of...', 'Audit my project...').\n"
-                    "   - OPTIMIZER: Choose this if the user describes an existing manual workflow, process, operational bottleneck, or time-wasting task and wants to automate or optimize it (e.g. 'We manually transcribe invoices...', 'Our route planning takes too long...', 'optimize this workflow...').\n"
-                    "3. Evaluate if the description contains enough specific operational details to build an optimization roadmap. "
-                    "If the prompt has fewer than 15 characters, or lacks concrete operational details, classify it as incomplete (is_complete = false).\n\n"
-                    "You must output ONLY a valid JSON object matching this schema:\n"
-                    "{\n"
-                    '  "vertical": "LOGISTICS" | "MANUFACTURING" | "WHOLESALE" | "GENERIC",\n'
-                    '  "mode": "SUGGESTER" | "EVALUATOR" | "OPTIMIZER",\n'
-                    '  "is_complete": true | false,\n'
-                    '  "clarification_questions": ["question 1", "question 2", ...]\n'
-                    "}\n\n"
-                    f"User Prompt: {user_prompt}"
-                )
-                response = await client.messages.create(
-                    model="claude-3-5-haiku-20241022",
-                    max_tokens=1000,
-                    temperature=0.0,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                res_text = response.content[0].text.strip()
-                result = json.loads(res_text)
-                
-                vertical = result.get("vertical", vertical)
-                existing_mode = state.get("mode").value if hasattr(state.get("mode"), "value") else state.get("mode")
-                mode_val = result.get("mode") or existing_mode or mode_val
-                is_complete = result.get("is_complete", is_complete)
-                if not is_complete:
-                    questions = result.get("clarification_questions", questions)
-                else:
-                    questions = []
-
-                # Accumulate cost
-                input_tokens = response.usage.input_tokens
-                output_tokens = response.usage.output_tokens
-                step_cost = calculate_cost("claude-3-5-haiku-20241022", input_tokens, output_tokens)
-                
-                state_metadata = dict(state.get("metadata", {}))
-                if "cache_metrics" not in state_metadata:
-                    state_metadata["cache_metrics"] = []
-                state_metadata["cache_metrics"].append({
-                    "node": "route_intent",
-                    "model": "claude-3-5-haiku-20241022",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cost_usd": step_cost
-                })
-                state["metadata"] = state_metadata
-                state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
-
-            except Exception as e:
-                print(f"Routing LLM error ({e}). Using deterministic fallback.")
+            lower_prompt = user_prompt.lower()
+            if any(w in lower_prompt for w in ["suggest", "recommend", "brainstorm", "idea", "concept", "opportunity", "opportunities", "niche", "niches"]):
+                mode_val = "SUGGESTER"
+            elif any(w in lower_prompt for w in ["audit", "evaluate", "viability", "critique"]):
+                mode_val = "EVALUATOR"
+            else:
+                mode_val = "OPTIMIZER"
 
         # Determine budget and steps based on final classified mode
         max_budget = 0.15 if mode_val == "SUGGESTER" else 1.25
@@ -518,22 +446,414 @@ class Orchestrator:
         title = user_prompt[:30] + "..." if user_prompt else "New Discovery Run"
         await self.db.update_project_mode_and_title(state["session_id"], mode_val, title)
 
-        if not is_complete:
-            updates = {
-                "status": SessionStatus.AWAITING_CLARIFICATION,
-                "clarification_questions": questions,
-                "business_vertical": vertical,
-                "mode": SessionMode(mode_val),
-                "max_budget_usd": max_budget,
-                "max_steps": max_steps,
-                "metadata": state.get("metadata", {}),
-                "budget_spent_usd": state.get("budget_spent_usd", 0.0)
-            }
-            await self._save_intermediate_state({**state, **updates})
-            return updates
-
-        # Document ingestion check
+        api_key = self.user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
         updated_messages = list(state["messages"])
+
+        # ----------------------------------------------------
+        # SUGGESTER mode: Keep original completeness checks
+        # ----------------------------------------------------
+        if mode_val == "SUGGESTER":
+            is_complete = len(user_prompt.strip()) >= 50 or bool(state.get("file_content"))
+            ontology_questions = [
+                "Who performs the route planning, and what transportation modes trigger dispatch?",
+                "What software/systems (e.g., WMS, ERP) are used, and what is the primary operational friction?",
+                "Which specific activities in the delivery workflow are manual or slow?"
+            ] if vertical == "LOGISTICS" else [
+                "What event triggers this workflow, and who is the main actor performing it?",
+                "What systems or tools are used, and what specific activities are executed?",
+                "What is the primary friction, bottleneck, or manual pain point in this process?"
+            ]
+
+            if api_key and HAS_ANTHROPIC:
+                try:
+                    client = AsyncAnthropic(api_key=api_key)
+                    prompt = (
+                        "You are a process mapper and completeness classifier.\n"
+                        "Your job is to:\n"
+                        "1. Classify the user's business description into one of the following verticals: LOGISTICS, MANUFACTURING, WHOLESALE, or GENERIC.\n"
+                        "2. Evaluate if the description contains enough specific details.\n"
+                        "A description is ONLY complete if it provides concrete details.\n"
+                        "You must output ONLY a valid JSON object matching this schema:\n"
+                        "{\n"
+                        '  "vertical": "LOGISTICS" | "MANUFACTURING" | "WHOLESALE" | "GENERIC",\n'
+                        '  "is_complete": true | false,\n'
+                        '  "clarification_questions": ["question 1", "question 2", ...]\n'
+                        "}\n\n"
+                        f"User Prompt: {user_prompt}"
+                    )
+                    response = await client.messages.create(
+                        model="claude-3-5-haiku-20241022",
+                        max_tokens=1000,
+                        temperature=0.0,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    res_text = response.content[0].text.strip()
+                    result = json.loads(res_text)
+                    vertical = result.get("vertical", vertical)
+                    is_complete = result.get("is_complete", is_complete)
+                    if not is_complete:
+                        ontology_questions = result.get("clarification_questions", ontology_questions)
+                    
+                    # Cost Tracking
+                    input_tokens = response.usage.input_tokens
+                    output_tokens = response.usage.output_tokens
+                    step_cost = calculate_cost("claude-3-5-haiku-20241022", input_tokens, output_tokens)
+                    state_metadata = dict(state.get("metadata", {}))
+                    if "cache_metrics" not in state_metadata:
+                        state_metadata["cache_metrics"] = []
+                    state_metadata["cache_metrics"].append({
+                        "node": "route_intent",
+                        "model": "claude-3-5-haiku-20241022",
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cost_usd": step_cost
+                    })
+                    state["metadata"] = state_metadata
+                    state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
+                except Exception as e:
+                    print(f"Suggester classification error: {e}")
+
+            if not is_complete:
+                updates = {
+                    "status": SessionStatus.AWAITING_CLARIFICATION,
+                    "clarification_questions": ontology_questions,
+                    "business_vertical": vertical,
+                    "mode": SessionMode(mode_val),
+                    "max_budget_usd": max_budget,
+                    "max_steps": max_steps,
+                    "metadata": state.get("metadata", {}),
+                    "budget_spent_usd": state.get("budget_spent_usd", 0.0)
+                }
+                await self._save_intermediate_state({**state, **updates})
+                return updates
+
+        # ----------------------------------------------------
+        # OPTIMIZER/EVALUATOR: Stateful intake & Playbacksummary
+        # ----------------------------------------------------
+        else:
+            # 1. Initialize process components and confirmation state
+            components: dict[str, Any] = dict(state.get("process_components", {})) if state.get("process_components") else {
+                "trigger": None,
+                "actor": None,
+                "activity": None,
+                "system": None,
+                "friction": None
+            }
+            playback_confirmed = bool(state.get("playback_confirmed", False))
+            if state.get("file_content"):
+                playback_confirmed = True
+
+            clarification_turns = int(state.get("clarification_turns", 0))
+
+            # Perform intake process ONLY if playback is not yet confirmed
+            if not playback_confirmed:
+                # 2. Check if all required components are currently present (friction is optional)
+                all_required_present = all(components.get(k) is not None and str(components.get(k)).strip() != "" for k in ["trigger", "actor", "activity", "system"])
+                initial_required_present = all_required_present
+
+                # 3. Handle Confirmation / Correction Gate
+                if initial_required_present:
+                    is_confirmation = False
+                    corrections = {}
+
+                    if api_key and HAS_ANTHROPIC:
+                        try:
+                            client = AsyncAnthropic(api_key=api_key)
+                            prompt_confirm = (
+                                "You are an intake confirmation classifier.\n"
+                                "Your job is to analyze the user's latest response and determine if they are confirming the Playback Summary as accurate, or if they are correcting/modifying the details.\n\n"
+                                f"User's Latest Response: {user_prompt}\n\n"
+                                "Current Accumulated Operational Components:\n"
+                                f"{json.dumps(components, indent=2)}\n\n"
+                                "Output ONLY a valid JSON object matching this schema:\n"
+                                "{\n"
+                                '  "is_confirmation": true | false,\n'
+                                '  "corrections": {\n'
+                                '    "trigger": "updated trigger string or null",\n'
+                                '    "actor": "updated actor string or null",\n'
+                                '    "activity": "updated activity string or null",\n'
+                                '    "system": "updated system string or null",\n'
+                                '    "friction": "updated friction string or null"\n'
+                                '  }\n'
+                                "}"
+                            )
+                            response = await client.messages.create(
+                                model="claude-3-5-haiku-20241022",
+                                max_tokens=1000,
+                                temperature=0.0,
+                                messages=[{"role": "user", "content": prompt_confirm}]
+                            )
+                            result = json.loads(response.content[0].text.strip())
+                            is_confirmation = result.get("is_confirmation", False)
+                            corrections = result.get("corrections", {})
+
+                            # Cost Tracking
+                            input_tokens = response.usage.input_tokens
+                            output_tokens = response.usage.output_tokens
+                            step_cost = calculate_cost("claude-3-5-haiku-20241022", input_tokens, output_tokens)
+                            state_metadata = dict(state.get("metadata", {}))
+                            if "cache_metrics" not in state_metadata:
+                                state_metadata["cache_metrics"] = []
+                            state_metadata["cache_metrics"].append({
+                                "node": "confirm_gate",
+                                "model": "claude-3-5-haiku-20241022",
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "cost_usd": step_cost
+                            })
+                            state["metadata"] = state_metadata
+                            state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
+                        except Exception as e:
+                            print(f"Confirmation gate LLM error: {e}")
+                            is_confirmation = any(w in user_prompt.lower() for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
+                    else:
+                        is_confirmation = any(w in user_prompt.lower() for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
+
+                    if is_confirmation:
+                        playback_confirmed = True
+                    else:
+                        # Apply corrections
+                        if corrections:
+                            for k, v in corrections.items():
+                                if v:
+                                    components[k] = v
+                        else:
+                            # Fallback simple logic
+                            components["system"] = user_prompt
+
+                        # Re-verify completeness
+                        all_required_present = all(components.get(k) is not None and str(components.get(k)).strip() != "" for k in ["trigger", "actor", "activity", "system"])
+
+                # 4. Extract and accumulate components if incomplete
+                else:
+                    # Check for "Escape Hatch" keywords or turn budget exhaustion
+                    unk_keywords = ["don't know", "dont know", "not sure", "no idea", "unknown", "variable", "not documented", "undocumented"]
+                    user_declined = any(kw in user_prompt.lower() for kw in unk_keywords)
+
+                    if user_declined or clarification_turns >= 2:
+                        for k in ["trigger", "actor", "activity", "system", "friction"]:
+                            if not components.get(k) or str(components[k]).strip() == "":
+                                components[k] = "UNKNOWN"
+                        all_required_present = True
+                    else:
+                        if api_key and HAS_ANTHROPIC:
+                            try:
+                                client = AsyncAnthropic(api_key=api_key)
+                                # Build full conversation history
+                                history_str = ""
+                                for msg in state["messages"]:
+                                    role = msg.role if hasattr(msg, "role") else msg.get("role")
+                                    content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+                                    if role in ["user", "assistant"]:
+                                        history_str += f"{role.capitalize()}: {content}\n"
+
+                                prompt_extract = (
+                                    "You are a process mapping assistant. Your job is to extract 5 key components of a business operational workflow from the user's input and merge them into the accumulated components.\n"
+                                    "The 5 components are:\n"
+                                    "1. Trigger: What event starts the process (e.g., invoice received, low stock notification).\n"
+                                    "2. Actor: Who performs the activities (e.g., warehouse staff, dispatcher).\n"
+                                    "3. Activity: What main tasks are executed (e.g., inputting data, scheduling delivery).\n"
+                                    "4. System: What software or hardware tools are used (e.g., Excel, ERP, proprietary database).\n"
+                                    "5. Friction: What bottleneck, inefficiency, or pain point exists (e.g., double data entry, manual route planning).\n\n"
+                                    "Here are the previously accumulated process components:\n"
+                                    f"{json.dumps(components, indent=2)}\n\n"
+                                    "The user's latest response is:\n"
+                                    f"{user_prompt}\n\n"
+                                    "You must output the JSON in English. If the user input is in another language, translate the extracted concepts to English.\n"
+                                    "Output ONLY a valid JSON object matching this schema:\n"
+                                    "{\n"
+                                    '  "trigger": "extracted trigger or null",\n'
+                                    '  "actor": "extracted actor or null",\n'
+                                    '  "activity": "extracted activity or null",\n'
+                                    '  "system": "extracted system or null",\n'
+                                    '  "friction": "extracted friction or null"\n'
+                                    "}"
+                                )
+                                response = await client.messages.create(
+                                    model="claude-3-5-haiku-20241022",
+                                    max_tokens=1000,
+                                    temperature=0.0,
+                                    messages=[{"role": "user", "content": prompt_extract}]
+                                )
+                                extracted = json.loads(response.content[0].text.strip())
+                                for k in ["trigger", "actor", "activity", "system", "friction"]:
+                                    if extracted.get(k):
+                                        components[k] = extracted[k]
+
+                                # Cost Tracking
+                                input_tokens = response.usage.input_tokens
+                                output_tokens = response.usage.output_tokens
+                                step_cost = calculate_cost("claude-3-5-haiku-20241022", input_tokens, output_tokens)
+                                state_metadata = dict(state.get("metadata", {}))
+                                if "cache_metrics" not in state_metadata:
+                                    state_metadata["cache_metrics"] = []
+                                state_metadata["cache_metrics"].append({
+                                    "node": "extractor",
+                                    "model": "claude-3-5-haiku-20241022",
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": output_tokens,
+                                    "cost_usd": step_cost
+                                })
+                                state["metadata"] = state_metadata
+                                state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
+                            except Exception as e:
+                                print(f"Extraction LLM error: {e}")
+                        else:
+                            # Mock extraction fallback based on prompt length
+                            if len(user_prompt.strip()) >= 50:
+                                components = {
+                                    "trigger": "Customer order received",
+                                    "actor": "Dispatcher",
+                                    "activity": "Manual route scheduling",
+                                    "system": "Spreadsheets and email",
+                                    "friction": "4 hours wasted daily and typos"
+                                }
+                            else:
+                                components = {
+                                    "trigger": "User request",
+                                    "actor": "Staff",
+                                    "activity": "Workflow task",
+                                    "system": None,
+                                    "friction": None
+                                }
+
+                        # Re-verify completeness
+                        all_required_present = all(components.get(k) is not None and str(components.get(k)).strip() != "" for k in ["trigger", "actor", "activity", "system"])
+
+                # 5. Determine conversational next action
+                if not all_required_present:
+                    question = ""
+                    clarification_questions = []
+                    if api_key and HAS_ANTHROPIC:
+                        try:
+                            client = AsyncAnthropic(api_key=api_key)
+                            prompt_question = (
+                                "You are a plain-spoken operational consultant mapping a business process. "
+                                "We are interviewing a business operator to gather operational details. "
+                                "We need details about: when the process starts (initiation), who does it (actor), what they do (tasks), and what tools/software they use.\n"
+                                "Here are the components we have gathered so far:\n"
+                                f"{json.dumps(components, indent=2)}\n\n"
+                                f"The user's target language code is: {lang_code}. Please output the question in this language.\n\n"
+                                "STRICT CONSTRAINTS:\n"
+                                "1. You are STRICTLY FORBIDDEN from using technical engineering terms like 'Trigger', 'Actor', 'Activity', or 'System' in your response. "
+                                "Use natural, context-aware business terms instead. For example, instead of 'What is the system?' ask 'What software or apps do you use?'.\n"
+                                "2. You are STRICTLY FORBIDDEN from asking the user to identify their bottlenecks, friction, time waste, pain points, or inefficiencies. "
+                                "Do NOT ask questions like 'What is the bottleneck?' or 'What wastes time here?'. "
+                                "Only ask questions necessary to map the mechanical steps of the workflow (who, what, when, where/which tools).\n"
+                                "3. Generate a single, direct, polite clarifying question to gather the missing mechanical details.\n"
+                                "Provide ONLY the plain-text question."
+                            )
+                            response = await client.messages.create(
+                                model="claude-3-5-haiku-20241022",
+                                max_tokens=1000,
+                                temperature=0.0,
+                                messages=[{"role": "user", "content": prompt_question}]
+                            )
+                            question = response.content[0].text.strip()
+                            clarification_questions = [question]
+                        except Exception as e:
+                            print(f"Question generation LLM error: {e}")
+
+                    if not question:
+                        if vertical == "LOGISTICS":
+                            clarification_questions = [
+                                "Who performs the route planning, and what transportation modes trigger dispatch?",
+                                "What software, systems, or apps (e.g., WMS, ERP) are used to manage delivery schedules?",
+                                "Which specific tasks or activities in the delivery workflow are done manually?"
+                            ]
+                            question = clarification_questions[1]
+                        elif vertical == "MANUFACTURING":
+                            clarification_questions = [
+                                "What triggers a new production run, and who schedules the activities?",
+                                "Which systems, software, or machinery track the batch quality?",
+                                "What manual tasks are involved in validating or tracking raw materials?"
+                            ]
+                            question = clarification_questions[1]
+                        elif vertical == "WHOLESALE":
+                            clarification_questions = [
+                                "What triggers supplier purchase orders, and who is the primary actor?",
+                                "What software or systems monitor inventory levels?",
+                                "Which billing or credit workflows require manual steps or double entry?"
+                            ]
+                            question = clarification_questions[1]
+                        else:
+                            missing = [k for k in ["trigger", "actor", "activity", "system"] if not components.get(k)]
+                            question = f"Could you please tell me more about your process? I'm missing details on: {', '.join(missing)}."
+                            clarification_questions = [question]
+
+                    updated_messages.append(
+                        Message(
+                            role="assistant",
+                            content=question,
+                            name="BuildSense Intelligence",
+                            tool_call_id=None
+                        )
+                    )
+
+                    updates = {
+                        "status": SessionStatus.AWAITING_CLARIFICATION,
+                        "clarification_questions": clarification_questions,
+                        "messages": updated_messages,
+                        "business_vertical": vertical,
+                        "mode": SessionMode(mode_val),
+                        "max_budget_usd": max_budget,
+                        "max_steps": max_steps,
+                        "metadata": state.get("metadata", {}),
+                        "budget_spent_usd": state.get("budget_spent_usd", 0.0),
+                        "process_components": components,
+                        "playback_confirmed": False,
+                        "clarification_turns": clarification_turns + 1
+                    }
+                    await self._save_intermediate_state({**state, **updates})
+                    return updates
+
+                elif not playback_confirmed:
+                    # Compile structured summary
+                    summary = (
+                        "Here is a summary of what I understand about your workflow so far:\n\n"
+                        f"- 🚚 **When (trigger)**: {components['trigger']}\n"
+                        f"- 👤 **Who (actor)**: {components['actor']}\n"
+                        f"- ⚙️ **What (activity)**: {components['activity']}\n"
+                        f"- 💻 **Where (system)**: {components['system']}\n"
+                        f"- ⚠️ **Bottleneck (friction)**: {components.get('friction') or 'To be analyzed and deduced by BuildSense'}\n\n"
+                        "Is this accurate? Please reply **Yes** to confirm, or describe any corrections."
+                    )
+
+                    updated_messages.append(
+                        Message(
+                            role="assistant",
+                            content=summary,
+                            name="BuildSense Intelligence",
+                            tool_call_id=None
+                        )
+                    )
+
+                    updates = {
+                        "status": SessionStatus.AWAITING_CLARIFICATION,
+                        "clarification_questions": [summary],
+                        "messages": updated_messages,
+                        "business_vertical": vertical,
+                        "mode": SessionMode(mode_val),
+                        "max_budget_usd": max_budget,
+                        "max_steps": max_steps,
+                        "metadata": state.get("metadata", {}),
+                        "budget_spent_usd": state.get("budget_spent_usd", 0.0),
+                        "process_components": components,
+                        "playback_confirmed": False,
+                        "clarification_turns": clarification_turns
+                    }
+                    await self._save_intermediate_state({**state, **updates})
+                    return updates
+
+            # If playback confirmed, store components in metadata for synthesis node compatibility
+            state_metadata = dict(state.get("metadata", {}))
+            state_metadata["process_components"] = components
+            state["metadata"] = state_metadata
+
+        # ----------------------------------------------------
+        # Completed intake / confirmed playback. Proceed to PLANNING.
+        # ----------------------------------------------------
+        # Document ingestion check
         if state["file_content"] and not any("uploaded_document" in (msg.content if hasattr(msg, "content") else msg.get("content", "")) for msg in updated_messages):
             parsed_text = document_parser_mcp(state["file_content"])
             wrapped_text = self._wrap_untrusted_output(parsed_text, source="uploaded_document")
@@ -554,8 +874,12 @@ class Orchestrator:
             "max_budget_usd": max_budget,
             "max_steps": max_steps,
             "metadata": state.get("metadata", {}),
-            "budget_spent_usd": state.get("budget_spent_usd", 0.0)
+            "budget_spent_usd": state.get("budget_spent_usd", 0.0),
+            "playback_confirmed": True
         }
+        if mode_val != "SUGGESTER":
+            planning_updates["process_components"] = components
+
         await self._save_intermediate_state({**state, **planning_updates})
         return planning_updates
 
@@ -614,6 +938,17 @@ class Orchestrator:
         }
         
         persona_rule = persona_tone_guidelines.get(persona, persona_tone_guidelines["Solo Founder"])
+        
+        # Determine language target
+        lang_names = {
+            "en": "English",
+            "hi": "Hindi",
+            "kn": "Kannada",
+            "ta": "Tamil",
+            "ml": "Malayalam"
+        }
+        lang_code = state.get("lang") or "en"
+        language_name = lang_names.get(lang_code, "English")
 
         # Call Sonnet to synthesize the report
         api_key = self.user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -639,16 +974,49 @@ class Orchestrator:
                         f"- Core Tools: {state.get('company_core_tools') or 'None'}\n\n"
                     )
 
+                components = state.get("process_components", {})
+                components_context = ""
+                if components:
+                    components_context = (
+                        "Gathered Workflow Components (As-Is State):\n"
+                        f"- Trigger: {components.get('trigger') or 'Not specified'}\n"
+                        f"- Actor: {components.get('actor') or 'Not specified'}\n"
+                        f"- Activity: {components.get('activity') or 'Not specified'}\n"
+                        f"- System: {components.get('system') or 'Not specified'}\n"
+                        f"- User-stated Friction: {components.get('friction') or 'None'}\n\n"
+                    )
+
                 system_prompt = (
                     "You are an expert business report writer and software architect. Synthesize the final report "
-                    "for the user. You must adhere to the Zero-Jargon rule: any industry term (LTV, CAC, ROI, MRR) must include "
+                    f"for the user. You MUST output all the markdown text inside the JSON values in the user's selected language: {language_name}.\n"
+                    "Do NOT translate the JSON keys. Keep JSON keys strictly as English: 'as_is_workflow', 'friction_analysis', 'technology_neutral_recommendations', 'roi_economics'.\n"
+                    "You must adhere to the Zero-Jargon rule: any industry term (LTV, CAC, ROI, MRR) must include "
                     "an immediate everyday analogy in parentheses.\n"
+                    "IMPORTANT: You must prioritize the Active Company Context (specifically the company's industry vertical and existing core tools/technology stack) "
+                    "over the general target persona guidelines when determining recommendations and analyzing workflows. The persona should only guide the tone of presentation.\n"
                     f"Target Persona Guidelines: {persona_rule}\n\n"
                     f"{company_context_str}"
+                    f"{components_context}"
+                    "Agentic Bottleneck Deduction Instruction:\n"
+                    "The user might not have specified any friction or bottleneck. You must independently analyze the gathered workflow "
+                    "and deduce the hidden friction, double-work, transcription errors, communication gaps, or bottlenecks on behalf of the user. "
+                    "Write a comprehensive friction analysis that uncovers these inefficiencies, even if the user did not report them.\n\n"
+                    "Recommendation Hierarchy Rule & Constraint Compliance Rule:\n"
+                    "Evaluate solutions in this exact order to prevent over-engineering:\n"
+                    "- Tier 1: Process/Policy Change (Zero tech, zero cost).\n"
+                    "- Tier 2: Deterministic Automation / Existing SaaS (e.g., standard APIs, Excel macros, Zapier).\n"
+                    "- Tier 3: Gen AI / Agentic Workflows. You must only recommend Gen AI (Tier 3) if the problem involves unstructured data, natural language processing, or complex subjective decision-making. If a Tier 1 or Tier 2 solution is feasible, you must explicitly advise the user AGAINST building a Gen AI solution to protect their unit economics and reduce operational risk.\n\n"
+                    "Additionally, you MUST explicitly evaluate and map your recommendations against these user constraints: "
+                    f"{', '.join(state.get('user_constraints', [])) or 'None specified'}.\n"
+                    "If a constraint like 'No Budget' or 'No/Low Budget' is present, Tier 3 Gen AI suggestions must default to free-tier open-source tools or be explicitly warned against.\n"
+                    "If a constraint like 'Non-Technical Team' is present, recommendations must prefer low-code/no-code tools or managed SaaS and avoid complex custom deployments.\n"
+                    "If a constraint like 'Strict Data Privacy' is present, recommendations must prefer on-premise, self-hosted, or private models, or warn about cloud data privacy risks.\n\n"
                     "Output the report in a valid JSON object matching this structure:\n"
                     "{\n"
-                    '  "quick_insights": "Markdown text for Quick Insights (2-min summary with traffic-light status badges, bullet points)",\n'
-                    '  "deep_dive": "Markdown text for Deep Dive (4-pillar dossier: Demand Signals, Defensibility Matrix, 90/10 Architecture, LTV:CAC Unit Economics)"\n'
+                    '  "as_is_workflow": "Markdown text mapping the current manual process",\n'
+                    '  "friction_analysis": "Markdown text identifying where time or money is bleeding",\n'
+                    '  "technology_neutral_recommendations": "Markdown text detailing 3 tiered solutions matching user constraints",\n'
+                    '  "roi_economics": "Markdown text detailing expected time/money saved vs. implementation cost"\n'
                     "}"
                 )
                 
@@ -664,15 +1032,29 @@ class Orchestrator:
                 # Parse JSON
                 res_text = response.content[0].text.strip()
                 result = json.loads(res_text)
-                quick_insights_text = result.get("quick_insights", "")
-                deep_dive_text = result.get("deep_dive", "")
+                
+                # Extract the new fields
+                as_is_workflow = result.get("as_is_workflow", "")
+                friction_analysis = result.get("friction_analysis", "")
+                tech_neutral_recs = result.get("technology_neutral_recommendations", "")
+                roi_economics = result.get("roi_economics", "")
+
+                # Store the new fields in metadata
+                state_metadata = dict(state.get("metadata", {}))
+                state_metadata["as_is_workflow"] = as_is_workflow
+                state_metadata["friction_analysis"] = friction_analysis
+                state_metadata["technology_neutral_recommendations"] = tech_neutral_recs
+                state_metadata["roi_economics"] = roi_economics
+
+                # Map to legacy fields quick_insights and deep_dive for backward compatibility
+                quick_insights_text = f"### Current Manual Process (As-Is)\n{as_is_workflow}\n\n### ROI Economics\n{roi_economics}"
+                deep_dive_text = f"### Friction Analysis\n{friction_analysis}\n\n### Technology Neutral Recommendations\n{tech_neutral_recs}"
                 
                 # Cost calculation
                 input_tokens = response.usage.input_tokens
                 output_tokens = response.usage.output_tokens
                 step_cost = calculate_cost("claude-3-5-sonnet-20241022", input_tokens, output_tokens)
                 
-                state_metadata = dict(state.get("metadata", {}))
                 if "cache_metrics" not in state_metadata:
                     state_metadata["cache_metrics"] = []
                 state_metadata["cache_metrics"].append({
@@ -689,26 +1071,147 @@ class Orchestrator:
 
         # Fallback to local report template generator if LLM synthesis fails or no key
         if not quick_insights_text or not deep_dive_text:
+            state_metadata = dict(state.get("metadata", {}))
+            
+            # Static fallback translations mapping
+            fallback_reports = {
+                "en": {
+                    "as_is_workflow": (
+                        "1. Trigger: Order or route request received.\n"
+                        "2. Actor: Dispatcher / Operations Manager.\n"
+                        "3. Activity: Manual lookup of addresses and route scheduling.\n"
+                        "4. System: Static spreadsheets and emails.\n"
+                        "5. Friction: High transcription error rates and 4 hours wasted daily."
+                    ),
+                    "friction_analysis": (
+                        "- Communication gap between office dispatcher and fleet drivers.\n"
+                        "- Operational bottleneck during scheduling peak hours.\n"
+                        "- Risk of order billing typos due to double-entry."
+                    ),
+                    "technology_neutral_recommendations": (
+                        "1. Tier 1 (Policy): Implement standardized template forms for customer orders to eliminate typos.\n"
+                        "2. Tier 2 (Existing SaaS): Adopt off-the-shelf dispatch mapping tools to automatically calculate routes.\n"
+                        "3. Tier 3 (Automation): Integrate API connector webhook linking order database with delivery scheduling tools. Note: Gen AI solution is NOT recommended here as process is deterministic."
+                    ),
+                    "roi_economics": (
+                        "- Estimated hours saved: 20 hours per week.\n"
+                        "- Total payback period: under 2 months."
+                    )
+                },
+                "hi": {
+                    "as_is_workflow": (
+                        "1. ट्रिगर: ऑर्डर या रूट अनुरोध प्राप्त हुआ।\n"
+                        "2. कर्ता: डिस्पैचर / ऑपरेशंस मैनेजर।\n"
+                        "3. गतिविधि: पते और मार्ग निर्धारण का मैन्युअल लुकअप।\n"
+                        "4. सिस्टम: स्थिर स्प्रेडशीट और ईमेल।\n"
+                        "5. घर्षण: उच्च प्रतिलेखन त्रुटि दर और दैनिक 4 घंटे बर्बाद।"
+                    ),
+                    "friction_analysis": (
+                        "- कार्यालय डिस्पैचर और बेड़े के ड्राइवरों के बीच संचार अंतर।\n"
+                        "- व्यस्त घंटों के दौरान शेड्यूलिंग में बाधा।\n"
+                        "- दोहरी प्रविष्टि के कारण टाइपो का जोखिम।"
+                    ),
+                    "technology_neutral_recommendations": (
+                        "1. टियर 1 (नीति): टाइपो को खत्म करने के लिए ग्राहक ऑर्डर के लिए मानकीकृत टेम्पलेट फॉर्म लागू करें।\n"
+                        "2. टियर 2 (मौजूदा सास): मार्गों की स्वचालित रूप से गणना करने के लिए रेडीमेड डिस्पैच मैपिंग टूल अपनाएं।\n"
+                        "3. टियर 3 (स्वचालन): डिलीवरी शेड्यूलिंग टूल के साथ ऑर्डर डेटाबेस को जोड़ने वाले एपीआई कनेक्टर वेबहुक को एकीकृत करें। नोट: जेन एआई समाधान की सिफारिश नहीं की जाती है क्योंकि प्रक्रिया नियतात्मक है।"
+                    ),
+                    "roi_economics": (
+                        "- अनुमानित समय की बचत: प्रति सप्ताह 20 घंटे।\n"
+                        "- कुल पेबैक अवधि: 2 महीने से कम।"
+                    )
+                },
+                "kn": {
+                    "as_is_workflow": (
+                        "1. ಪ್ರಚೋದಕ: ಆರ್ಡರ್ ಅಥವಾ ಮಾರ್ಗ ವಿನಂತಿ ಸ್ವೀಕರಿಸಲಾಗಿದೆ.\n"
+                        "2. ಕರ್ತೃ: ಡಿಸ್ಪ್ಯಾಚರ್ / ಕಾರ್ಯಾചರಣೆಗಳ ವ್ಯವಸ್ಥಾಪಕ.\n"
+                        "3. ಚಟುವಟಿಕೆ: ವಿಳಾಸಗಳ ಕೈಯಾರೆ ಹುಡುಕಾಟ ಮತ್ತು ಮಾರ್ಗ ವೇಳಾಪಟ್ಟಿ.\n"
+                        "4. ವ್ಯವಸ್ಥೆ: ಸ್ಥಿರ ಸ್ಪ್ರೆಡ್‌ಶೀಟ್‌ಗಳು ಮತ್ತು ಇಮೇಲ್‌ಗಳು.\n"
+                        "5. ದೋಷ: ಹೆಚ್ಚಿನ ತಪ್ಪುಗಳು ಮತ್ತು ಪ್ರತಿದิน 4 ಗಂಟೆಗಳ ವ್ಯರ್ಥ."
+                    ),
+                    "friction_analysis": (
+                        "- ಆಫೀಸ್ ಡಿಸ್ಪ್ಯಾಚರ್ ಮತ್ತು ಚಾಲಕರ ನಡುವೆ ಸಂವಹನ ಅಂತರ.\n"
+                        "- ವೇಳಾಪಟ್ಟಿಯ ಗರಿಷ್ಠ ಅವಧಿಯಲ್ಲಿ ಅಡಚಣೆ.\n"
+                        "- ಡಬಲ್-ಎಂಟ್ರಿ ಇರುವುದರಿಂದ ತಪ್ಪುಗಳಾಗುವ ಅಪಾಯ."
+                    ),
+                    "technology_neutral_recommendations": (
+                        "1. ಶ್ರೇಣಿ 1 (ನೀತಿ): ತಪ್ಪುಗಳನ್ನು ತಡೆಗಟ್ಟಲು ಗ್ರಾಹಕರ ಆದೇಶಗಳಿಗಾಗಿ ಪ್ರಮಾಣಿತ ಫಾರ್ಮ್ ಜಾರಿಗೆ ತರುವುದು.\n"
+                        "2. ಶ್ರೇಣಿ 2 (ಅಸ್ತಿತ್ವದಲ್ಲಿರುವ ಸಾರಿಗೆ ಸಾಫ್ಟ್‌ವೇರ್): ಮಾರ್ഗಗಳನ್ನು ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಲೆಕ್ಕಾಚಾರ ಮಾಡಲು ರೆಡಿಮೇಡ್ ಡಿಸ್ಪ್ಯಾಚ್ ಮ್ಯಾಪಿಂಗ್ ಪರಿಕರಗಳನ್ನು ಅಳವಡಿಸಿಕೊಳ್ಳುವುದು.\n"
+                        "3. ಶ್ರೇಣಿ 3 (ಸ್ವಯಂಚಾಲಿತ ಸಂಪರ್ಕ): ಡೆಲಿವರಿ ಶೆಡ್ಯೂಲಿಂಗ್ ಟೂಲ್‌ನೊಂದಿಗೆ ಆರ್ಡರ್ ಡೇറ്റಾಬೇಸ್ ಸಂಪರ್കಿಸುವ ಎಪಿಐ ಸಂಯೋಜನೆ. ಗಮನಿಸಿ: ಪ್ರಕ್ರಿಯೆಯು ಮೊದಲೇ ನಿರ್ಧಾರಿತವಾಗಿರುವುದರಿಂದ ಜನರೇಷನ್ ಎಐ ಪರಿಹಾರವನ್ನು ಶಿഫാരസു ಮಾಡುವುದಿಲ್ಲ."
+                    ),
+                    "roi_economics": (
+                        "- ಅಂದಾಜು ಉಳಿತಾಯ ಸಮಯ: ವಾರಕ್ಕೆ 20 ಗಂಟೆಗಳು.\n"
+                        "- ಹೂಡಿಕೆ ಮರುಪಾವತಿ ಅವಧಿ: 2 ತಿಂಗಳ ಒಳಗೆ."
+                    )
+                },
+                "ta": {
+                    "as_is_workflow": (
+                        "1. தூண்டுதல்: ஆர்டர் அல்லது வழி கோரிக்கை பெறப்பட்டது.\n"
+                        "2. செய்பவர்: வி‌நியோகிப்பாளர் / செயல்பாட்டு மேலாளர்.\n"
+                        "3. செயல்பாடு: முகவரிகள் மற்றும் வழி திட்டமிடலை கைமுறையாக தேடுதல்.\n"
+                        "4. கணினி: நிலையான விரிதாள் மற்றும் மின்னஞ்சல்கள்.\n"
+                        "5. உராய்வு: அதிக பிழைகள் மற்றும் தினசரி 4 மணிநேரம் வீணடிப்பு."
+                    ),
+                    "friction_analysis": (
+                        "- அலுவலக விநியோகிப்பாளர் மற்றும் ஓட்டுநர்களுக்கு இடையே தொடர்பு இடைவெளி.\n"
+                        "- உச்ச நேரங்களில் வழி திட்டமிடலில் நெരിசல்.\n"
+                        "- இரட்டை உள்ளீடு காரணமாக பிழைகள் ஏற்படும் அபாயம்."
+                    ),
+                    "technology_neutral_recommendations": (
+                        "1. நிலை 1 (கொள்கை): பிழைகளைத் தவிர்க்க வாடிக்கையாளர் ஆர்டர்களுக்கு நிலையான வார்ப்புരുக்களை அமல்படுத்துங்கள்.\n"
+                        "2. நிலை 2 (ஏற்கனவே உள்ள மென்பொருள்): வழிகளைத் தானாகக் கணக்கிட ஆயத்த மேப்பிங் கருவிகளைப் பயன்படுத்துங்கள்.\n"
+                        "3. நிலை 3 (தானியங்கி இணைப்பு): ஆர்டர் தரவுത്തளത്തെ விநியோக திட்டமிடல் கருவிகளுடன் இணைக்கும் API இணையை ஒருங்கிணைக்கவும். குறிப்பு: செயல்முறை துல்லியமானது என்பதால் உற்பத்தி AI தீர்வு பரிந்துரைக்கப்படவில்லை."
+                    ),
+                    "roi_economics": (
+                        "- மதிப்பிடப்பட்ட சேമിப்பு நேரம்: வாரத்திற்கு 20 மணிநேரம்.\n"
+                        "- மொத்த முதலீட்டு காலம்: 2 மாதங்களுக்குள்."
+                    )
+                },
+                "ml": {
+                    "as_is_workflow": (
+                        "1. ട്രിഗർ: ഓർഡർ അല്ലെങ്കിൽ റൂട്ട് അഭ്യർത്ഥന ലഭിച്ചു.\n"
+                        "2. കർത്താവ്: ഡിസ്പാച്ചർ / ഓപ്പറേഷൻസ് മാനേജർ.\n"
+                        "3. പ്രവർത്തനം: വിലാസങ്ങൾ തിരയുന്നതും റൂട്ട് ഷെഡ്യൂൾ ചെയ്യുന്നതും കൈകൊണ്ടാണ്.\n"
+                        "4. സിസ്റ്റം: സ്റ്റാറ്റിക് സ്പ്രെഡ്ഷീറ്റുകളും ഇമെയിലുകളും.\n"
+                        "5. തടസ്സം: ഉയർന്ന പിശക് നിരക്കും പ്രതിദിനം 4 മണിക്കൂർ നഷ്ടവും."
+                    ),
+                    "friction_analysis": (
+                        "- ഓഫീസ് ഡിസ്പാച്ചറും ഡ്രൈവർമാരും തമ്മിലുള്ള ആശയവിനിമയ കുറവ്.\n"
+                        "- ഷെഡ്യൂൾ ചെയ്യുന്ന തിരക്കുള്ള സമയങ്ങളിലെ തടസ്സം.\n"
+                        "- ഡബിൾ എൻട്രി കാരണം തെറ്റുകൾ വരാനുള്ള സാധ്യത."
+                    ),
+                    "technology_neutral_recommendations": (
+                        "1. ടയർ 1 (നയം): ടൈപ്പോകൾ ഒഴിവാക്കാൻ ഉപഭോക്തൃ ഓർഡറുകൾക്കായി സ്റ്റാൻഡേർഡ് ഫോം നടപ്പിലാക്കുക.\n"
+                        "2. ടയർ 2 (നിലവിലുള്ള സാസ്): റൂട്ടുകൾ യാന്ത്രികമായി കണക്കാക്കാൻ റെഡിമേഡ് ഡിസ്പാച്ച് മാപ്പിംഗ് ടൂളുകൾ സ്വീകരിക്കുക.\n"
+                        "3. ടയർ 3 (ഓട്ടോമേഷൻ): ഓർഡർ ഡാറ്റാബേസിനെ ഡെലിവറി ഷെഡ്യൂളിംഗ് ടൂളുകളുമായി ബന്ധിപ്പിക്കുന്ന API സംയോജിപ്പിക്കുക. കുറിപ്പ്: പ്രക്രിയ കൃത്യമായതിനാൽ ജനറേറ്റീവ് എഐ പരിഹാരം ശുപാർശ ചെയ്യുന്നില്ല."
+                    ),
+                    "roi_economics": (
+                        "- കണക്കാക്കിയ സമയം ലാഭം: ആഴ്ചയിൽ 20 മണിക്കൂർ.\n"
+                        "- ആകെ തിരിച്ചുപിടിക്കൽ കാലയളവ്: 2 മാസത്തിനുള്ളിൽ."
+                    )
+                }
+            }
+
+            fallback = fallback_reports.get(lang_code, fallback_reports["en"])
+            
+            # Populate new fields
+            state_metadata["as_is_workflow"] = fallback["as_is_workflow"]
+            state_metadata["friction_analysis"] = fallback["friction_analysis"]
+            state_metadata["technology_neutral_recommendations"] = fallback["technology_neutral_recommendations"]
+            state_metadata["roi_economics"] = fallback["roi_economics"]
+            
+            state["metadata"] = state_metadata
+            
+            # Format legacy fields for backward compatibility
+            quick_insights_text = f"### Current Manual Process (As-Is)\n{state_metadata['as_is_workflow']}\n\n### ROI Economics\n{state_metadata['roi_economics']}"
+            deep_dive_text = f"### Friction Analysis\n{state_metadata['friction_analysis']}\n\n### Technology Neutral Recommendations\n{state_metadata['technology_neutral_recommendations']}"
+
             jargon_analogies = {
                 "LTV": "LTV (Lifetime Value: total profit a customer brings over their lifecycle)",
                 "CAC": "CAC (Customer Acquisition Cost: total marketing cost required to acquire one customer)",
                 "ROI": "ROI (Return on Investment: ratio of net profit generated relative to capital spent)",
                 "MRR": "MRR (Monthly Recurring Revenue: predictable recurring subscription sales)"
             }
-
-            quick_insights_text = (
-                "### ⚡ Strategic Executive Summary\n"
-                f"- Persona focus target: **{persona}** ({persona_rule})\n"
-                "- Healthy commercial unit economics projected (LTV / CAC is above 3.5x).\n"
-                "- Core system workflow optimized with automation pipelines."
-            )
-
-            deep_dive_text = (
-                "### 🔬 Detailed Analytical Dossier\n"
-                "1. **Market Evidence:** Quantitative volume is verified. Compliant frustrations resolved.\n"
-                "2. **Workflow Architecture:** Visual mind-map layout saved successfully.\n"
-                "3. **Unit Economics Audit:** Strong LTV:CAC Projections with fast payback cycles."
-            )
 
             for jargon_term, analogy_description in jargon_analogies.items():
                 quick_insights_text = quick_insights_text.replace(jargon_term, analogy_description)
@@ -819,18 +1322,17 @@ class Orchestrator:
         mode_val = mode.value if hasattr(mode, "value") else mode
         if mode_val == "SUGGESTER":
             return [
-                {"task_id": "1", "task": "suggest_concepts", "persona": "Product Ideator Persona", "done": False}
+                {"task_id": "1", "task": "suggest_opportunities", "persona": "Process Intelligence Persona", "done": False}
             ]
         elif mode_val == "EVALUATOR":
             return [
-                {"task_id": "1", "task": "analyze_market_demand", "persona": "Market Analyst Persona", "done": False},
-                {"task_id": "2", "task": "evaluate_defensibility", "persona": "Strategist Persona", "done": False},
-                {"task_id": "3", "task": "calculate_unit_economics", "persona": "Financial Controller Persona", "done": False}
+                {"task_id": "1", "task": "audit_process_evidence", "persona": "Evidence Auditor Persona", "done": False},
+                {"task_id": "2", "task": "calculate_process_economics", "persona": "Process Economics Persona", "done": False}
             ]
         else:
             return [
-                {"task_id": "1", "task": "deconstruct_workflows", "persona": "Business Consultant Persona", "done": False},
-                {"task_id": "2", "task": "architect_integrations", "persona": "Tech Architect Persona", "done": False}
+                {"task_id": "1", "task": "deconstruct_workflows", "persona": "Process Analyst Persona", "done": False},
+                {"task_id": "2", "task": "design_automations", "persona": "Automation Architect Persona", "done": False}
             ]
 
     # --- Backward-compatible test hooks ---
@@ -944,7 +1446,20 @@ class Orchestrator:
         system_prompt_blocks = [
             {
                 "type": "text",
-                "text": f"You are executing task: {task_name} acting as {persona}."
+                "text": (
+                    f"You are executing task: {task_name} acting as {persona}.\n\n"
+                    "IMPORTANT: You must prioritize the Active Company Context (specifically the company's industry vertical and existing core tools/technology stack) "
+                    "over general target persona guidelines when calculating numbers, mapping ontologies, or analyzing processes.\n\n"
+                    "Evidence Ladder Rule:\n"
+                    "Evaluate user claims and assign a confidence level to each claim:\n"
+                    "- 'System Export' / 'Database' / 'Log files': High confidence.\n"
+                    "- 'Employee Stated' / 'Staff report' / 'Manager interview': Medium confidence.\n"
+                    "- 'Owner Estimate' / 'Owner assumption' / 'Guess': Low confidence.\n"
+                    "- If source is unclear: Low confidence.\n\n"
+                    "Economics Rule:\n"
+                    "Ensure you calculate estimated manual hours wasted in the current manual process "
+                    "vs. the implementation costs of the recommended automation solutions. Ground these calculations in evidence."
+                )
             },
             {
                 "type": "text",
@@ -967,6 +1482,25 @@ class Orchestrator:
                     f"- Company Name: {state['company_name']}\n"
                     f"- Industry: {state.get('company_industry') or 'Unknown'}\n"
                     f"- Core Tools: {state.get('company_core_tools') or 'None'}"
+                )
+            })
+
+        # Add Process Components context for agentic bottleneck deduction
+        components = state.get("process_components", {})
+        if components:
+            system_prompt_blocks.append({
+                "type": "text",
+                "text": (
+                    "Gathered Workflow Components (As-Is State):\n"
+                    f"- Trigger: {components.get('trigger') or 'Not specified'}\n"
+                    f"- Actor: {components.get('actor') or 'Not specified'}\n"
+                    f"- Activity: {components.get('activity') or 'Not specified'}\n"
+                    f"- System: {components.get('system') or 'Not specified'}\n"
+                    f"- User-stated Friction: {components.get('friction') or 'None stated'}\n\n"
+                    "Agentic Bottleneck Deduction Instruction:\n"
+                    "The user did not self-diagnose their bottlenecks, or they provided minimal details. "
+                    "Analyze the As-Is workflow steps above. Identify hidden inefficiencies, manual double-work, "
+                    "transcription risks, delays, or cost bottlenecks inherent in this setup."
                 )
             })
 
@@ -1131,6 +1665,19 @@ class Orchestrator:
         """
         self.user_key = user_key
         config = {"configurable": {"thread_id": state.session_id}}
+
+        # Load company context dynamically from DB to guarantee freshest details
+        try:
+            project = await self.db.get_project(state.session_id)
+            if project and project.get("company_id"):
+                company = await self.db.get_company(project["company_id"])
+                if company:
+                    state.company_name = company["name"]
+                    state.company_industry = company["industry_vertical"] or company["industry"]
+                    state.company_core_tools = company["core_tools"]
+        except Exception as e:
+            print(f"Warning: Failed to dynamically load company context in run_pipeline: {e}")
+
         inputs: AgentState = cast(AgentState, state.model_dump())
 
         if not self.db.is_mock and HAS_ASYNC_POSTGRES:

@@ -8,6 +8,8 @@ import { ReportView } from "@/components/report-view";
 import { StrategicProgress } from "@/components/strategic-progress";
 import { useOrchestratorStream } from "@/lib/useOrchestratorStream";
 import { ClarificationModal } from "@/components/clarification-modal";
+import { getDictionary } from "@/lib/dictionaries";
+import { GlobalHeader } from "@/components/global-header";
 
 // React Flow Imports
 import { ReactFlow, Background, Controls, MiniMap } from "@xyflow/react";
@@ -62,6 +64,8 @@ export default function ProjectWorkspacePage() {
   const router = useRouter();
   const { token } = useAuth();
   const projectId = params.id as string;
+  const lang = (params.lang as string) || "en";
+  const dict = getDictionary(lang);
 
   const [project, setProject] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<"report" | "graph" | "stepper" | "chat">("report");
@@ -70,7 +74,7 @@ export default function ProjectWorkspacePage() {
   const [isClarificationOpen, setIsClarificationOpen] = useState(false);
 
   // Onboarding Wizard states
-  const [isOnboardingActive, setIsOnboardingActive] = useState(true);
+  const [isOnboardingActive, setIsOnboardingActive] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState<1 | 2>(1);
   const [wizardTitle, setWizardTitle] = useState("");
   const [wizardDescription, setWizardDescription] = useState("");
@@ -136,9 +140,12 @@ export default function ProjectWorkspacePage() {
         });
         if (res.ok) {
           const stateData = await res.json();
-          if (stateData && stateData.messages && stateData.messages.length > 0) {
-            setIsOnboardingActive(false);
-            executeOrchestratorRequest({ session_id: projectId });
+          if (stateData) {
+            executeOrchestratorRequest({ session_id: projectId, lang: lang });
+            const userMsgs = stateData.messages?.filter((m: any) => m.role === "user") || [];
+            if (userMsgs.length === 0) {
+              setActiveTab("chat");
+            }
           }
         }
       } catch {}
@@ -147,12 +154,17 @@ export default function ProjectWorkspacePage() {
     loadProjectDetails();
     loadGraphDetails();
     checkExistingRun();
-  }, [token, projectId, executeOrchestratorRequest]);
+  }, [token, projectId, executeOrchestratorRequest, lang]);
 
   // Sync state transitions & clarification modals
   useEffect(() => {
     if (activeSessionState?.status === "AWAITING_CLARIFICATION") {
-      setIsClarificationOpen(true);
+      setActiveTab("chat");
+      if (activeSessionState.mode === "SUGGESTER" && activeSessionState.clarification_questions && activeSessionState.clarification_questions.length > 0) {
+        setIsClarificationOpen(true);
+      } else {
+        setIsClarificationOpen(false);
+      }
     } else {
       setIsClarificationOpen(false);
     }
@@ -259,7 +271,6 @@ export default function ProjectWorkspacePage() {
         if (attempt >= maxRetries) {
           alert("Network connection error: failed to upload audio. Please try again.");
         } else {
-          // Exponential backoff: 2s, 4s
           await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
         }
       }
@@ -278,13 +289,13 @@ export default function ProjectWorkspacePage() {
   const handleStartOrchestration = async () => {
     if (!token || isOrchestratorLoopActive) return;
 
-    // Start discovery execution
     executeOrchestratorRequest({
       prompt: wizardDescription,
       mode: project.mode,
       motivation: project.motivation,
       user_persona: wizardPersona,
-      session_id: projectId
+      session_id: projectId,
+      lang: lang
     });
     
     setIsOnboardingActive(false);
@@ -294,7 +305,8 @@ export default function ProjectWorkspacePage() {
   const handleRunAnalysis = () => {
     if (!token || isOrchestratorLoopActive) return;
     executeOrchestratorRequest({
-      session_id: projectId
+      session_id: projectId,
+      lang: lang
     });
   };
 
@@ -303,6 +315,7 @@ export default function ProjectWorkspacePage() {
     executeOrchestratorRequest({
       session_id: projectId,
       clarification_responses: answers,
+      lang: lang
     });
   };
 
@@ -312,7 +325,8 @@ export default function ProjectWorkspacePage() {
 
     executeOrchestratorRequest({
       prompt: chatMessageInput,
-      session_id: projectId
+      session_id: projectId,
+      lang: lang
     });
     setChatMessageInput("");
   };
@@ -352,164 +366,6 @@ export default function ProjectWorkspacePage() {
     );
   }
 
-  // --- Render Wizard Onboarding ---
-  if (isOnboardingActive) {
-    return (
-      <main className="min-h-screen bg-[#03060d] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-center font-sans select-none relative overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-amber-500/5 blur-[130px] pointer-events-none" />
-        
-        <div className="w-full max-w-xl bg-[#0b0f19]/45 border border-slate-900 rounded-2xl p-8 backdrop-blur-md shadow-2xl relative">
-          
-          {/* Header */}
-          <div className="border-b border-slate-950 pb-5 mb-6 text-center">
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-amber-400 to-orange-500">
-              Welcome to {wizardTitle || "Project Workspace"}
-            </h1>
-            <p className="text-xs text-slate-400 mt-1.5">
-              Let&rsquo;s configure your operational discovery settings before kicking off research.
-            </p>
-          </div>
-
-          {/* Steps Breadcrumbs */}
-          <div className="flex items-center justify-center gap-3 mb-8 text-xs font-semibold">
-            <span className={`px-2.5 py-1 rounded-md border ${
-              onboardingStep === 1 ? "bg-amber-500/10 border-amber-500/20 text-amber-400" : "bg-slate-950/20 border-slate-900 text-slate-500"
-            }`}>
-              1. Profile Verification
-            </span>
-            <span className="text-slate-700">➔</span>
-            <span className={`px-2.5 py-1 rounded-md border ${
-              onboardingStep === 2 ? "bg-amber-500/10 border-amber-500/20 text-amber-400" : "bg-slate-950/20 border-slate-900 text-slate-500"
-            }`}>
-              2. Day in the Life Capture
-            </span>
-          </div>
-
-          {/* Step 1 Content: Profile Verification */}
-          {onboardingStep === 1 && (
-            <div className="space-y-5">
-              <div className="space-y-2">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Workspace Title</label>
-                <input
-                  type="text"
-                  value={wizardTitle}
-                  onChange={(e) => setWizardTitle(e.target.value)}
-                  className="w-full bg-[#03060d]/60 border border-slate-800 text-slate-200 text-xs rounded-lg p-2.5 focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">User Persona Focus</label>
-                <select
-                  value={wizardPersona}
-                  onChange={(e) => setWizardPersona(e.target.value)}
-                  className="w-full bg-[#03060d]/60 border border-slate-800 text-slate-200 text-xs rounded-lg p-2.5 focus:outline-none"
-                >
-                  <option value="Solo Founder">🚀 Solo Founder (Speed & Tech Moats)</option>
-                  <option value="Small Business Operator">🌾 Small Business Operator (Direct ROI, Jargon-free)</option>
-                  <option value="Enterprise PM">🏢 Enterprise PM (Compliance & Scale)</option>
-                  <option value="Student">🎓 Student (Technical Learning Path)</option>
-                </select>
-              </div>
-
-              <Button
-                onClick={() => setOnboardingStep(2)}
-                className="w-full bg-slate-950/80 hover:bg-slate-900 text-slate-300 font-extrabold py-3 rounded-lg border border-slate-900 text-xs mt-4"
-              >
-                Next: Intake Setup →
-              </Button>
-            </div>
-          )}
-
-          {/* Step 2 Content: Operational Intake Capture */}
-          {onboardingStep === 2 && (
-            <div className="space-y-5">
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Spoken Language</label>
-                  <select
-                    value={selectedLanguage}
-                    onChange={(e) => setSelectedLanguage(e.target.value)}
-                    className="bg-[#03060d]/60 border border-slate-800 text-slate-400 text-[10px] rounded px-2 py-1 focus:outline-none"
-                  >
-                    <option value="Auto-Detect">Auto-Detect</option>
-                    <option value="English">English</option>
-                    <option value="Hindi">Hindi</option>
-                    <option value="Kannada">Kannada</option>
-                    <option value="Tamil">Tamil</option>
-                    <option value="Malayalam">Malayalam</option>
-                  </select>
-                </div>
-
-                {/* Recorder Control Area */}
-                <div className="bg-[#03060d]/65 border border-slate-900 rounded-xl p-4 flex flex-col items-center justify-center gap-3">
-                  <p className="text-[10px] text-slate-400 text-center">
-                    Describe a typical <strong>&ldquo;Day in the life&rdquo;</strong> of your operations. Focus on manual steps and software tools.
-                  </p>
-                  
-                  <div className="flex items-center gap-3">
-                    {!isRecording ? (
-                      <button
-                        type="button"
-                        onClick={handleStartRecording}
-                        className="bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-1.5 transition-all"
-                      >
-                        🎙️ Start Voice Recording
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={handleStopRecording}
-                        className="bg-rose-600 hover:bg-rose-700 text-slate-100 text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-1.5 transition-all animate-pulse"
-                      >
-                        ⏹️ Stop Recording ({recordingSeconds}s)
-                      </button>
-                    )}
-                  </div>
-
-                  {transcribing && (
-                    <div className="flex items-center gap-2 text-[10px] text-amber-400">
-                      <div className="w-3 h-3 rounded-full border border-t-amber-500 border-slate-900 animate-spin" />
-                      Converting regional audio to English...
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Review Transcript / Operations Description</label>
-                <textarea
-                  rows={4}
-                  value={wizardDescription}
-                  onChange={(e) => setWizardDescription(e.target.value)}
-                  placeholder="Review audio transcript or type operational details manually..."
-                  className="w-full bg-[#03060d]/30 border border-slate-800 text-slate-200 text-xs rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-amber-500/40 resize-none"
-                />
-              </div>
-
-              <div className="flex items-center gap-3 pt-3">
-                <Button
-                  variant="outline"
-                  onClick={() => setOnboardingStep(1)}
-                  className="border-slate-800 bg-[#0b0f19]/35 hover:bg-slate-900/40 text-slate-400 rounded-lg text-xs px-4 py-3"
-                >
-                  ← Back
-                </Button>
-                <Button
-                  onClick={handleStartOrchestration}
-                  disabled={!wizardDescription.trim() || transcribing}
-                  className="flex-grow bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-slate-950 font-extrabold py-3 rounded-lg shadow-lg text-xs"
-                >
-                  🚀 Run Discovery Analysis
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-    );
-  }
-
   // --- Render Live Dashboard Workspace ---
   return (
     <main className="min-h-screen bg-[#03060d] text-slate-100 p-4 md:p-8 flex flex-col items-center justify-start gap-6 font-sans select-none relative overflow-hidden">
@@ -517,13 +373,16 @@ export default function ProjectWorkspacePage() {
       <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-gradient-to-br from-amber-500/5 to-orange-500/0 blur-[130px] pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-gradient-to-tr from-emerald-500/5 to-teal-500/0 blur-[130px] pointer-events-none" />
 
+      {/* Global Navigation Header */}
+      <GlobalHeader lang={lang} />
+
       {/* Workspace Header */}
       <header className="w-full max-w-6xl flex flex-col md:flex-row items-center justify-between gap-4 border-b border-slate-900/60 pb-5 mt-2 relative z-10">
         <div>
           <div className="flex items-center gap-2 text-xs text-slate-400">
-            <button onClick={() => router.push("/")} className="hover:text-amber-400 font-semibold transition-all">← Dashboard</button>
+            <button onClick={() => router.push(`/${lang}`)} className="hover:text-amber-400 font-semibold transition-all">← {dict.dashboard}</button>
             <span>/</span>
-            <span>Projects</span>
+            <span>{dict.projects}</span>
           </div>
           <h1 className="text-2xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500 mt-1">
             {project.title}
@@ -540,7 +399,7 @@ export default function ProjectWorkspacePage() {
             disabled={!activeSessionState || activeSessionState.status !== "COMPLETED"}
             className="border-slate-800 bg-[#0b0f19]/35 hover:bg-slate-900/40 text-slate-300 rounded-lg text-xs font-extrabold px-4 py-2 transition-all flex items-center gap-1.5"
           >
-            📥 Export to Executive Summary
+            📥 {dict.exportSummary}
           </Button>
 
           <Button
@@ -548,7 +407,7 @@ export default function ProjectWorkspacePage() {
             disabled={isOrchestratorLoopActive}
             className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-slate-950 font-extrabold py-2 px-4 rounded-lg shadow-lg hover:shadow-xl transition-all text-xs"
           >
-            {isOrchestratorLoopActive ? "Evaluating..." : "Run Analysis"}
+            {isOrchestratorLoopActive ? dict.evaluating : dict.runAnalysis}
           </Button>
         </div>
       </header>
@@ -561,7 +420,7 @@ export default function ProjectWorkspacePage() {
             activeTab === "report" ? "border-amber-500 text-amber-400" : "border-transparent text-slate-400 hover:text-slate-200"
           }`}
         >
-          📄 Executive Report
+          📄 {dict.executiveReport}
         </button>
         <button
           onClick={() => setActiveTab("graph")}
@@ -569,7 +428,7 @@ export default function ProjectWorkspacePage() {
             activeTab === "graph" ? "border-amber-500 text-amber-400" : "border-transparent text-slate-400 hover:text-slate-200"
           }`}
         >
-          🕸️ Interactive Graph / Flowchart View
+          🕸️ {dict.interactiveGraph}
         </button>
         <button
           onClick={() => setActiveTab("stepper")}
@@ -577,7 +436,7 @@ export default function ProjectWorkspacePage() {
             activeTab === "stepper" ? "border-amber-500 text-amber-400" : "border-transparent text-slate-400 hover:text-slate-200"
           }`}
         >
-          ⚙️ Pipeline Stepper
+          ⚙️ {dict.pipelineStepper}
         </button>
         <button
           onClick={() => setActiveTab("chat")}
@@ -585,7 +444,7 @@ export default function ProjectWorkspacePage() {
             activeTab === "chat" ? "border-amber-500 text-amber-400" : "border-transparent text-slate-400 hover:text-slate-200"
           }`}
         >
-          💬 Dialogue Panel
+          💬 {dict.dialoguePanel}
         </button>
       </div>
 
@@ -597,8 +456,8 @@ export default function ProjectWorkspacePage() {
               <ReportView sessionState={activeSessionState} />
             ) : (
               <div className="flex flex-col items-center justify-center p-20 text-center gap-4 border border-dashed border-slate-800 rounded-xl">
-                <p className="text-sm text-slate-400">No synthesized report dossier exists yet.</p>
-                <p className="text-xs text-slate-600 leading-normal max-w-md">Click &ldquo;Run Analysis&rdquo; in the header to start execution.</p>
+                <p className="text-sm text-slate-400">{dict.noReport}</p>
+                <p className="text-xs text-slate-600 leading-normal max-w-md">{dict.noReportHelp}</p>
               </div>
             )}
           </div>
@@ -614,7 +473,7 @@ export default function ProjectWorkspacePage() {
               </ReactFlow>
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-center gap-4 p-8">
-                <p className="text-sm text-slate-400">No workflow visual diagram generated yet.</p>
+                <p className="text-sm text-slate-400">{dict.noGraph}</p>
               </div>
             )}
           </div>
@@ -645,13 +504,23 @@ export default function ProjectWorkspacePage() {
                         : "bg-amber-500/10 border-amber-500/20 text-amber-300"
                     }`}>
                       <p className="font-bold text-[9px] uppercase tracking-wider text-slate-500 mb-1">
-                        {isUser ? "User Input" : msg.name || "BuildSense Intelligence"}
+                        {isUser ? dict.userInput : msg.name || "BuildSense Intelligence"}
                       </p>
                       <p className="whitespace-pre-wrap">{msg.content}</p>
                     </div>
                   </div>
                 );
               })}
+              {isOrchestratorLoopActive && (
+                <div className="flex justify-start">
+                  <div className="max-w-[75%] rounded-xl px-4 py-2.5 text-xs leading-relaxed border bg-amber-500/10 border-amber-500/20 text-amber-300 animate-pulse">
+                    <p className="font-bold text-[9px] uppercase tracking-wider text-slate-500 mb-1">
+                      BuildSense Intelligence
+                    </p>
+                    <p className="whitespace-pre-wrap">{dict.reviewingWorkflow || "Reviewing workflow..."}</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <form onSubmit={handleSendChatMessage} className="flex flex-col gap-2.5 border-t border-slate-950 pt-4">
@@ -678,7 +547,7 @@ export default function ProjectWorkspacePage() {
                       onClick={handleStartRecording}
                       className="text-slate-400 hover:text-amber-400 transition-colors text-xs flex items-center gap-1.5"
                     >
-                      🎤 Record Audio
+                      🎤 {dict.recordAudio}
                     </button>
                   ) : (
                     <button
@@ -686,13 +555,13 @@ export default function ProjectWorkspacePage() {
                       onClick={handleStopRecording}
                       className="text-rose-400 font-bold transition-colors text-xs flex items-center gap-1.5 animate-pulse"
                     >
-                      ⏹️ Stop ({recordingSeconds}s)
+                      ⏹️ {dict.stop} ({recordingSeconds}s)
                     </button>
                   )}
                 </div>
 
                 {transcribing && (
-                  <span className="text-[10px] text-amber-400 animate-pulse">Transcribing...</span>
+                  <span className="text-[10px] text-amber-400 animate-pulse">{dict.transcribing}</span>
                 )}
               </div>
 
@@ -701,7 +570,7 @@ export default function ProjectWorkspacePage() {
                   type="text"
                   value={chatMessageInput}
                   onChange={(e) => setChatMessageInput(e.target.value)}
-                  placeholder="Continue dialogue, clarify operations, or submit evidence..."
+                  placeholder={dict.chatPlaceholder}
                   className="flex-grow bg-[#03060d]/60 border border-slate-800 text-slate-200 text-xs rounded-lg px-4 py-3 focus:outline-none"
                 />
                 <Button
@@ -709,7 +578,7 @@ export default function ProjectWorkspacePage() {
                   disabled={!chatMessageInput.trim() || isOrchestratorLoopActive}
                   className="bg-gradient-to-r from-amber-500 to-orange-600 text-slate-950 font-bold text-xs px-5 rounded-lg"
                 >
-                  Send
+                  {dict.send}
                 </Button>
               </div>
             </form>

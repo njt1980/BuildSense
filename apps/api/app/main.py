@@ -98,6 +98,7 @@ class CompanyCreate(BaseModel):
     name: str
     industry: str
     core_tools: str
+    industry_vertical: Optional[str] = None
 
 
 class OrchestrationRequest(BaseModel):
@@ -113,18 +114,20 @@ class OrchestrationRequest(BaseModel):
     )
     file_name: Optional[str] = Field(None, description="Optional uploaded document file name.")
     file_content: Optional[str] = Field(None, description="Optional parsed uploaded document file content.")
-    user_persona: Optional[str] = Field("Solo Founder", description="User persona for customized evaluation tone.")
+    user_persona: Optional[str] = Field("SMB Operator", description="User persona for customized evaluation tone.")
     industry_vertical: Optional[str] = Field(None, description="The user-selected industry vertical.")
     raw_input_text_or_audio: Optional[str] = Field(None, description="The user's raw text description or audio transcript.")
     company_id: Optional[str] = Field(None, description="The optional associated company UUID.")
+    user_constraints: Optional[List[str]] = Field(default_factory=list, description="Client operational and business constraints.")
+    lang: Optional[str] = Field("en", description="User selected language code (en, hi, kn, ta, ml).")
 
 
 class ProjectCreate(BaseModel):
     title: str
     description: Optional[str] = ""
-    mode: SessionMode
-    motivation: str
-    user_persona: str
+    mode: SessionMode = SessionMode.OPTIMIZER
+    motivation: Optional[str] = "EFFICIENCY"
+    user_persona: Optional[str] = "SMB Operator"
     company_id: Optional[str] = None
 
 
@@ -158,7 +161,8 @@ async def create_company_endpoint(
         user_id=current_user.id,
         name=payload.name,
         industry=payload.industry,
-        core_tools=payload.core_tools
+        core_tools=payload.core_tools,
+        industry_vertical=payload.industry_vertical
     )
     return {"company_id": company_id, "status": "created"}
 
@@ -185,13 +189,23 @@ async def create_project(
     Creates a new project record mapped to the authenticated user.
     """
     await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
+
+    # Validate company ownership
+    if payload.company_id:
+        company = await postgres_client.get_company(payload.company_id)
+        if not company or company["user_id"] != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied to specified company."
+            )
+
     project_id = await postgres_client.create_project(
         user_id=current_user.id,
         title=payload.title,
         description=payload.description or "",
         mode=payload.mode.value,
-        motivation=payload.motivation,
-        user_persona=payload.user_persona,
+        motivation=payload.motivation or "EFFICIENCY",
+        user_persona=payload.user_persona or "SMB Operator",
         company_id=payload.company_id
     )
     return {"project_id": project_id, "status": "created"}
@@ -305,6 +319,7 @@ async def get_project_graph(
 async def orchestrate(
     request: Request, 
     payload: OrchestrationRequest,
+    response: Response,
     current_user: AuthenticatedUser = Depends(get_current_user),
     x_user_anthropic_key: Optional[str] = Header(None)
 ) -> SessionState:
@@ -341,10 +356,15 @@ async def orchestrate(
         company = None
         if company_id:
             company = await postgres_client.get_company(company_id)
+            if not company or company["user_id"] != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied to specified company."
+                )
 
         # Parse vertical selection
         if company:
-            user_vertical = company["industry"]
+            user_vertical = company["industry_vertical"] or company["industry"]
         else:
             user_vertical = payload.industry_vertical
 
@@ -362,13 +382,14 @@ async def orchestrate(
             else:
                 db_vertical = user_vertical
 
-        # Default all analyses to real business efficiency and ROI (REVENUE motivation)
-        motivation_val = payload.motivation or "REVENUE"
+        # Default all analyses to business efficiency (EFFICIENCY motivation)
+        motivation_val = payload.motivation or "EFFICIENCY"
         
-        # The backend LangGraph orchestrator handles intent classification silently.
-        # Default the project mode initially to OPTIMIZER (required non-null DB field),
-        # which will be dynamically updated in route_intent.
+        # Default project mode initially to OPTIMIZER
         mode_val = (payload.mode or SessionMode.OPTIMIZER).value
+
+        # Persona defaults to "SMB Operator"
+        persona_val = payload.user_persona or "SMB Operator"
 
         project_id = await postgres_client.create_project(
             user_id=current_user.id,
@@ -376,7 +397,7 @@ async def orchestrate(
             description=prompt_text,
             mode=mode_val,
             motivation=motivation_val,
-            user_persona=payload.user_persona or "Solo Founder",
+            user_persona=persona_val,
             company_id=company_id
         )
         project = await postgres_client.get_project(project_id)
@@ -398,7 +419,7 @@ async def orchestrate(
             company = await postgres_client.get_company(str(p_company_id))
             if company:
                 company_name = company["name"]
-                company_industry = company["industry"]
+                company_industry = company["industry_vertical"] or company["industry"]
                 company_tools = company["core_tools"]
 
         state = SessionState(
@@ -429,10 +450,19 @@ async def orchestrate(
             evidence_ledger=[],
             company_name=company_name,
             company_industry=company_industry,
-            company_core_tools=company_tools
+            company_core_tools=company_tools,
+            user_constraints=payload.user_constraints or [],
+            lang=payload.lang or "en"
         )
         await postgres_client.save_session_state(state)
         await postgres_client.save_chat_messages(project_id, state.messages)
+    else:
+        if payload.user_constraints is not None:
+            state.user_constraints = payload.user_constraints
+        if payload.lang is not None:
+            state.lang = payload.lang
+        if payload.prompt:
+            state.messages.append(Message(role="user", content=payload.prompt, name=None, tool_call_id=None))
 
     # If resuming clarification answers
     if payload.clarification_responses:
@@ -448,12 +478,18 @@ async def orchestrate(
     
     # Sync messages back to DB
     await postgres_client.save_chat_messages(project_id, updated_state.messages)
+
+    # Set CDN Caching headers to prevent cross-language responses cache pollution
+    response.headers["Vary"] = "Accept-Language"
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    
     return updated_state
 
 
 @app.get("/api/v1/session/{session_id}")
 async def get_session(
     session_id: str,
+    response: Response,
     current_user: AuthenticatedUser = Depends(get_current_user)
 ) -> SessionState:
     """
@@ -469,10 +505,70 @@ async def get_session(
 
     state = await postgres_client.get_session_state(session_id)
     if not state:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session with ID '{session_id}' not found.",
+        # Initialize a default SessionState for a blank project containing the AI's first greeting.
+        max_budget = 0.15 if project["mode"] == "SUGGESTER" else 1.25
+        max_steps = 6 if project["mode"] == "SUGGESTER" else 15
+
+        # Fetch company info for injection
+        company_name = None
+        company_industry = None
+        company_tools = None
+        p_company_id = project.get("company_id")
+        if p_company_id:
+            company = await postgres_client.get_company(str(p_company_id))
+            if company:
+                company_name = company["name"]
+                company_industry = company["industry_vertical"] or company["industry"]
+                company_tools = company["core_tools"]
+
+        # Build custom greeting mentioning company name
+        display_company = company_name or "your company"
+        greeting = (
+            f"Hello! I am BuildSense, your AI operations analyst. Let's work together "
+            f"to map and optimize your workflows at **{display_company}**. To get started, "
+            f"could you describe a typical process or task that you perform manually, "
+            f"or share a challenge you'd like to automate?"
         )
+
+        state = SessionState(
+            session_id=session_id,
+            mode=SessionMode(project["mode"]),
+            status=SessionStatus.AWAITING_CLARIFICATION,
+            budget_spent_usd=0.0,
+            max_budget_usd=max_budget,
+            steps_taken=0,
+            max_steps=max_steps,
+            messages=[
+                Message(role="assistant", content=greeting, name="BuildSense Intelligence", tool_call_id=None)
+            ],
+            clarification_questions=[greeting],
+            clarification_responses={},
+            dag_plan=[],
+            metadata={
+                "motivation": project["motivation"],
+                "user_persona": project["user_persona"],
+                "industry_vertical": company_industry or "GENERIC",
+                "company_name": company_name,
+                "company_industry": company_industry,
+                "company_core_tools": company_tools
+            },
+            file_name=None,
+            file_content=None,
+            business_vertical="GENERIC",
+            evidence_ledger=[],
+            company_name=company_name,
+            company_industry=company_industry,
+            company_core_tools=company_tools,
+            user_constraints=[],
+            lang="en"
+        )
+        await postgres_client.save_session_state(state)
+        await postgres_client.save_chat_messages(session_id, state.messages)
+    
+    # Set CDN Caching headers to prevent cross-language responses cache pollution
+    response.headers["Vary"] = "Accept-Language"
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    
     return state
 
 

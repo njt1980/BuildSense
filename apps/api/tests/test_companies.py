@@ -100,3 +100,47 @@ async def test_companies_endpoints_and_mapping() -> None:
 
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_company_ownership_validation_security() -> None:
+    """
+    Verifies that a user cannot create a project mapped to a company owned by someone else.
+    """
+    # 1. Create a company owned by a different user
+    other_user_id = "other-user-12345"
+    postgres_client.is_mock = True
+    
+    other_company_id = await postgres_client.create_company(
+        user_id=other_user_id,
+        name="Stolen Goods Ltd",
+        industry="Retail",
+        core_tools="Shopify"
+    )
+
+    # 2. Authenticate as a different user
+    mock_user = MagicMock()
+    mock_user.id = "authenticated-user-54321"
+    mock_user.email = "legit@buildsense.com"
+
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+
+    try:
+        # 3. Attempt to create a project using the other company ID
+        res_proj = client.post(
+            "/api/v1/projects",
+            json={
+                "title": "Malicious Project Mapping",
+                "description": "Try to hijack company data",
+                "mode": "OPTIMIZER",
+                "motivation": "EFFICIENCY",
+                "user_persona": "SMB Operator",
+                "company_id": other_company_id
+            }
+        )
+        # Should be forbidden!
+        assert res_proj.status_code == 403
+        assert "Access denied" in res_proj.json()["detail"]
+
+    finally:
+        app.dependency_overrides.clear()

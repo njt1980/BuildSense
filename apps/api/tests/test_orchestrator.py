@@ -324,3 +324,28 @@ async def test_tiered_routing_and_caching() -> None:
         # Call 4 (Sonnet): (1500 * 3.0 + 300 * 15.0) / 1_000_000 = 0.009
         # Total cost: 0.000124 + 0.00016 + 0.00315 + 0.009 = 0.012434
         assert abs(updated_state.budget_spent_usd - 0.012434) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_starter_chip_routing() -> None:
+    """
+    Checks that starter chip inputs like "Walk through a typical customer order"
+    evaluate as incomplete and route to AWAITING_CLARIFICATION.
+    """
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-starter-chip",
+        mode=SessionMode.SUGGESTER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=0.15,
+        max_steps=6,
+        messages=[Message(role="user", content="Walk through a typical customer order")]
+    )
+
+    with patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save:
+        updated_state = await orchestrator.run_pipeline(state)
+        
+        assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
+        assert len(updated_state.clarification_questions) == 3
+        assert mock_save.call_count >= 1
+

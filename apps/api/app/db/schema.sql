@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS companies (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     industry VARCHAR(255) NOT NULL,
+    industry_vertical VARCHAR(255),
     core_tools TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -40,6 +41,10 @@ CREATE TABLE IF NOT EXISTS projects (
 
 -- Migration statement to ensure existing databases get the company_id column
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies(id) ON DELETE SET NULL;
+
+-- Migration statement to ensure companies have industry_vertical column
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS industry_vertical VARCHAR(255);
+UPDATE companies SET industry_vertical = industry WHERE industry_vertical IS NULL;
 
 -- Index for fast tenant lookup
 CREATE INDEX IF NOT EXISTS projects_user_id_idx ON projects (user_id);

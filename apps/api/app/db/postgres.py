@@ -157,7 +157,8 @@ class PostgresClient:
         user_id: str,
         name: str,
         industry: str,
-        core_tools: str
+        core_tools: str,
+        industry_vertical: Optional[str] = None
     ) -> str:
         """
         Creates a new company record associated with the user and returns its UUID.
@@ -167,6 +168,9 @@ class PostgresClient:
         except ValueError:
             self.is_mock = True
 
+        if not industry_vertical:
+            industry_vertical = industry
+
         company_id = str(uuid.uuid4())
         if self.is_mock:
             self.mock_store["companies"][company_id] = {
@@ -174,6 +178,7 @@ class PostgresClient:
                 "user_id": user_id,
                 "name": name,
                 "industry": industry,
+                "industry_vertical": industry_vertical,
                 "core_tools": core_tools
             }
             return company_id
@@ -182,13 +187,14 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             await connection.execute(
                 """
-                INSERT INTO companies (id, user_id, name, industry, core_tools)
-                VALUES ($1, $2, $3, $4, $5);
+                INSERT INTO companies (id, user_id, name, industry, industry_vertical, core_tools)
+                VALUES ($1, $2, $3, $4, $5, $6);
                 """,
                 uuid.UUID(company_id),
                 uuid.UUID(user_id),
                 name,
                 industry,
+                industry_vertical,
                 core_tools
             )
         return company_id
@@ -209,7 +215,7 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             row = await connection.fetchrow(
                 """
-                SELECT id, user_id, name, industry, core_tools FROM companies WHERE id = $1;
+                SELECT id, user_id, name, industry, industry_vertical, core_tools FROM companies WHERE id = $1;
                 """,
                 uuid.UUID(company_id)
             )
@@ -220,6 +226,7 @@ class PostgresClient:
                 "user_id": str(row["user_id"]),
                 "name": row["name"],
                 "industry": row["industry"],
+                "industry_vertical": row["industry_vertical"] or row["industry"],
                 "core_tools": row["core_tools"]
             }
 
@@ -242,7 +249,7 @@ class PostgresClient:
         async with self.pool.acquire() as connection:
             rows = await connection.fetch(
                 """
-                SELECT id, user_id, name, industry, core_tools FROM companies WHERE user_id = $1 ORDER BY created_at DESC;
+                SELECT id, user_id, name, industry, industry_vertical, core_tools FROM companies WHERE user_id = $1 ORDER BY created_at DESC;
                 """,
                 uuid.UUID(user_id)
             )
@@ -252,6 +259,7 @@ class PostgresClient:
                     "user_id": str(row["user_id"]),
                     "name": row["name"],
                     "industry": row["industry"],
+                    "industry_vertical": row["industry_vertical"] or row["industry"],
                     "core_tools": row["core_tools"]
                 }
                 for row in rows

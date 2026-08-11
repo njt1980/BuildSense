@@ -62,6 +62,17 @@ class Message(BaseModel):
     tool_call_id: Optional[str] = Field(None, description="Optional tool call ID linking tool output.")
 
 
+class ProcessComponents(BaseModel):
+    """
+    Structured operational components of a business process graph.
+    """
+    trigger: Optional[str] = Field(default=None, description="What event starts the process.")
+    actor: Optional[str] = Field(default=None, description="Who executes the workflow activities.")
+    activity: Optional[str] = Field(default=None, description="What main manual tasks are performed.")
+    system: Optional[str] = Field(default=None, description="What software/hardware systems are used.")
+    friction: Optional[str] = Field(default=None, description="What is the primary manual bottleneck or friction point.")
+
+
 class SessionState(BaseModel):
     """
     Root session state schema capturing execution progress, costs, and content.
@@ -99,3 +110,8 @@ class SessionState(BaseModel):
     company_name: Optional[str] = Field(None, description="The name of the company.")
     company_industry: Optional[str] = Field(None, description="The industry of the company.")
     company_core_tools: Optional[str] = Field(None, description="The core tools of the company.")
+    user_constraints: List[str] = Field(default_factory=list, description="User business and operational constraints.")
+    lang: str = Field("en", description="User selected language code (en, hi, kn, ta, ml).")
+    process_components: ProcessComponents = Field(default_factory=lambda: ProcessComponents(), description="Accumulated process components.")
+    playback_confirmed: bool = Field(default=False, description="Whether the user confirmed the playback summary.")
+    clarification_turns: int = Field(default=0, description="Count of clarification turns taken during intake.")

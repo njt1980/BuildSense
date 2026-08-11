@@ -4,8 +4,11 @@ import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase, isMockAuth, mockAuthService } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
+import { getDictionary } from "@/lib/dictionaries";
 
-export default function LoginPage() {
+export default function LoginPage({ params }: { params: { lang: string } }) {
+  const lang = params.lang || "en";
+  const dict = getDictionary(lang);
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,17 +25,17 @@ export default function LoginPage() {
       if (isMockAuth()) {
         const { data } = await mockAuthService.getSession();
         if (data?.session) {
-          router.push("/");
+          router.push(`/${lang}`);
         }
       } else {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
-          router.push("/");
+          router.push(`/${lang}`);
         }
       }
     };
     checkUser();
-  }, [router]);
+  }, [router, lang]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,13 +46,13 @@ export default function LoginPage() {
       if (mockActive) {
         if (isSignUp) {
           await mockAuthService.signUp(email);
-          setMessage("Mock registration successful! Logging in...");
+          setMessage(lang === "en" ? "Mock registration successful! Logging in..." : "पंजीकरण सफल! लॉग इन किया जा रहा है...");
         } else {
           await mockAuthService.signIn(email);
-          setMessage("Mock login successful!");
+          setMessage(lang === "en" ? "Mock login successful!" : "लॉग इन सफल!");
         }
         setTimeout(() => {
-          router.push("/");
+          router.push(`/${lang}`);
         }, 1000);
       } else {
         if (isSignUp) {
@@ -67,7 +70,7 @@ export default function LoginPage() {
           if (error) throw error;
           setMessage("Login successful! Redirecting...");
           setTimeout(() => {
-            router.push("/");
+            router.push(`/${lang}`);
           }, 1000);
         }
       }
@@ -86,7 +89,7 @@ export default function LoginPage() {
       await mockAuthService.signIn(mockEmail);
       setMessage(`Logged in as simulated ${role}! Redirecting...`);
       setTimeout(() => {
-        router.push("/");
+        router.push(`/${lang}`);
       }, 800);
     } catch (err: any) {
       setMessage(`Error: ${err.message}`);
@@ -103,10 +106,10 @@ export default function LoginPage() {
       <div className="w-full max-w-md bg-[#0b0f19]/45 border border-slate-900 rounded-2xl p-8 backdrop-blur-xl shadow-2xl relative z-10 flex flex-col gap-6">
         <div className="text-center">
           <h1 className="text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500">
-            BuildSense
+            {dict.brand}
           </h1>
           <p className="text-slate-400 text-xs mt-2">
-            Enterprise Product Ideation, Evaluation, and Workflow Optimization
+            {dict.tagline}
           </p>
         </div>
 
@@ -120,7 +123,7 @@ export default function LoginPage() {
         <form onSubmit={handleAuth} className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">
-              Email Address
+              {dict.emailAddress}
             </label>
             <input
               type="email"
@@ -134,7 +137,7 @@ export default function LoginPage() {
 
           <div className="space-y-1.5">
             <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">
-              Password
+              {dict.password}
             </label>
             <input
               type="password"
@@ -151,7 +154,7 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-slate-950 font-extrabold py-3.5 rounded-lg shadow-lg hover:shadow-xl transition-all tracking-wide text-xs"
           >
-            {loading ? "Processing..." : isSignUp ? "Create Account" : "Sign In"}
+            {loading ? dict.processing : isSignUp ? dict.createAccount : dict.signIn}
           </Button>
         </form>
 
@@ -159,7 +162,7 @@ export default function LoginPage() {
           <div className="space-y-2">
             <div className="relative flex py-1 items-center">
               <div className="flex-grow border-t border-slate-800/40"></div>
-              <span className="flex-shrink mx-4 text-slate-600 text-[10px] uppercase font-bold tracking-widest">Simulated Profiles</span>
+              <span className="flex-shrink mx-4 text-slate-600 text-[10px] uppercase font-bold tracking-widest">{dict.simulatedProfiles}</span>
               <div className="flex-grow border-t border-slate-800/40"></div>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -207,9 +210,7 @@ export default function LoginPage() {
             onClick={() => setIsSignUp(!isSignUp)}
             className="text-slate-400 hover:text-amber-300 font-semibold transition-all"
           >
-            {isSignUp
-              ? "Already have an account? Sign In"
-              : "Don't have an account? Create Account"}
+            {isSignUp ? dict.alreadyHaveAccount : dict.dontHaveAccount}
           </button>
         </div>
       </div>

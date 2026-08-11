@@ -78,6 +78,8 @@ export function useOrchestratorStream() {
     clarification_responses?: Record<string, string>;
     file_name?: string;
     file_content?: string;
+    user_constraints?: string[];
+    lang?: string;
   }) => {
     setIsOrchestratorLoopActive(true);
     setErrorDetails(null);
