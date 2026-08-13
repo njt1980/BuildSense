@@ -69,7 +69,8 @@ async def test_orchestrator_ontology_discovery_injection() -> None:
         messages=[Message(role="user", content="truck dispatch")]
     )
 
-    with patch.object(orchestrator.db, "save_session_state", AsyncMock()):
+    with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", False):
         updated_state = await orchestrator.run_pipeline(state)
         
         # Verify vertical was classified as LOGISTICS

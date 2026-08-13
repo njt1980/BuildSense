@@ -15,12 +15,8 @@ class SessionMode(str, Enum):
     Enumeration representing the functional operational mode of a BuildSense session.
 
     Attributes:
-        SUGGESTER: Mode for suggesting new business or educational ideas.
-        EVALUATOR: Mode for assessing viability of a target concept.
         OPTIMIZER: Mode for optimizing manual SMB workflows/SOPs.
     """
-    SUGGESTER = "SUGGESTER"
-    EVALUATOR = "EVALUATOR"
     OPTIMIZER = "OPTIMIZER"
 
 
@@ -71,6 +67,7 @@ class ProcessComponents(BaseModel):
     activity: Optional[str] = Field(default=None, description="What main manual tasks are performed.")
     system: Optional[str] = Field(default=None, description="What software/hardware systems are used.")
     friction: Optional[str] = Field(default=None, description="What is the primary manual bottleneck or friction point.")
+    location: Optional[str] = Field(default=None, description="Optional human-readable location or neighborhood for the business.")
 
 
 class SessionState(BaseModel):
@@ -115,3 +112,4 @@ class SessionState(BaseModel):
     process_components: ProcessComponents = Field(default_factory=lambda: ProcessComponents(), description="Accumulated process components.")
     playback_confirmed: bool = Field(default=False, description="Whether the user confirmed the playback summary.")
     clarification_turns: int = Field(default=0, description="Count of clarification turns taken during intake.")
+    geographic_context: Optional[Dict[str, Any]] = Field(default=None, description="Optional enriched geographic payload (nearby hubs, arteries, constraints).")

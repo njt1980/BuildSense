@@ -59,12 +59,14 @@ export default function Home({ params }: { params: { lang: string } }) {
   const [otherConstraint, setOtherConstraint] = useState<string>("");
  
   // Fetch projects list on mount and when token is ready
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+
   useEffect(() => {
     if (!token) return;
     const fetchProjects = async () => {
       setLoadingProjects(true);
       try {
-        const res = await fetch("http://localhost:9000/api/v1/projects", {
+        const res = await fetch(`${apiBaseUrl}/api/v1/projects`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
@@ -78,7 +80,7 @@ export default function Home({ params }: { params: { lang: string } }) {
       }
     };
     fetchProjects();
-  }, [token]);
+  }, [token, apiBaseUrl]);
  
   // Handle recording timer
   useEffect(() => {
@@ -142,7 +144,7 @@ export default function Home({ params }: { params: { lang: string } }) {
  
     while (attempt < maxRetries && !success) {
       try {
-        const res = await fetch("http://localhost:9000/api/v1/transcribe", {
+        const res = await fetch(`${apiBaseUrl}/api/v1/transcribe`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
           body: formData
@@ -204,7 +206,7 @@ export default function Home({ params }: { params: { lang: string } }) {
       }
  
       // Start orchestration (which returns project_id as session_id)
-      const res = await fetch("http://localhost:9000/api/v1/orchestrate", {
+      const res = await fetch(`${apiBaseUrl}/api/v1/orchestrate`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -254,7 +256,7 @@ export default function Home({ params }: { params: { lang: string } }) {
     setCreatingProject(true);
     setErrorText("");
     try {
-      const res = await fetch("http://localhost:9000/api/v1/projects", {
+      const res = await fetch(`${apiBaseUrl}/api/v1/projects`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -302,7 +304,7 @@ export default function Home({ params }: { params: { lang: string } }) {
     if (!confirm("Are you sure you want to delete this project workspace?") || !token) return;
  
     try {
-      const res = await fetch(`http://localhost:9000/api/v1/projects/${projectId}`, {
+      const res = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` }
       });

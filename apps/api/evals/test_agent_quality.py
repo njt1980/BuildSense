@@ -47,8 +47,8 @@ async def invoke_llm_judge(prompt_payload: str) -> Dict[str, Any]:
     }
 
     request_body = {
-        "model": "claude-3-5-sonnet-20241022",
-        "max_tokens": 1000,
+        "model": "claude-sonnet-5",
+        "max_tokens": 8000,
         "system": JUDGE_SYSTEM_PROMPT,
         "messages": [
             {"role": "user", "content": prompt_payload}
@@ -60,11 +60,15 @@ async def invoke_llm_judge(prompt_payload: str) -> Dict[str, Any]:
             "https://api.anthropic.com/v1/messages",
             json=request_body,
             headers=headers,
-            timeout=30.0,
+            timeout=120.0,
         )
         response.raise_for_status()
         response_data = response.json()
-        response_text = response_data["content"][0]["text"]
+        response_text = "".join(
+            block["text"]
+            for block in response_data.get("content", [])
+            if block.get("type") == "text" and "text" in block
+        )
         
         # Parse the JSON markdown block or plain text return
         cleaned_text = response_text.strip()
@@ -73,7 +77,7 @@ async def invoke_llm_judge(prompt_payload: str) -> Dict[str, Any]:
         elif cleaned_text.startswith("```"):
             cleaned_text = cleaned_text.split("```")[1].split("```")[0].strip()
             
-        parsed_grade: Dict[str, Any] = json.loads(cleaned_text)
+        parsed_grade: Dict[str, Any] = json.loads(cleaned_text, strict=False)
         return parsed_grade
 
 
@@ -104,6 +108,7 @@ async def test_agent_eval_golden_dataset() -> None:
     assert len(golden_cases) > 0, "Golden dataset cases are missing."
 
     for test_case in golden_cases:
+        print(f"\n--- Running Case: {test_case['name']} ---")
         # Build initial SessionState for each test prompt
         state = SessionState(
             session_id=f"eval-session-{test_case['name'].replace(' ', '-')}",
@@ -148,17 +153,24 @@ async def test_agent_eval_golden_dataset() -> None:
 
             # Assert correct status classification
             expected_status_str = test_case["expected_routing_status"]
+            print(f"Case '{test_case['name']}': Expected routing status: {expected_status_str}, got: {output_state.status.value}")
+            if output_state.status.value == "FAILED":
+                print(f"  Failure Reason: {output_state.metadata.get('failure_reason')}")
             assert output_state.status.value == expected_status_str, (
-                f"Routing failed. Expected: {expected_status_str}, got: {output_state.status.value}"
+                f"Routing failed. Expected: {expected_status_str}, got: {output_state.status.value}. Reason: {output_state.metadata.get('failure_reason')}"
             )
 
             # Assert scores are above the 90% passing thresholds (0.90)
             assert grades["routing_accuracy"] == 1, (
                 f"Case '{test_case['name']}': Routing accuracy is low. Justification: {grades.get('justification')}"
             )
+            if grades["zero_jargon_score"] < 0.90 or grades["factuality_score"] < 0.90:
+                print(f"--- FAILURE DETAILS FOR {test_case['name']} ---")
+                print(f"Grades: {json.dumps(grades, indent=2)}")
+                print(f"Metadata Dump: {json.dumps(metadata_dump, indent=2)}")
             assert grades["zero_jargon_score"] >= 0.90, (
-                f"Case '{test_case['name']}': Zero-jargon score {grades['zero_jargon_score']} is below 90% limit."
+                f"Case '{test_case['name']}': Zero-jargon score {grades['zero_jargon_score']} is below 90% limit. Justification: {grades.get('justification')}"
             )
             assert grades["factuality_score"] >= 0.90, (
-                f"Case '{test_case['name']}': Factuality score {grades['factuality_score']} is below 90% limit."
+                f"Case '{test_case['name']}': Factuality score {grades['factuality_score']} is below 90% limit. Justification: {grades.get('justification')}"
             )

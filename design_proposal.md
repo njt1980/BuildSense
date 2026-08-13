@@ -1,112 +1,154 @@
-# Design Proposal: Multi-Tenant Data Hierarchy & Chat-First Routing
+# Design Proposal: BuildSense End-to-End Evaluation Suite
 
-This document details the architectural updates and implementation plan to enforce a pure, chat-first experience backed by a Multi-Tenant Data Hierarchy (User -> Company -> Project) while deprecating the legacy onboarding wizard.
+This proposal details the architecture, file structure, dataset schema, and assertion strategy to implement a systematic End-to-End Evaluation Suite (`apps/api/tests/evals/`) for the BuildSense LangGraph orchestrator (`orchestrator.py`).
 
 ---
 
-## 1. Relational Data Model & Migrations (Backend)
+## 1. Proposed File Structure
 
-### Database Changes
-We will update the `companies` table to include the `industry_vertical` column, aligning with standard requirements while preserving the existing `industry` column to ensure backward compatibility.
+We will isolate the evaluation suite under `apps/api/tests/evals/` to avoid mixing integration/eval tests with unit tests:
 
-```sql
--- Migration block executed automatically on startup
-ALTER TABLE companies ADD COLUMN IF NOT EXISTS industry_vertical VARCHAR(255);
-
--- Synchronize data for existing records
-UPDATE companies SET industry_vertical = industry WHERE industry_vertical IS NULL;
+```
+apps/api/
+└── tests/
+    └── evals/
+        ├── __init__.py
+        ├── conftest.py       # Global database/cache mocks & custom pytest terminal summary reporter
+        ├── eval_dataset.py   # Dataset definitions & multi-turn exchange structures
+        ├── judge.py          # Claude 3.5 Haiku judge client & semantic grading rubrics
+        └── test_runner.py    # Pytest E2E orchestrator assertions (routing & state accumulation)
 ```
 
-The relation hierarchy is defined as:
-- **`users`**: Root tenant (managed via Supabase Auth).
-- **`companies`**: Linked to `users` (1-to-Many).
-- **`projects`**: Linked to `companies` (1-to-Many) via `company_id`.
+---
 
-### LangGraph System Prompt Injection
-In `apps/api/app/core/orchestrator.py`, we will dynamically load the active company's details from the database during the pipeline run:
+## 2. Dataset Schema & Test Scenario Construction
+
+We will define our scenarios in `apps/api/tests/evals/eval_dataset.py`. The schema structure is designed to represent both single-input routing prompts and ordered multi-turn interactions.
+
+### Dataset Schema (`EvalScenario`)
+
+We will use TypedDict definitions for clean schema modeling:
 
 ```python
-# Inside run_pipeline:
-company = await self.db.get_company(project["company_id"])
-state.company_name = company["name"]
-state.company_industry = company["industry_vertical"]
-state.company_core_tools = company["core_tools"]
+from typing import Any, Dict, List, Optional, TypedDict
+
+class Turn(TypedDict):
+    user_input: str
+    expected_status: str
+    expected_components: Dict[str, Any]  # Key-value assertions on process_components
+
+class EvalScenario(TypedDict):
+    name: str
+    mode: str
+    motivation: str
+    turns: List[Turn]
+    expect_synthesis: bool               # True if this scenario completes the entire workflow
+    user_constraints: Optional[List[str]]
 ```
 
-This context is then automatically formatted and appended to `system_prompt_blocks` for every LLM call, ensuring that all agent reasoning is grounded in the company's tool stack and industry.
+### The 5 Golden Scenarios
+
+1. **Short Starter Chips (HITL Clarification)**
+   - **Input**: `"Walk through customer order"` (< 50 characters)
+   - **Assertion**: Immediately routes to `SessionStatus.AWAITING_CLARIFICATION`, `playback_confirmed=False`, and asks ontology questions.
+
+2. **Messy Multi-Turn Conversation (Intake Accumulation)**
+   - **Input Flow**:
+     - **Turn 1**: `"I run a pet shop."` (Assesses vertical, updates state, asks clarification).
+     - **Turn 2**: `"We receive orders on WhatsApp."` (Updates trigger/source, asks clarification).
+     - **Turn 3**: `"I manually type them into Excel."` (Completes the mandatory components loop, presents Playback summary).
+   - **Assertion**: Each turn updates `state.process_components` fields. After Turn 3, `process_components` contains `actor="pet shop staff/owner"`, `system="Excel"`, and `trigger="WhatsApp orders"`.
+
+3. **The Escape Hatch (Fallback to Unknown)**
+   - **Scenario A (User input "I don't know")**:
+     - **Input**: `"I don't know what tools they use."`
+     - **Assertion**: System forcefully fills missing components (`system` or `actor`) with `"UNKNOWN"` and presents the Playback Summary.
+   - **Scenario B (Clarification Turn limit = 2)**:
+     - **Setup**: Inject state with `clarification_turns = 2` and submit a vague query.
+     - **Assertion**: Gracefully falls back to `"UNKNOWN"` for missing slots and enters Playback.
+
+4. **Correction Handling (State Mutation & Re-Playback)**
+   - **Input Flow**:
+     - **Turn 1**: High completeness input triggering Playback (e.g., invoice tracking via Excel).
+     - **Turn 2**: User rejects the Playback Summary with corrections: `"No, we use Tally, not Excel."`
+     - **Assertion**: The `system` component in `process_components` changes from `"Excel"` to `"Tally"`, `playback_confirmed` remains `False`, and a new Playback Summary mentioning "Tally" is emitted.
+
+5. **Full Workflow to Execution & Synthesis**
+   - **Input Flow**:
+     - **Turn 1**: Full business process details.
+     - **Turn 2**: Confirming playback summary: `"Yes, correct."`
+   - **Assertion**: State transitions from `ROUTING` -> `AWAITING_CLARIFICATION` -> `PLANNING` -> `EXECUTING` -> `COMPLETED`. Mocks tool executions and builds a full synthesis report.
 
 ---
 
-## 2. API Route Security (Backend)
+## 3. Deterministic State Machine Assertions
 
-To prevent cross-tenant information leaks, we will enforce strict ownership checks on all project and orchestration requests. 
+We will build a test runner in `test_runner.py` that imports `orchestrator` and runs `run_pipeline` programmatically. 
 
-When a user POSTs to `/api/v1/projects` or `/api/v1/orchestrate` with a `company_id`, the backend will perform the following validation:
-
+### Turn Loop Simulation
+For multi-turn tests, the runner will iteratively invoke `orchestrator.run_pipeline` by appending the new user message to the output state's messages and passing it to the next step:
 ```python
-company = await postgres_client.get_company(payload.company_id)
-if not company or company["user_id"] != current_user.id:
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Access denied to the specified company."
-    )
+state = SessionState(...)
+for turn in scenario["turns"]:
+    state.messages.append(Message(role="user", content=turn.user_input))
+    state = await orchestrator.run_pipeline(state)
+    assert state.status == turn.expected_status
+    # Assert specific process components mutations
+    for k, v in turn.expected_components.items():
+        assert getattr(state.process_components, k) == v
 ```
 
----
-
-## 3. Next.js Frontend State & Context Switching (Frontend)
-
-### Global Context Provider
-We will implement `CompanyProvider` in `apps/web/src/components/company-provider.tsx` to handle:
-- Fetching and storing all companies belonging to the user.
-- Tracking the currently selected `activeCompany`.
-- Persisting the selection in `localStorage`.
-
-All dashboard widgets, workspace tables, and prompt intake templates will consume this context.
-
-### Lightweight Onboarding / "Create Company" Flow
-- If a user logs in and the API returns 0 companies, the page will render a fullscreen `CreateCompanyFlow` instead of the main dashboard.
-- Access to the dashboard is blocked until at least one company baseline is established.
-
-### Global switcher UI
-We will build a global `Header` containing a styled dropdown switcher for selecting the active company.
-- On the home page: Selecting a new company instantly filters the projects list.
-- On the workspace page: If a user switches the company context, they are redirected back to the home page (`/[lang]`) under the new company's context.
+### Safety & Loop Protections
+- Assertion that `steps_taken` does not exceed `max_steps`.
+- Verification that session status transitions to `SessionStatus.FAILED` if budget or step limits are breached, avoiding infinite loop traps.
 
 ---
 
-## 4. Deprecation of Onboarding Wizard (Frontend)
+## 4. LLM-as-a-Judge Semantic Assertions
 
-We will remove the conditional `if (isOnboardingActive)` layout from `/[lang]/projects/[id]/page.tsx` entirely. 
-- The user will land directly in the workspace interface.
-- The default tab selection will be set to the **Dialogue Panel** (Chat).
-- The manual "Role Persona" selection form is removed; the backend will default this to `"Solo Founder"`.
+We will build a lightweight judge in `judge.py` calling `claude-3-5-haiku-20241022` to score generated outputs.
 
----
+### Grading Criteria & Rubrics
+1. **Zero-Jargon Compliance**:
+   - Check if jargon terms like *ROI*, *LTV*, *CAC*, *MRR* are accompanied by everyday analogies in parentheses.
+2. **Recommendation Hierarchy Integrity**:
+   - Ensure the recommendations section evaluates Tier 1 (Process/Policy Change) and Tier 2 (Deterministic SaaS/Automation) before suggesting Tier 3 (Gen AI/Agents).
+3. **Playback Formatting**:
+   - Verify that Playback Summaries utilize scannable emoji-bulleted Markdown lists with the custom emojis (`🚚`, `👤`, `⚙️`, `💻`, `⚠️`).
 
-## 5. Seamless Chat-First Routing (End-to-End)
+### JSON Output Schema
+```json
+{
+  "zero_jargon_score": float,         // Range 0.0 - 1.0 (threshold >= 0.90)
+  "hierarchy_integrity_score": float, // Range 0.0 - 1.0 (threshold >= 0.90)
+  "playback_formatting_score": float,  // Range 0.0 - 1.0 (threshold >= 0.90)
+  "justification": "string"
+}
+```
 
-### Route 1: Home Page Discovery Prompt
-1. The user types a business process prompt on the home page and clicks **Start Discovery**.
-2. The UI enters a full-screen loading overlay.
-3. The frontend calls `POST /api/v1/orchestrate` passing the initial prompt and the active `company_id`.
-4. The backend creates the project, runs the LangGraph orchestrator's initial loop, saves the resulting messages (user prompt + AI's clarifying response), and returns the state.
-5. The frontend redirects the user directly to `/[lang]/projects/[projectId]`. Since the chat history is pre-populated, they see the initial dialogue rendered instantly with no flicker or intermediate wizard forms.
-
-### Route 2: New Blank Project
-1. The user clicks **➕ New Blank Project** in the dashboard.
-2. The UI enters a loading state.
-3. The frontend calls `POST /api/v1/projects` with a placeholder title and the active `company_id`.
-4. The backend creates the project.
-5. The frontend redirects to `/[lang]/projects/[projectId]`.
-6. When the workspace mounts and fetches the session state, the backend notices the chat history is empty. It automatically initializes a default greeting:
-   > *"Hello! I am BuildSense, your AI operations analyst. Let's work together to map and optimize your workflows at **[Company Name]**. To get started, describe a manual workflow..."*
-7. The greeting renders immediately in the Dialogue Panel.
+If the API key is not present in the local environment, the judge will fail gracefully and return mock passing scores (`1.0`) to avoid blocking local developer pipelines.
 
 ---
 
-## 6. Verification and Rollout Plan
+## 5. Custom Execution CLI & Terminal Reporter
 
-1. **Backend Tests**: Run `pytest` to verify RLS configurations and endpoint status.
-2. **Security Verification**: Attempt to create a project using a company ID belonging to a different user, asserting a `403 Forbidden` response.
-3. **Manual Walkthrough**: Test the end-to-end user flows for both a new company creation, discovery prompt execution, and blank workspace creation.
+The evaluation suite will be executed with:
+```powershell
+pytest apps/api/tests/evals
+```
+
+We will implement `pytest_terminal_summary` inside `apps/api/tests/evals/conftest.py` to capture test execution duration (latency) and status. It will render a clean terminal summary:
+
+```
+========================= E2E EVALUATION REPORT =========================
+SCENARIO NAME                               STATUS    LATENCY (s)
+-------------------------------------------------------------------------
+Vague Starter Chip Clarification            PASSED    0.12s
+Messy Multi-Turn Intake Accumulation        PASSED    2.84s
+The Escape Hatch Fallback                   PASSED    0.15s
+Correction Handling & Re-Playback           PASSED    1.22s
+Full Workflow Execution & Synthesis         PASSED    4.52s
+-------------------------------------------------------------------------
+Overall Pass Rate: 100.0% | Total Latency: 8.85s
+=========================================================================
+```

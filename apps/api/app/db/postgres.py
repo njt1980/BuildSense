@@ -9,9 +9,13 @@ dual-namespace vector searches.
 import os
 import json
 import uuid
+import logging
 from typing import Any, Dict, List, Optional, Tuple, cast
 import asyncpg
 from app.models.state import SessionState, Message
+
+# Structured logger for infra fallback messages
+logger = logging.getLogger(__name__)
 
 
 class PostgresClient:
@@ -64,7 +68,15 @@ class PostgresClient:
                 self.is_mock = False
             except Exception as e:
                 # Graceful fallback to local in-memory Mock mode if offline
-                print(f"Warning: PostgreSQL server offline ({e}). Running in Mock database mode.")
+                logger.warning(
+                    "PostgreSQL connection failed; falling back to mock store",
+                    extra={
+                        "service": "postgres",
+                        "fallback": "mock",
+                        "database_url_present": bool(self.database_url),
+                        "error": str(e),
+                    },
+                )
                 self.is_mock = True
 
     async def disconnect(self) -> None:
@@ -82,7 +94,10 @@ class PostgresClient:
         await self.connect()
 
         if self.is_mock:
-            print("Mock database initialized.")
+            logger.warning(
+                "Mock database initialized (postgres fallback active)",
+                extra={"service": "postgres", "fallback": "mock"},
+            )
             return
 
         assert self.pool is not None

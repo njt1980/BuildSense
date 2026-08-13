@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # Global Daily Cost Limit
     max_global_daily_spend: float = 10.00
 
+    # LangSmith Observability Integration
+    langchain_tracing_v2: str = "false"
+    langchain_endpoint: Optional[str] = None
+    langchain_api_key: Optional[str] = None
+    langchain_project: Optional[str] = None
+
     # Pydantic settings configuration to load .env files
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -40,3 +46,14 @@ class Settings(BaseSettings):
 
 # Instantiate a global settings object
 settings = Settings()
+
+# Set LangSmith environment variables if configured
+import os
+if settings.langchain_tracing_v2:
+    os.environ["LANGCHAIN_TRACING_V2"] = settings.langchain_tracing_v2
+if settings.langchain_endpoint:
+    os.environ["LANGCHAIN_ENDPOINT"] = settings.langchain_endpoint
+if settings.langchain_api_key:
+    os.environ["LANGCHAIN_API_KEY"] = settings.langchain_api_key
+if settings.langchain_project:
+    os.environ["LANGCHAIN_PROJECT"] = settings.langchain_project

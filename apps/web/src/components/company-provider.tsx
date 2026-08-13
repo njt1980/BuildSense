@@ -38,9 +38,11 @@ export function CompanyProvider({ children, lang }: { children: React.ReactNode;
   const [activeCompany, setActiveCompanyState] = useState<Company | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+
   const fetchCompanies = useCallback(async (authToken: string) => {
     try {
-      const res = await fetch("http://localhost:9000/api/v1/companies", {
+      const res = await fetch(`${apiBaseUrl}/api/v1/companies`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       if (res.ok) {
@@ -66,7 +68,7 @@ export function CompanyProvider({ children, lang }: { children: React.ReactNode;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apiBaseUrl]);
 
   useEffect(() => {
     if (!token) {
@@ -92,7 +94,8 @@ export function CompanyProvider({ children, lang }: { children: React.ReactNode;
   const createCompany = useCallback(async (name: string, industry: string, tools: string): Promise<Company> => {
     if (!token) throw new Error("No auth credentials found.");
 
-    const res = await fetch("http://localhost:9000/api/v1/companies", {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+    const res = await fetch(`${apiBaseUrl}/api/v1/companies`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

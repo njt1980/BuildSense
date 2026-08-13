@@ -8,6 +8,20 @@ from app.models.state import SessionState, SessionMode, SessionStatus, Message, 
 from app.core.orchestrator import Orchestrator
 
 
+def make_mock_response(text: str) -> MagicMock:
+    block = MagicMock()
+    block.text = text
+    block.type = "text"
+    response = MagicMock()
+    response.content = [block]
+    response.usage = MagicMock()
+    response.usage.input_tokens = 100
+    response.usage.output_tokens = 50
+    response.usage.cache_read_input_tokens = 0
+    response.usage.cache_creation_input_tokens = 0
+    return response
+
+
 @pytest.mark.asyncio
 async def test_stateful_accumulator_accumulation_turns() -> None:
     """
@@ -29,19 +43,17 @@ async def test_stateful_accumulator_accumulation_turns() -> None:
     )
 
     # Mock Claude response for Turn 1
-    mock_extract_response_1 = MagicMock()
-    mock_extract_response_1.content = [MagicMock(text=json.dumps({
+    mock_extract_response_1 = make_mock_response(json.dumps({
         "trigger": "New order comes in",
         "actor": "Dispatcher",
         "activity": "Manually handle order",
         "system": None,
         "friction": None
-    }))]
+    }))
     mock_extract_response_1.usage.input_tokens = 100
     mock_extract_response_1.usage.output_tokens = 50
 
-    mock_question_response_1 = MagicMock()
-    mock_question_response_1.content = [MagicMock(text="What system or software do you use, and what is the primary friction?")]
+    mock_question_response_1 = make_mock_response("What system or software do you use, and what is the primary friction?")
     mock_question_response_1.usage.input_tokens = 120
     mock_question_response_1.usage.output_tokens = 40
 
@@ -109,11 +121,10 @@ async def test_playback_confirmation_gate_yes() -> None:
     )
 
     # Mock Claude response for confirmation gate
-    mock_confirm_response = MagicMock()
-    mock_confirm_response.content = [MagicMock(text=json.dumps({
+    mock_confirm_response = make_mock_response(json.dumps({
         "is_confirmation": True,
         "corrections": {}
-    }))]
+    }))
     mock_confirm_response.usage.input_tokens = 150
     mock_confirm_response.usage.output_tokens = 20
     mock_confirm_response.usage.cache_read_input_tokens = 0
@@ -176,8 +187,7 @@ async def test_playback_confirmation_gate_no_correction() -> None:
     )
 
     # Mock Claude response for confirmation gate: not a confirmation, system is corrected to Tally ERP
-    mock_confirm_response = MagicMock()
-    mock_confirm_response.content = [MagicMock(text=json.dumps({
+    mock_confirm_response = make_mock_response(json.dumps({
         "is_confirmation": False,
         "corrections": {
             "trigger": None,
@@ -186,7 +196,7 @@ async def test_playback_confirmation_gate_no_correction() -> None:
             "system": "Tally ERP",
             "friction": None
         }
-    }))]
+    }))
     mock_confirm_response.usage.input_tokens = 150
     mock_confirm_response.usage.output_tokens = 50
 
@@ -227,10 +237,18 @@ async def test_conversational_mask_intake_question() -> None:
         playback_confirmed=False
     )
 
-    mock_question_response = MagicMock()
-    mock_question_response.content = [MagicMock(text="How do your dispatchers schedule those runs?")]
-    mock_question_response.usage.input_tokens = 100
-    mock_question_response.usage.output_tokens = 30
+    mock_extract = make_mock_response(json.dumps({
+        "trigger": "New orders",
+        "actor": "Drivers",
+        "activity": "route scheduling",
+        "system": None,
+        "friction": None
+    }))
+    mock_question = make_mock_response("How do your dispatchers schedule those runs?")
+    mock_extract.usage.input_tokens = 100
+    mock_extract.usage.output_tokens = 50
+    mock_question.usage.input_tokens = 120
+    mock_question.usage.output_tokens = 40
 
     with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic_class, \
          patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
@@ -239,7 +257,7 @@ async def test_conversational_mask_intake_question() -> None:
 
         orchestrator = Orchestrator()
         mock_client = MagicMock()
-        mock_client.messages.create = AsyncMock(return_value=mock_question_response)
+        mock_client.messages.create = AsyncMock(side_effect=[mock_extract, mock_question])
         mock_anthropic_class.return_value = mock_client
 
         updated_state = await orchestrator.run_pipeline(state, user_key="mock-key")
@@ -275,11 +293,22 @@ async def test_playback_summary_emoji_formatting() -> None:
         playback_confirmed=False
     )
 
-    with patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+    mock_confirm = make_mock_response(json.dumps({
+        "is_confirmation": False,
+        "corrections": {}
+    }))
+
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic_class, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
          patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
 
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_confirm)
+        mock_anthropic_class.return_value = mock_client
+
         orchestrator = Orchestrator()
-        updated_state = await orchestrator.run_pipeline(state)
+        updated_state = await orchestrator.run_pipeline(state, user_key="mock-key")
 
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         summary = updated_state.messages[-1].content

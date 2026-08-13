@@ -27,6 +27,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
   - **Orchestration**: Native Python `while` loop (Anthropic Tool Use API) — *No LangGraph or external agent frameworks*.
   - **Tool Layer**: Model Context Protocol (`mcp-python-sdk`) connecting off-the-shelf and custom FastMCP tools.
   - **Database / Infra**: PostgreSQL with `pgvector` (Cloud hosted via Neon/Supabase), Redis (Cloud hosted via Upstash), AWS ECS (Fargate).
+  - **Local development note**: Port `8000` may be restricted on some Windows laptops; if so, configure the backend to run on another available port and update the frontend API URL accordingly.
 
 ---
 
@@ -127,10 +128,12 @@ Always run these validation commands in your Antigravity terminal session before
 - **Run Agentic Evals**: `pytest evals/ -v --run-evals`
 - **Type Checking**: `mypy app/`
 - **FastMCP Tool Verification**: `pytest tests/test_mcp_tools.py -v`
+- **Integration Testing**: include frontend/backend wiring checks for key flows such as onboarding, project creation, and orchestration endpoint connectivity.
 
 ### Frontend UI (`apps/web`)
 - **Type Checking**: `npm run type-check`
 - **Linting**: `npm run lint`
+- **Runtime Integration**: validate `NEXT_PUBLIC_API_BASE_URL` and local backend connectivity before declaring the UI ready.
 
 ---
 
@@ -142,6 +145,7 @@ Before presenting a task as complete in Antigravity:
 - [ ] Untrusted tool outputs are properly wrapped in `<untrusted_tool_output>` XML boundaries.
 - [ ] Context pruning hook operates correctly on step completion.
 - [ ] If orchestrator or prompt logic was altered, the `evals/` suite passes with >90% on the Zero-Jargon and Hallucination metrics.
+- [ ] Runtime frontend/backend integration flows are validated, especially onboarding and API endpoint connectivity.
 - [ ] UI rendered in Antigravity browser confirms the Dual-View toggle works seamlessly.
 - [ ] No hardcoded secrets, API keys, or unhandled debug logs (`print()`, `console.log()`) remain.
 - [ ] All changes have been committed to git with a descriptive conventional commit message.

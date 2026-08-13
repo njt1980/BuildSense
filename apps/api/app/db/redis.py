@@ -5,9 +5,13 @@ IP rate-limiting checking, and global cumulative spend monitoring against budget
 """
 
 import os
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import redis.asyncio as aioredis
+
+# Structured logger for infra fallback messages
+logger = logging.getLogger(__name__)
 
 
 class MockRedis:
@@ -90,9 +94,17 @@ class RedisClient:
                     decode_responses=True,
                 )
                 await self.client.ping()
-            except Exception:
+            except Exception as e:
                 # Graceful fallback to local MockRedis client if offline
-                print("Warning: Redis server offline. Running in Mock cache mode.")
+                logger.warning(
+                    "Redis connection failed; running in Mock cache mode",
+                    extra={
+                        "service": "redis",
+                        "fallback": "mock",
+                        "redis_url_present": bool(self.redis_url),
+                        "error": str(e),
+                    },
+                )
                 self.client = MockRedis()
 
     async def disconnect(self) -> None:

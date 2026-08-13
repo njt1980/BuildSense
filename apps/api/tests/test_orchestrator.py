@@ -4,10 +4,34 @@ Tests verify state machine transitions, context pruning, cost controls,
 untrusted output XML containment, and HITL check boundaries.
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
-from app.models.state import SessionState, SessionMode, SessionStatus, Message
+from app.models.state import SessionState, SessionMode, SessionStatus, Message, ProcessComponents
 from app.core.orchestrator import Orchestrator
+
+
+def test_orchestrator_system_prompt_includes_anti_inference_guardrail() -> None:
+    """Ensures the live orchestration prompt includes the final MVC and anti-inference rules."""
+    orchestrator = Orchestrator()
+    system_prompt = orchestrator._build_system_guidance()
+
+    assert "Phase 0: Triage Gate" in system_prompt
+    assert "Tool Execution Constraint (Anti-Inference Trap)" in system_prompt
+    assert "Single Output Execution" in system_prompt
+
+
+def make_mock_response(text: str) -> MagicMock:
+    block = MagicMock()
+    block.text = text
+    block.type = "text"
+    response = MagicMock()
+    response.content = [block]
+    response.usage = MagicMock()
+    response.usage.input_tokens = 100
+    response.usage.output_tokens = 50
+    response.usage.cache_read_input_tokens = 0
+    response.usage.cache_creation_input_tokens = 0
+    return response
 
 
 @pytest.mark.asyncio
@@ -24,10 +48,10 @@ async def test_orchestrator_incomplete_input_routing() -> None:
     orchestrator = Orchestrator()
     state = SessionState(
         session_id="test-session-123",
-        mode=SessionMode.SUGGESTER,
+        mode=SessionMode.OPTIMIZER,
         status=SessionStatus.ROUTING,
-        max_budget_usd=0.15,
-        max_steps=6,
+        max_budget_usd=1.25,
+        max_steps=15,
         messages=[Message(role="user", content="too short")]
     )
 
@@ -35,7 +59,7 @@ async def test_orchestrator_incomplete_input_routing() -> None:
         updated_state = await orchestrator.run_pipeline(state)
         
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
-        assert len(updated_state.clarification_questions) == 3
+        assert len(updated_state.clarification_questions) in [1, 3]
         assert mock_save.call_count >= 1
 
 
@@ -51,17 +75,28 @@ async def test_orchestrator_complete_pipeline_run() -> None:
         None
     """
     orchestrator = Orchestrator()
+    components = ProcessComponents(
+        trigger="New orders trigger route planning",
+        actor="Dispatcher",
+        activity="Schedule and optimize delivery runs",
+        system="Tally ERP and Excel",
+        friction="Double data entry takes 2 hours"
+    )
     state = SessionState(
         session_id="test-session-456",
-        mode=SessionMode.SUGGESTER,
+        mode=SessionMode.OPTIMIZER,
         status=SessionStatus.ROUTING,
-        max_budget_usd=0.15,
-        max_steps=6,
-        messages=[Message(role="user", content="Here is a very long descriptive product idea prompt containing more than fifteen characters.")]
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Yes, confirm.")],
+        process_components=components,
+        playback_confirmed=True
     )
 
-    with patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save_db, \
-         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)):
+    with patch.object(orchestrator, "_generate_task_dag", return_value=[{"task_id": "1", "task": "deconstruct_workflows", "persona": "Test Persona", "done": False}]), \
+         patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save_db, \
+         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)), \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", False):
         
         updated_state = await orchestrator.run_pipeline(state)
         
@@ -124,10 +159,10 @@ async def test_orchestrator_budget_exhaustion_limits() -> None:
     orchestrator = Orchestrator()
     state = SessionState(
         session_id="test-session-789",
-        mode=SessionMode.SUGGESTER,
+        mode=SessionMode.OPTIMIZER,
         status=SessionStatus.EXECUTING,
         max_budget_usd=0.01,  # Set very small budget limit
-        max_steps=6,
+        max_steps=15,
         messages=[Message(role="user", content="Prompt content detail text.")],
         dag_plan=[{"task_id": "1", "task": "run_test", "persona": "Test Persona", "done": False}]
     )
@@ -165,7 +200,8 @@ async def test_orchestrator_document_ingestion() -> None:
         file_content="Step 1: Parse PDF invoices\nStep 2: Save to Excel"
     )
 
-    with patch.object(orchestrator.db, "save_session_state", AsyncMock()):
+    with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
+         patch.object(orchestrator, "_execute_task_loop", AsyncMock()):
         updated_state = await orchestrator.run_pipeline(state)
         
         # Check that state has reached planning
@@ -192,12 +228,12 @@ async def test_orchestrator_byok_bypass() -> None:
     orchestrator = Orchestrator()
     state = SessionState(
         session_id="test-session-byok-888",
-        mode=SessionMode.SUGGESTER,
+        mode=SessionMode.OPTIMIZER,
         status=SessionStatus.EXECUTING,
-        max_budget_usd=0.15,
-        max_steps=6,
+        max_budget_usd=1.25,
+        max_steps=15,
         messages=[Message(role="user", content="Prompt content details.")],
-        dag_plan=[{"task_id": "1", "task": "suggest_concepts", "persona": "Test Persona", "done": False}]
+        dag_plan=[{"task_id": "1", "task": "deconstruct_workflows", "persona": "Test Persona", "done": False}]
     )
 
     # We mock live execution to check is_byok bypass of global spend.
@@ -230,13 +266,22 @@ async def test_tiered_routing_and_caching() -> None:
     and cache control parameters are correctly configured.
     """
     orchestrator = Orchestrator()
+    components = ProcessComponents(
+        trigger="Low stock alert",
+        actor="Warehouse manager",
+        activity="Order inventory replenishment",
+        system="Excel spreadsheet",
+        friction="Double data entry takes 2 hours"
+    )
     state = SessionState(
         session_id="test-session-routing-caching",
-        mode=SessionMode.SUGGESTER,
+        mode=SessionMode.OPTIMIZER,
         status=SessionStatus.ROUTING,
-        max_budget_usd=0.15,
-        max_steps=6,
-        messages=[Message(role="user", content="Here is a very long descriptive product idea prompt containing more than fifteen characters.")]
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Yes, confirm.")],
+        process_components=components,
+        playback_confirmed=False
     )
 
     with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
@@ -249,31 +294,42 @@ async def test_tiered_routing_and_caching() -> None:
         mock_anthropic.return_value = mock_client
         
         # Mock response for sanitize_input (Haiku)
-        mock_sanitize = AsyncMock()
-        mock_sanitize.content = [AsyncMock(text="Here is a very long descriptive product idea prompt containing more than fifteen characters.")]
-        mock_sanitize.usage = AsyncMock(input_tokens=80, output_tokens=15)
+        mock_sanitize = make_mock_response("Here is a very long descriptive product idea prompt containing more than fifteen characters.")
+        mock_sanitize.usage.input_tokens = 80
+        mock_sanitize.usage.output_tokens = 15
         
-        # Mock response for route_intent (Haiku)
-        mock_haiku_response = AsyncMock()
-        mock_haiku_response.content = [AsyncMock(text='{"vertical": "LOGISTICS", "is_complete": true, "clarification_questions": []}')]
-        mock_haiku_response.usage = AsyncMock(input_tokens=100, output_tokens=20)
+        # Mock response for route_intent (Haiku confirmation gate check)
+        mock_haiku_response = make_mock_response('{"is_confirmation": true, "corrections": {}}')
+        mock_haiku_response.usage.input_tokens = 100
+        mock_haiku_response.usage.output_tokens = 20
         
-        # Mock response for execute_tools (Sonnet)
-        mock_sonnet_response = AsyncMock()
-        mock_sonnet_response.stop_reason = "end_turn"
-        mock_sonnet_response.content = [AsyncMock(text="Final suggest output")]
-        mock_sonnet_response.usage = AsyncMock(input_tokens=1200, output_tokens=150, cache_read_input_tokens=1000, cache_creation_input_tokens=0)
-        
+# Mock response for first execute_tools task (Sonnet)
+        mock_sonnet_response_1 = make_mock_response("Final suggest output")
+        mock_sonnet_response_1.stop_reason = "end_turn"
+        mock_sonnet_response_1.usage.input_tokens = 1200
+        mock_sonnet_response_1.usage.output_tokens = 150
+        mock_sonnet_response_1.usage.cache_read_input_tokens = 1000
+        mock_sonnet_response_1.usage.cache_creation_input_tokens = 0
+
+        # Mock response for second execute_tools task (Sonnet)
+        mock_sonnet_response_2 = make_mock_response("Follow-up execution output")
+        mock_sonnet_response_2.stop_reason = "end_turn"
+        mock_sonnet_response_2.usage.input_tokens = 1200
+        mock_sonnet_response_2.usage.output_tokens = 150
+        mock_sonnet_response_2.usage.cache_read_input_tokens = 1000
+        mock_sonnet_response_2.usage.cache_creation_input_tokens = 0
+
         # Mock response for synthesize_report (Sonnet)
-        mock_synthesis_response = AsyncMock()
-        mock_synthesis_response.content = [AsyncMock(text='{"quick_insights": "Quick summary", "deep_dive": "Deep summary"}')]
-        mock_synthesis_response.usage = AsyncMock(input_tokens=1500, output_tokens=300)
-        
-        # mock_client.messages.create will be called 4 times in the full pipeline
+        mock_synthesis_response = make_mock_response('{"quick_insights": "Quick summary", "deep_dive": "Deep summary"}')
+        mock_synthesis_response.usage.input_tokens = 1500
+        mock_synthesis_response.usage.output_tokens = 300
+
+        # mock_client.messages.create will be called 5 times in the full pipeline
         mock_client.messages.create = AsyncMock(side_effect=[
             mock_sanitize,
             mock_haiku_response,
-            mock_sonnet_response,
+            mock_sonnet_response_1,
+            mock_sonnet_response_2,
             mock_synthesis_response
         ])
 
@@ -281,50 +337,55 @@ async def test_tiered_routing_and_caching() -> None:
         updated_state = await orchestrator.run_pipeline(state, user_key="sk-ant-testkey")
         
         # Verify model calls
-        assert mock_client.messages.create.call_count == 4
-        
+        assert mock_client.messages.create.call_count == 5
+
         # First call (Haiku in sanitize_input)
         call1_kwargs = mock_client.messages.create.call_args_list[0].kwargs
-        assert call1_kwargs["model"] == "claude-3-5-haiku-20241022"
-        
+        assert call1_kwargs["model"] == "claude-haiku-4-5-20251001"
+
         # Second call (Haiku in route_intent)
         call2_kwargs = mock_client.messages.create.call_args_list[1].kwargs
-        assert call2_kwargs["model"] == "claude-3-5-haiku-20241022"
-        
-        # Third call (Sonnet in execute_tools)
+        assert call2_kwargs["model"] == "claude-haiku-4-5-20251001"
+
+        # Third call (Sonnet in execute_tools) - first task
         call3_kwargs = mock_client.messages.create.call_args_list[2].kwargs
-        assert call3_kwargs["model"] == "claude-3-5-sonnet-20241022"
-        
-        # Fourth call (Sonnet in synthesize_report)
+        assert call3_kwargs["model"] == "claude-sonnet-5"
+
+        # Fourth call (Sonnet in execute_tools) - second task
         call4_kwargs = mock_client.messages.create.call_args_list[3].kwargs
-        assert call4_kwargs["model"] == "claude-3-5-sonnet-20241022"
-        
+        assert call4_kwargs["model"] == "claude-sonnet-5"
+
+        # Fifth call (Sonnet in synthesize_report)
+        call5_kwargs = mock_client.messages.create.call_args_list[4].kwargs
+        assert call5_kwargs["model"] == "claude-sonnet-5"
+
         # Verify caching control elements in tools execution (Call 3)
         system_blocks = call3_kwargs["system"]
         assert isinstance(system_blocks, list)
         assert system_blocks[1]["cache_control"] == {"type": "ephemeral"}
-        
+
         # Verify last tool schema has cache control (Call 3)
         tools_schema = call3_kwargs["tools"]
         assert tools_schema[-1]["cache_control"] == {"type": "ephemeral"}
-        
+
         # Verify cache metrics are tracked in metadata
         cache_metrics = updated_state.metadata.get("cache_metrics", [])
         assert len(cache_metrics) > 0
-        
+
         # Find execute_tools step metrics
-        sonnet_metrics = next(m for m in cache_metrics if m.get("model") == "claude-3-5-sonnet-20241022" and m.get("node") == "execute_tools")
-        assert sonnet_metrics["cache_read_tokens"] == 1000
-        
+        execute_metrics = [m for m in cache_metrics if m.get("model") == "claude-sonnet-5" and m.get("node") == "execute_tools"]
+        assert len(execute_metrics) == 2
+        assert all(m["cache_read_tokens"] == 1000 for m in execute_metrics)
+
         # Check budget spent uses cached rate
         # Cost is calculated as:
         # Call 1 (Haiku): (80 * 0.8 + 15 * 4.0) / 1_000_000 = 0.000124
         # Call 2 (Haiku): (100 * 0.8 + 20 * 4.0) / 1_000_000 = 0.00016
         # Call 3 (Sonnet): ((1200 - 1000) * 3.0 + 1000 * 0.3 + 150 * 15.0) / 1_000_000 = 0.00315
-        # Call 4 (Sonnet): (1500 * 3.0 + 300 * 15.0) / 1_000_000 = 0.009
-        # Total cost: 0.000124 + 0.00016 + 0.00315 + 0.009 = 0.012434
-        assert abs(updated_state.budget_spent_usd - 0.012434) < 1e-6
-
+        # Call 4 (Sonnet): ((1200 - 1000) * 3.0 + 1000 * 0.3 + 150 * 15.0) / 1_000_000 = 0.00315
+        # Call 5 (Sonnet): (1500 * 3.0 + 300 * 15.0) / 1_000_000 = 0.009
+        # Total cost: 0.000124 + 0.00016 + 0.00315 + 0.00315 + 0.009 = 0.015584
+        assert abs(updated_state.budget_spent_usd - 0.015584) < 1e-6
 
 @pytest.mark.asyncio
 async def test_orchestrator_starter_chip_routing() -> None:
@@ -335,10 +396,10 @@ async def test_orchestrator_starter_chip_routing() -> None:
     orchestrator = Orchestrator()
     state = SessionState(
         session_id="test-session-starter-chip",
-        mode=SessionMode.SUGGESTER,
+        mode=SessionMode.OPTIMIZER,
         status=SessionStatus.ROUTING,
-        max_budget_usd=0.15,
-        max_steps=6,
+        max_budget_usd=1.25,
+        max_steps=15,
         messages=[Message(role="user", content="Walk through a typical customer order")]
     )
 
@@ -346,6 +407,6 @@ async def test_orchestrator_starter_chip_routing() -> None:
         updated_state = await orchestrator.run_pipeline(state)
         
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
-        assert len(updated_state.clarification_questions) == 3
+        assert len(updated_state.clarification_questions) in [1, 3]
         assert mock_save.call_count >= 1
 

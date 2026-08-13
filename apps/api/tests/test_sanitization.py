@@ -36,7 +36,7 @@ async def test_sanitize_node_filler_stripping() -> None:
     orchestrator = Orchestrator()
     state = {
         "session_id": "test-session-san-1",
-        "mode": SessionMode.SUGGESTER,
+        "mode": SessionMode.OPTIMIZER,
         "status": SessionStatus.ROUTING,
         "messages": [
             Message(role="user", content="uh, actually we do route dispatch, um, yeah, wait, no, fleet logistics")
@@ -75,7 +75,7 @@ async def test_sanitize_node_adversarial_rejection() -> None:
     for user_input in adversarial_inputs:
         state = {
             "session_id": "test-session-san-2",
-            "mode": SessionMode.SUGGESTER,
+            "mode": SessionMode.OPTIMIZER,
             "status": SessionStatus.ROUTING,
             "messages": [
                 Message(role="user", content=user_input)
@@ -99,7 +99,7 @@ async def test_fallback_node_clarification_questions() -> None:
     orchestrator = Orchestrator()
     state = {
         "session_id": "test-session-san-3",
-        "mode": SessionMode.SUGGESTER,
+        "mode": SessionMode.OPTIMIZER,
         "status": SessionStatus.AWAITING_CLARIFICATION,
         "messages": [
             Message(role="user", content="asdf")

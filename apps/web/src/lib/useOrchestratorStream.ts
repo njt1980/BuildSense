@@ -22,7 +22,7 @@ export interface SessionState {
   /** Unique UUID string identifying the active session */
   session_id: string;
   /** Active operational mode of the session */
-  mode: "SUGGESTER" | "EVALUATOR" | "OPTIMIZER";
+  mode: "OPTIMIZER";
   /** Current state machine pipeline status */
   status:
     | "ROUTING"
@@ -53,6 +53,20 @@ export interface SessionState {
 }
 
 /**
+ * Deduplicate messages by role+content key. Keeps the last occurrence for each unique key.
+ */
+function dedupeMessages(messages: Message[] | undefined): Message[] {
+  if (!messages || messages.length === 0) return [];
+  const map = new Map<string, Message>();
+  for (const m of messages) {
+    const key = `${m.role}|${(m.content || "").trim().slice(0, 500)}`;
+    // last-wins to allow final payload to overwrite intermediate chunks
+    map.set(key, m);
+  }
+  return Array.from(map.values());
+}
+
+/**
  * Custom React hook managing the Server-Sent Events (SSE) or JSON connection stream
  * to the FastAPI orchestrate endpoint, handling progress, logs, and pauses.
  *
@@ -72,7 +86,7 @@ export function useOrchestratorStream() {
    */
   const executeOrchestratorRequest = useCallback(async (params: {
     prompt?: string;
-    mode?: "SUGGESTER" | "EVALUATOR" | "OPTIMIZER";
+    mode?: "OPTIMIZER";
     motivation?: string;
     session_id?: string;
     clarification_responses?: Record<string, string>;
@@ -80,6 +94,9 @@ export function useOrchestratorStream() {
     file_content?: string;
     user_constraints?: string[];
     lang?: string;
+    user_persona?: string;
+    industry_vertical?: string;
+    company_id?: string;
   }) => {
     setIsOrchestratorLoopActive(true);
     setErrorDetails(null);
@@ -122,8 +139,8 @@ export function useOrchestratorStream() {
         headers["Authorization"] = `Bearer ${jwtToken}`;
       }
 
-      // Endpoint is hosted on backend port 9000
-      const response = await fetch("http://localhost:9000/api/v1/orchestrate", {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+      const response = await fetch(`${apiBaseUrl}/api/v1/orchestrate`, {
         method: "POST",
         headers,
         body: JSON.stringify(params),
@@ -147,7 +164,9 @@ export function useOrchestratorStream() {
       
       if (contentType.includes("application/json")) {
         const resultState: SessionState = await response.json();
-        setActiveSessionState(resultState);
+        // Deduplicate incoming messages by role+content to avoid rendering duplicates
+        const deduped = dedupeMessages(resultState.messages || []);
+        setActiveSessionState({ ...resultState, messages: deduped });
 
         // Populate logs dynamically from steps state
         const generatedLogs: string[] = [
@@ -186,7 +205,9 @@ export function useOrchestratorStream() {
                   const eventDataContent = trimmedLine.replace("data:", "").trim();
                   try {
                     const parsedEventState: SessionState = JSON.parse(eventDataContent);
-                    setActiveSessionState(parsedEventState);
+                    // Deduplicate messages before updating state
+                    const dedupedStream = dedupeMessages(parsedEventState.messages || []);
+                    setActiveSessionState({ ...parsedEventState, messages: dedupedStream });
                     setOrchestratorLogs((previousLogs) => [
                       ...previousLogs,
                       `[SYSTEM] State update: ${parsedEventState.status}`,

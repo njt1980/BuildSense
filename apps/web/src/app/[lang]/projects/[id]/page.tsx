@@ -98,12 +98,14 @@ export default function ProjectWorkspacePage() {
   } = useOrchestratorStream();
 
   // Load project details on mount
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+
   useEffect(() => {
     if (!token || !projectId) return;
     
     const loadProjectDetails = async () => {
       try {
-        const res = await fetch(`http://localhost:9000/api/v1/projects/${projectId}`, {
+        const res = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
@@ -120,7 +122,7 @@ export default function ProjectWorkspacePage() {
 
     const loadGraphDetails = async () => {
       try {
-        const res = await fetch(`http://localhost:9000/api/v1/projects/${projectId}/graph`, {
+        const res = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/graph`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
@@ -135,7 +137,7 @@ export default function ProjectWorkspacePage() {
 
     const checkExistingRun = async () => {
       try {
-        const res = await fetch(`http://localhost:9000/api/v1/session/${projectId}`, {
+        const res = await fetch(`${apiBaseUrl}/api/v1/session/${projectId}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (res.ok) {
@@ -160,15 +162,24 @@ export default function ProjectWorkspacePage() {
   useEffect(() => {
     if (activeSessionState?.status === "AWAITING_CLARIFICATION") {
       setActiveTab("chat");
-      if (activeSessionState.mode === "SUGGESTER" && activeSessionState.clarification_questions && activeSessionState.clarification_questions.length > 0) {
-        setIsClarificationOpen(true);
-      } else {
-        setIsClarificationOpen(false);
-      }
+      setIsClarificationOpen(false);
     } else {
       setIsClarificationOpen(false);
     }
-
+    // Force Dialogue panel if collected process components are incomplete
+    const components = (activeSessionState?.metadata as any)?.process_components || (activeSessionState as any)?.process_components || {};
+    const required = ["trigger", "actor", "activity", "system"];
+    const missing = required.filter((k) => !components || !components[k] || String(components[k]).trim() === "" || String(components[k]).toUpperCase() === "UNKNOWN");
+    if (missing.length > 0) {
+      setActiveTab("chat");
+    } else if (activeSessionState && (activeSessionState.metadata?.as_is_workflow || activeSessionState.metadata?.technology_neutral_recommendations)) {
+      // If synthesis completed, allow the report view to be active (but don't force-switch if user is elsewhere)
+      if (activeTab === "chat") {
+        // prefer leaving user in chat if they are interacting; but if they had no messages, default to report
+        const hasUserMsgs = (activeSessionState.messages || []).filter((m: any) => m.role === "user").length > 0;
+        if (!hasUserMsgs) setActiveTab("report");
+      }
+    }
     if (activeSessionState && activeSessionState.messages && activeSessionState.messages.length > 0) {
       setIsOnboardingActive(false);
     }
@@ -176,7 +187,7 @@ export default function ProjectWorkspacePage() {
     if (activeSessionState?.status === "COMPLETED") {
       const refreshGraph = async () => {
         try {
-          const res = await fetch(`http://localhost:9000/api/v1/projects/${projectId}/graph`, {
+          const res = await fetch(`${apiBaseUrl}/api/v1/projects/${projectId}/graph`, {
             headers: { Authorization: `Bearer ${token}` }
           });
           if (res.ok) {
@@ -188,7 +199,7 @@ export default function ProjectWorkspacePage() {
       };
       refreshGraph();
     }
-  }, [activeSessionState, projectId, token]);
+  }, [activeSessionState, projectId, token, apiBaseUrl]);
 
   // Audio timer management
   useEffect(() => {
@@ -252,7 +263,7 @@ export default function ProjectWorkspacePage() {
 
     while (attempt < maxRetries && !success) {
       try {
-        const res = await fetch("http://localhost:9000/api/v1/transcribe", {
+        const res = await fetch(`${apiBaseUrl}/api/v1/transcribe`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
           body: formData
@@ -498,7 +509,7 @@ export default function ProjectWorkspacePage() {
                 const isUser = msg.role === "user";
                 return (
                   <div key={idx} className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-                    <div className={`max-w-[75%] rounded-xl px-4 py-2.5 text-xs leading-relaxed border ${
+                    <div className={`max-w-[75%] rounded-xl px-4 py-2.5 text-xs leading-relaxed border break-words ${
                       isUser
                         ? "bg-slate-950/60 border-slate-800 text-slate-200"
                         : "bg-amber-500/10 border-amber-500/20 text-amber-300"
@@ -506,7 +517,7 @@ export default function ProjectWorkspacePage() {
                       <p className="font-bold text-[9px] uppercase tracking-wider text-slate-500 mb-1">
                         {isUser ? dict.userInput : msg.name || "BuildSense Intelligence"}
                       </p>
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      <p className="whitespace-pre-wrap break-words max-w-full">{msg.content}</p>
                     </div>
                   </div>
                 );

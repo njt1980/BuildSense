@@ -407,8 +407,8 @@ async def orchestrate(
     # Load session state mapping from database or initialize
     state = await postgres_client.get_session_state(project_id)
     if not state:
-        max_budget = 0.15 if project["mode"] == "SUGGESTER" else 1.25
-        max_steps = 6 if project["mode"] == "SUGGESTER" else 15
+        max_budget = 1.25
+        max_steps = 15
 
         # Fetch company info for injection
         company_name = None
@@ -505,9 +505,8 @@ async def get_session(
 
     state = await postgres_client.get_session_state(session_id)
     if not state:
-        # Initialize a default SessionState for a blank project containing the AI's first greeting.
-        max_budget = 0.15 if project["mode"] == "SUGGESTER" else 1.25
-        max_steps = 6 if project["mode"] == "SUGGESTER" else 15
+        max_budget = 1.25
+        max_steps = 15
 
         # Fetch company info for injection
         company_name = None

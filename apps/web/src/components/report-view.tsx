@@ -13,6 +13,25 @@ export function ReportView({ sessionState }: ReportViewProps) {
   const deepDive = (sessionState.metadata.deep_dive as string) || "No deep dive dossier compiled.";
   const evidenceLedger = sessionState.evidence_ledger || [];
 
+  // Gate access to the Executive / Deep view based on backend synthesis completion.
+  const canShowExecutive = Boolean(
+    sessionState?.metadata?.as_is_workflow || sessionState?.metadata?.technology_neutral_recommendations
+  );
+
+  const [activeTab, setActiveTab] = React.useState<string>(canShowExecutive ? "deep" : "quick");
+
+  React.useEffect(() => {
+    // When backend state changes, enforce gating: if synthesis not ready, force Quick/Dialogue.
+    const allow = Boolean(
+      sessionState?.metadata?.as_is_workflow || sessionState?.metadata?.technology_neutral_recommendations
+    );
+    if (!allow && activeTab === "deep") {
+      setActiveTab("quick");
+    }
+    // If the backend just completed synthesis, keep user's choice but allow switching to deep.
+    // No automatic switch to deep to avoid surprising the user.
+  }, [sessionState?.metadata, activeTab]);
+
   return (
     <Card className="w-full bg-[#0b0f19]/45 border border-slate-900/80 backdrop-blur-md text-slate-100 rounded-xl shadow-2xl overflow-hidden">
       <CardHeader className="border-b border-slate-900/60 bg-slate-950/20 py-5 px-5">
@@ -52,7 +71,14 @@ export function ReportView({ sessionState }: ReportViewProps) {
       </CardHeader>
 
       <CardContent className="p-6">
-        <Tabs defaultValue="quick" className="w-full">
+        <Tabs value={activeTab} onValueChange={(v) => {
+          if (v === "deep" && !canShowExecutive) {
+            // Prevent transition until backend signals completion
+            setActiveTab("quick");
+            return;
+          }
+          setActiveTab(v);
+        }} className="w-full">
           <TabsList className="bg-[#03060d]/80 border border-slate-900/60 rounded-lg p-1 w-full grid grid-cols-2 max-w-[400px] mb-6">
             <TabsTrigger
               value="quick"
@@ -86,6 +112,12 @@ export function ReportView({ sessionState }: ReportViewProps) {
         </Tabs>
 
         {/* Evidence Ladder Ledger Audit Panel */}
+        {!canShowExecutive && (
+          <div className="mt-4 text-xs text-slate-400">
+            Executive report is not yet available — gathering more information. Continue the
+            conversation in the Dialogue panel until analysis completes.
+          </div>
+        )}
         {evidenceLedger.length > 0 && (
           <div className="mt-8 border-t border-slate-900/60 pt-6">
             <h3 className="text-sm font-bold text-slate-200 mb-3 flex items-center gap-2">
