@@ -1,0 +1,23 @@
+#!/bin/sh
+echo "Running pre-commit ledger & tests check..."
+
+# Run backend tests (fast path)
+pytest apps/api/tests/ -q
+RC=$?
+
+if [ "$RC" -eq 0 ]; then
+  echo "Tests passed. Proceeding with commit."
+  exit 0
+fi
+
+echo "Tests failed (exit $RC). Checking staged changes for docs/DEFECT_LEDGER.md..."
+
+# If the defects ledger is staged, allow commit (assumes user added an entry explaining the failure)
+if git diff --cached --name-only | grep -q "^docs/DEFECT_LEDGER.md$"; then
+  echo "DEFECT_LEDGER.md is staged. Allowing commit despite failing tests."
+  exit 0
+else
+  echo "ERROR: Tests failed and docs/DEFECT_LEDGER.md is not staged."
+  echo "Please update docs/DEFECT_LEDGER.md with the defect or stage the changes to proceed."
+  exit 1
+fi
