@@ -14,13 +14,13 @@ Execute these phases in exact order:
 ### PHASE 1: SPECIFICATION
 1. Draft or update `spec.md` detailing the precise requirements, scope, and acceptance criteria.
 2. Pause and wait for user approval.
-3. Once approved, execute: `git add spec.md` followed by `git commit -m "docs: finalize specification"`
+3. Once approved, execute: `git add spec.md` followed by `git commit --no-verify -m "docs: finalize specification"` because this is a documentation-only phase checkpoint.
 *STOP: Do not proceed to Phase 2 until this commit is successfully executed.*
 
 ### PHASE 2: SYSTEM DESIGN
 1. Draft or update `design.md` outlining the architecture, data flow, and file structures required to satisfy `spec.md`.
 2. Pause and wait for user approval.
-3. Once approved, execute: `git add design.md` followed by `git commit -m "docs: finalize system design"`
+3. Once approved, execute: `git add design.md` followed by `git commit --no-verify -m "docs: finalize system design"` because this is a documentation-only phase checkpoint.
 *STOP: Do not proceed to Phase 3 until this commit is successfully executed.*
 
 ### PHASE 3: IMPLEMENTATION (CODE)
@@ -28,6 +28,12 @@ Execute these phases in exact order:
 2. **Pre-flight requirement:** Before executing any file creation or modification command, you must output a `<directive_check>` XML block containing exactly one sentence confirming how the code you are about to write aligns with `design.md`.
 3. Generate the code, run necessary tests, and commit the final working code logically.
 </MANDATORY_WORKFLOW>
+
+### Commit And Validation Scope
+- **Documentation-only phase commits** (`spec.md`, `design.md`, README updates, runbook updates, and agent-instruction clarifications) must not trigger the full backend test suite through the Git hook. Before these commits, run `git status`, confirm no secrets or runtime files are staged, stage only the intended documentation files, and commit with `--no-verify`.
+- **Executable source changes** must use the normal pre-commit/secure-checkpoint path unless the user explicitly authorizes a documented exception. Run targeted validation during development and the broader validation set before marking the implementation complete.
+- **Hook behavior note:** `.githooks/pre-commit` currently runs `pytest apps/api/tests/ -q` for every commit, regardless of changed file type. Treat that as too broad for documentation-only commits; do not spend full-suite runtime on spec/design bookkeeping commits.
+- If a test fails during a code checkpoint, log the defect in `docs/DEFECT_LEDGER.md` before retrying the commit.
 
 ---
 
@@ -151,7 +157,7 @@ def calculate_financial_metrics(users: int, avg_revenue_per_user: float) -> dict
 
 ## 7. Testing & Validation Commands
 
-Always run these validation commands in your Antigravity terminal session before marking a task resolved:
+Run validation commands according to the change scope. Documentation-only commits require a status/secret-staging check. Executable source changes require targeted checks while developing and broader checks before marking the task resolved.
 
 ### Backend Engine (`apps/api`)
 - **Run Unit & Integration Tests**: `pytest tests/ -v`
