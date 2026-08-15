@@ -198,38 +198,46 @@ export default function Home({ params }: { params: { lang: string } }) {
     }
  
     try {
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`
-      };
-      if (userApiKey) {
-        headers["X-User-Anthropic-Key"] = userApiKey;
-      }
- 
-      // Start orchestration (which returns project_id as session_id)
-      const res = await fetch(`${apiBaseUrl}/api/v1/orchestrate`, {
+      const title = prompt.trim().slice(0, 30) + (prompt.trim().length > 30 ? "..." : "");
+      const res = await fetch(`${apiBaseUrl}/api/v1/projects`, {
         method: "POST",
-        headers,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({
-          raw_input_text_or_audio: prompt,
-          industry_vertical: activeCompany?.industry_vertical || activeCompany?.industry || "General Business",
+          title: title || "New Discovery Run",
+          description: prompt,
+          mode: "OPTIMIZER",
+          motivation: "EFFICIENCY",
           user_persona: "SMB Operator",
-          file_name: uploadedFile?.name,
-          file_content: uploadedFile?.content,
-          company_id: activeCompany?.id,
-          user_constraints: constraintsToSend,
-          lang: lang
+          company_id: activeCompany?.id
         })
       });
   
       if (!res.ok) {
-        throw new Error(`Execution error: ${res.statusText}`);
+        throw new Error(`Workspace creation error: ${res.statusText}`);
       }
   
-      const state = await res.json();
-      const newProjectId = state.session_id;
-  
-      // Redirect immediately to the project's workspace
+      const data = await res.json();
+      const newProjectId = data.project_id;
+
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem(
+          `buildsense_pending_intake:${newProjectId}`,
+          JSON.stringify({
+            prompt,
+            industry_vertical: activeCompany?.industry_vertical || activeCompany?.industry || "General Business",
+            user_persona: "SMB Operator",
+            file_name: uploadedFile?.name,
+            file_content: uploadedFile?.content,
+            company_id: activeCompany?.id,
+            user_constraints: constraintsToSend,
+            lang
+          })
+        );
+      }
+
       router.push(`/${lang}/projects/${newProjectId}`);
     } catch (err: any) {
       setErrorText(err.message || "Failed to start orchestration.");

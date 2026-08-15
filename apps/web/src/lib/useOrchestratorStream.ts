@@ -80,6 +80,21 @@ export function useOrchestratorStream() {
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   /**
+   * Hydrates the hook with persisted session state without starting orchestration.
+   *
+   * @param state - Previously saved backend session state, or null to clear it.
+   */
+  const hydrateOrchestratorSession = useCallback((state: SessionState | null) => {
+    if (!state) {
+      setActiveSessionState(null);
+      return;
+    }
+
+    const dedupedMessages = dedupeMessages(state.messages || []);
+    setActiveSessionState({ ...state, messages: dedupedMessages });
+  }, []);
+
+  /**
    * Starts or resumes a BuildSense session pipeline step.
    * Uses native ReadableStream over HTTP fetch POST to capture execution logs.
    *
@@ -253,6 +268,7 @@ export function useOrchestratorStream() {
     orchestratorLogs,
     errorDetails,
     executeOrchestratorRequest,
+    hydrateOrchestratorSession,
     resetOrchestratorSession,
   };
 }

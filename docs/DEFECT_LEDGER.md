@@ -137,3 +137,9 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** The hook runs `pytest apps/api/tests/ -q` with the machine-level Python environment, which produced a different playback summary casing/wording than the project `.venv` run that previously passed the backend suite. The specific assertion expects `Order inventory replenishment`, while the hook environment produced `Inventory replenishment`.
 * **Resolution:** Logged the checkpoint failure before retrying the documentation commit. The functional fix should include a follow-up test/code adjustment so playback summary expectations are stable across supported local Python environments.
 * **Files Touched:** `docs/DEFECT_LEDGER.md`
+
+## [BUG-018] - Date: 2026-08-15
+* **Issue:** Dashboard workflow submission blocked on the first orchestration pass before navigating, then the project workspace automatically triggered another orchestration pass on mount, making `Scaffolding Workspace...` and `Evaluating...` feel unnecessarily slow.
+* **Root Cause:** `apps/web/src/app/[lang]/page.tsx` used `/api/v1/orchestrate` as both project creation and analysis kickoff, and `apps/web/src/app/[lang]/projects/[id]/page.tsx` called `executeOrchestratorRequest` after loading an existing session instead of hydrating state.
+* **Resolution:** Changed dashboard submission to create a project quickly through `/api/v1/projects`, persist a scoped pending intake payload in `sessionStorage`, navigate immediately, hydrate existing workspace session state without starting orchestration, and consume pending intake once after the workspace is visible.
+* **Files Touched:** `apps/web/src/app/[lang]/page.tsx`, `apps/web/src/app/[lang]/projects/[id]/page.tsx`, `apps/web/src/lib/useOrchestratorStream.ts`, `docs/DEFECT_LEDGER.md`

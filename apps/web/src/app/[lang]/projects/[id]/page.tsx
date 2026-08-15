@@ -96,6 +96,7 @@ export default function ProjectWorkspacePage() {
     activeSessionState,
     isOrchestratorLoopActive,
     executeOrchestratorRequest,
+    hydrateOrchestratorSession,
   } = useOrchestratorStream();
 
   // Load project details on mount
@@ -136,7 +137,7 @@ export default function ProjectWorkspacePage() {
       }
     };
 
-    const checkExistingRun = async () => {
+    const hydrateExistingSession = async () => {
       try {
         const res = await fetch(`${apiBaseUrl}/api/v1/session/${projectId}`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -144,7 +145,7 @@ export default function ProjectWorkspacePage() {
         if (res.ok) {
           const stateData = await res.json();
           if (stateData) {
-            executeOrchestratorRequest({ session_id: projectId, lang: lang });
+            hydrateOrchestratorSession(stateData);
             const userMsgs = stateData.messages?.filter((m: any) => m.role === "user") || [];
             if (userMsgs.length === 0) {
               setActiveTab("chat");
@@ -152,12 +153,40 @@ export default function ProjectWorkspacePage() {
           }
         }
       } catch {}
+
+      if (typeof window === "undefined") return;
+
+      const pendingIntakeKey = `buildsense_pending_intake:${projectId}`;
+      const pendingIntake = sessionStorage.getItem(pendingIntakeKey);
+      if (!pendingIntake) return;
+
+      sessionStorage.removeItem(pendingIntakeKey);
+      try {
+        const parsedPendingIntake = JSON.parse(pendingIntake) as {
+          prompt?: string;
+          file_name?: string;
+          file_content?: string;
+          user_constraints?: string[];
+          industry_vertical?: string;
+          user_persona?: string;
+          lang?: string;
+          company_id?: string;
+        };
+        executeOrchestratorRequest({
+          ...parsedPendingIntake,
+          session_id: projectId,
+          lang: parsedPendingIntake.lang || lang,
+        });
+        setActiveTab("chat");
+      } catch {
+        setActiveTab("chat");
+      }
     };
 
     loadProjectDetails();
     loadGraphDetails();
-    checkExistingRun();
-  }, [token, projectId, executeOrchestratorRequest, lang, apiBaseUrl]);
+    hydrateExistingSession();
+  }, [token, projectId, executeOrchestratorRequest, hydrateOrchestratorSession, lang, apiBaseUrl]);
 
   // Sync state transitions & clarification modals
   useEffect(() => {
