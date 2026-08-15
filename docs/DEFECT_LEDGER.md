@@ -149,3 +149,9 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** Playback and fallback synthesis paths interpolated internal `ProcessComponents` values directly into user-facing templates, while the architect plan focused on workflow slots instead of a broader consultant rubric. Correction handling also preserved some updates as generic pending context rather than explicitly treating newer user statements as overwrites.
 * **Resolution:** Added six-pillar architect metadata for Market, Operations, Financials, Personnel, Technology, and Risk; selected a single blind spot for the next high-value question; sanitized internal sentinels before prompt construction; generated natural playback from known details only; expanded correction routing to overwrite prior assumptions; and replaced the local synthesis slot dump with placeholder-safe fallback prose.
 * **Files Touched:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_interview.py`, `apps/api/tests/test_resilience.py`, `apps/api/tests/evals/eval_dataset.py`, `apps/api/tests/evals/judge.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-020] - Date: 2026-08-15
+* **Issue:** The implementation commit hook failed on `apps/api/tests/test_interview.py::test_frictionless_intake_completeness_no_friction` even though the focused local run passed.
+* **Root Cause:** The test did not explicitly disable the live Anthropic path, so environments with an available API key could classify the initial workflow text as confirmation and continue to completion instead of exercising the deterministic playback gate.
+* **Resolution:** Patched the test to force `HAS_ANTHROPIC = False`, matching its purpose as an offline deterministic playback regression.
+* **Files Touched:** `apps/api/tests/test_interview.py`, `docs/DEFECT_LEDGER.md`

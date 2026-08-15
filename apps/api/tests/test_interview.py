@@ -342,7 +342,8 @@ async def test_escape_hatch_max_turns() -> None:
         clarification_turns=2
     )
 
-    with patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
          patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
 
         orchestrator = Orchestrator()
@@ -374,7 +375,8 @@ async def test_escape_hatch_user_dont_know() -> None:
         clarification_turns=0
     )
 
-    with patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
          patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
 
         orchestrator = Orchestrator()
@@ -411,7 +413,8 @@ async def test_frictionless_intake_completeness_no_friction() -> None:
         playback_confirmed=False
     )
 
-    with patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
          patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
 
         orchestrator = Orchestrator()
