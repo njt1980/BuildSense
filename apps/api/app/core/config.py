@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     """
     # Host and port configuration
     host: str = "0.0.0.0"
-    port: int = 9000
+    port: int = 8001
 
     # API Keys & Integrations
     anthropic_api_key: Optional[str] = None
@@ -29,6 +29,16 @@ class Settings(BaseSettings):
 
     # Global Daily Cost Limit
     max_global_daily_spend: float = 10.00
+
+    # Telemetry and local developer observability
+    environment: str = "local"
+    service_name: str = "buildsense-api"
+    telemetry_enabled: bool = True
+    telemetry_log_level: str = "INFO"
+    telemetry_log_format: str = "json"
+    local_telemetry_viewer_enabled: bool = True
+    local_telemetry_max_events: int = 1000
+    local_telemetry_max_runs: int = 100
 
     # LangSmith Observability Integration
     langchain_tracing_v2: str = "false"

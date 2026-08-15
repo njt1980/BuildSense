@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS projects (
     company_id UUID REFERENCES companies(id) ON DELETE SET NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
-    mode VARCHAR(50) NOT NULL, -- SUGGESTER, EVALUATOR, OPTIMIZER
+    mode VARCHAR(50) NOT NULL, -- OPTIMIZER
     motivation VARCHAR(50) NOT NULL, -- REVENUE, EDUCATION
     user_persona VARCHAR(100) NOT NULL, -- Small Business Operator, Student, Solo Founder, Enterprise PM
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

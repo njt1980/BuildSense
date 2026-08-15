@@ -6,7 +6,32 @@
 
 ---
 
-## 1. Google Antigravity Artifact Guidelines
+## 1. <MANDATORY_WORKFLOW> (Plan-First, Code-Second)
+You must strictly follow a sequential workflow: Spec → Design → Code. You are explicitly forbidden from writing, generating, or modifying executable source code until the specification and design phases are fully documented and committed to version control.
+
+Execute these phases in exact order:
+
+### PHASE 1: SPECIFICATION
+1. Draft or update `spec.md` detailing the precise requirements, scope, and acceptance criteria.
+2. Pause and wait for user approval.
+3. Once approved, execute: `git add spec.md` followed by `git commit -m "docs: finalize specification"`
+*STOP: Do not proceed to Phase 2 until this commit is successfully executed.*
+
+### PHASE 2: SYSTEM DESIGN
+1. Draft or update `design.md` outlining the architecture, data flow, and file structures required to satisfy `spec.md`.
+2. Pause and wait for user approval.
+3. Once approved, execute: `git add design.md` followed by `git commit -m "docs: finalize system design"`
+*STOP: Do not proceed to Phase 3 until this commit is successfully executed.*
+
+### PHASE 3: IMPLEMENTATION (CODE)
+1. You are now authorized to write and modify source code. 
+2. **Pre-flight requirement:** Before executing any file creation or modification command, you must output a `<directive_check>` XML block containing exactly one sentence confirming how the code you are about to write aligns with `design.md`.
+3. Generate the code, run necessary tests, and commit the final working code logically.
+</MANDATORY_WORKFLOW>
+
+---
+
+## 2. Google Antigravity Artifact Guidelines
 
 When executing tasks in this repository, you must generate verifiable artifacts to prove correctness before marking any sub-task complete:
 
@@ -18,9 +43,9 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 ---
 
-## 2. Project Overview & Context
+## 3. Project Overview & Context
 
-- **Domain**: BuildSense is an agentic business intelligence platform offering Idea Suggestion, Idea Evaluation, and SMB Workflow Optimization.
+- **Domain**: BuildSense is an agentic business intelligence platform focused on SMB Workflow Optimization.
 - **Core Architecture**:
   - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI.
   - **Backend**: FastAPI (Python 3.11+), Uvicorn, Pydantic v2.
@@ -31,7 +56,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 ---
 
-## 3. Repository Structure
+## 4. Repository Structure
 
 ```text
 .
@@ -55,12 +80,10 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 ---
 
-## 4. Operational Constraints & Security Guardrails
+## 5. Operational Constraints & Security Guardrails
 
-### 🚫 Non-Negotiable Rules
-
+<CRITICAL_DIRECTIVES>
 **Prompt Injection Isolation**: ALL unstructured text returned by external MCP servers (Web Search, GitHub READMEs) MUST be wrapped in XML tags before appending to the conversation history:
-
 ```xml
 <untrusted_tool_output source="web_search_mcp">
   [RAW SEARCH CONTENT HERE]
@@ -69,9 +92,9 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 **Context Pruning**: Never keep massive raw HTML/JSON tool outputs in `SessionState.messages` across iterations. Once an execution step completes, summarize key findings using a lightweight pass and drop the raw payload to keep token consumption flat.
 
-**Strict Tiered Budgets**:
-- `SessionMode.SUGGESTER`: `max_budget_usd = $0.15` | `max_steps = 6`
-- `SessionMode.EVALUATOR` & `OPTIMIZER`: `max_budget_usd = $1.25` | `max_steps = 15`
+**Optimizer-Only Budget**:
+- `SessionMode.OPTIMIZER`: `max_budget_usd = $1.25` | `max_steps = 15`
+- Do not reintroduce `SUGGESTER` or `EVALUATOR` modes in prompts, eval fixtures, schema comments, frontend copy, or agent instructions unless a documented product decision and defect/change-ledger entry explicitly approves that architecture change.
 
 **Abuse Protection (No-Auth Environment)**:
 - Enforce IP rate-limiting via `slowapi` (Max 3 full runs per IP per 24 hours).
@@ -83,11 +106,14 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 **Plain-English Rule**: System prompts for synthesis MUST enforce zero-jargon rules. Any industry term (CAC, LTV, Moat, 90/10 MVP) must include an immediate everyday analogy.
 
-**Defect Tracking**: If a bug is discovered, or if a test fails during the Secure Checkpoint phase, you must fix the issue and immediately invoke the '.antigravity/skills/log-defect.md' skill before attempting to commit again.
+**Defect Tracking**: If a bug is discovered, or if a test fails during the Secure Checkpoint phase, you must fix the issue and immediately invoke the `.antigravity/skills/log-defect.md` skill before attempting to commit again.
+
+**Change Management Ledger**: All future agents modifying this codebase MUST track approach shifts, persona adjustments, and bug fixes in `docs/DEFECT_LEDGER.md` without fail before marking a task as complete. Do not alter core orchestrator state routing or system prompts without logging the architectural reasoning.
+</CRITICAL_DIRECTIVES>
 
 ---
 
-## 5. Engineering Patterns & Code Standards
+## 6. Engineering Patterns & Code Standards
 
 ### Python / FastAPI / Pydantic
 - Write explicit type hints on all function signatures (`mypy` strict mode).
@@ -115,11 +141,15 @@ def calculate_financial_metrics(users: int, avg_revenue_per_user: float) -> dict
 ### Code Documentation & Comments
 - **Python (Backend)**: Every function, class, and method MUST have a complete PEP 257 compliant docstring explaining its purpose, arguments, and return types. Complex logic within the orchestrator while loop must have inline comments explaining why a state transition or guardrail is happening.
 - **TypeScript (Frontend)**: Use JSDoc comments (`/** ... */`) for all React components, custom hooks, and shared interfaces.
+- **File-Level Context**: Every new source file MUST start with a concise module/file docstring or header comment explaining what the file owns, where it fits in the architecture, and what it deliberately does not own.
+- **Public Contracts**: Public APIs, FastAPI routes, MCP tools, telemetry wrappers, orchestration nodes, eval fixtures, React page components, shared hooks, and exported helpers MUST document inputs, outputs, side effects, error behavior, and privacy/security assumptions where relevant.
+- **Architectural Reasoning**: Any change to prompts, while-loop state routing, budget controls, telemetry, eval harnesses, or persistence boundaries MUST include a short code comment or nearby documentation note explaining the reason for the design, not just what the code does.
+- **Documentation Drift Check**: When code behavior changes, update all matching human/agent-facing docs in the same change (`AGENTS.MD`, `docs/DEFECT_LEDGER.md`, `docs/PRD.md`, `docs/RunAndTest.md`, feature specs, eval docs, or inline docstrings as applicable). Do not leave stale examples, retired modes, old ports, or outdated prompt behavior in docs or tests.
 - **Self-Documenting Code**: Prioritize descriptive variable names (e.g., use `has_exceeded_token_budget` instead of `limit_hit`).
 
 ---
 
-## 6. Testing & Validation Commands
+## 7. Testing & Validation Commands
 
 Always run these validation commands in your Antigravity terminal session before marking a task resolved:
 
@@ -137,9 +167,11 @@ Always run these validation commands in your Antigravity terminal session before
 
 ---
 
-## 7. Definition of Done Checklist
+## 8. Definition of Done Checklist
 
 Before presenting a task as complete in Antigravity:
+- [ ] Phase 1 (Spec) and Phase 2 (Design) have been documented and committed via `git`.
+- [ ] A `<directive_check>` block was output before any code modifications were made.
 - [ ] Code compiles with zero TypeScript errors and passes `mypy app/`.
 - [ ] All new FastMCP tools are covered by passing `pytest` unit tests.
 - [ ] Untrusted tool outputs are properly wrapped in `<untrusted_tool_output>` XML boundaries.
@@ -149,4 +181,4 @@ Before presenting a task as complete in Antigravity:
 - [ ] UI rendered in Antigravity browser confirms the Dual-View toggle works seamlessly.
 - [ ] No hardcoded secrets, API keys, or unhandled debug logs (`print()`, `console.log()`) remain.
 - [ ] All changes have been committed to git with a descriptive conventional commit message.
-- [ ] All work has been committed using the '.antigravity/skills/secure-checkpoint.md' skill.
+- [ ] All work has been committed using the `.antigravity/skills/secure-checkpoint.md` skill.

@@ -1,4 +1,5 @@
 import { useState, useCallback } from "react";
+import { getApiBaseUrl } from "./api";
 import { supabase } from "./supabase";
 
 /**
@@ -139,7 +140,7 @@ export function useOrchestratorStream() {
         headers["Authorization"] = `Bearer ${jwtToken}`;
       }
 
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+      const apiBaseUrl = getApiBaseUrl();
       const response = await fetch(`${apiBaseUrl}/api/v1/orchestrate`, {
         method: "POST",
         headers,

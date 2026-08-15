@@ -3,7 +3,6 @@
 Tests mock UploadFile submissions and verify translation routing outputs.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 from app.main import app
 from app.core.auth import get_current_user
@@ -12,8 +11,7 @@ from unittest.mock import MagicMock
 client = TestClient(app)
 
 
-@pytest.mark.asyncio
-async def test_transcription_endpoint_regional_fallbacks() -> None:
+def test_transcription_endpoint_regional_fallbacks() -> None:
     """
     Verifies that calling POST /api/v1/transcribe translates regional languages
     correctly using the Whisper mock fallback.

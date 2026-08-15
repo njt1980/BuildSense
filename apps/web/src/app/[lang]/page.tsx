@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { getDictionary } from "@/lib/dictionaries";
+import { getApiBaseUrl } from "@/lib/api";
 import { useCompany } from "@/components/company-provider";
 import { GlobalHeader } from "@/components/global-header";
  
@@ -59,7 +60,7 @@ export default function Home({ params }: { params: { lang: string } }) {
   const [otherConstraint, setOtherConstraint] = useState<string>("");
  
   // Fetch projects list on mount and when token is ready
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+  const apiBaseUrl = getApiBaseUrl();
 
   useEffect(() => {
     if (!token) return;
@@ -245,7 +246,8 @@ export default function Home({ params }: { params: { lang: string } }) {
       await createCompany(newCompanyName, newCompanyIndustry, newCompanyTools);
     } catch (err) {
       console.error("Error creating company:", err);
-      alert("Failed to establish business baseline. Please try again.");
+      const message = err instanceof Error ? err.message : "Failed to establish business baseline. Please try again.";
+      alert(message);
     } finally {
       setCreatingCompany(false);
     }
@@ -337,7 +339,7 @@ export default function Home({ params }: { params: { lang: string } }) {
     { label: `💬 Walk through customer order`, text: "Walk through a typical customer order" },
     { label: `💬 Manage stock & inventory`, text: "How we manage stock & inventory" },
     { label: `💬 Invoices & payments reconciliation`, text: "How invoices & payments get reconciled" },
-    { label: `🔍 Run a 2-min workflow check`, text: "Help me identify hidden bottlenecks in my business. Ask me 3 quick questions about how my team handles daily operations." }
+    { label: `🔍 Run a 2-min workflow check`, text: "Walk me through one daily operation, one step at a time." }
   ];
  
   const handleChipClick = (chipText: string) => {

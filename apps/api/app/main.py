@@ -21,6 +21,11 @@ from app.core.audio import transcribe_and_translate_audio
 from app.db.redis import redis_client
 from app.db.postgres import postgres_client
 from app.models.state import SessionState, SessionMode, SessionStatus, Message
+from app.telemetry.context import update_context
+from app.telemetry.dev_routes import router as dev_telemetry_router
+from app.telemetry.ids import generate_run_id
+from app.telemetry.logging import log_event
+from app.telemetry.middleware import telemetry_context_middleware
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -28,6 +33,9 @@ app = FastAPI(
     description="Agentic Intelligence Engine for Idea Suggestion, Evaluation, and SMB Process Optimization.",
     version="2.0.0",
 )
+
+app.middleware("http")(telemetry_context_middleware)
+app.include_router(dev_telemetry_router)
 
 # Determine Limiter storage URI
 def get_limiter_storage_uri(url: str) -> str:
@@ -329,6 +337,8 @@ async def orchestrate(
     from app.core.orchestrator import orchestrator
 
     # Ensure user is tracked in users database table
+    update_context(user_id=current_user.id)
+    log_event("orchestration_request_received", has_session_id=bool(payload.session_id), has_byok=bool(x_user_anthropic_key))
     await postgres_client.create_user_if_not_exists(current_user.id, current_user.email)
 
     project_id = payload.session_id
@@ -403,6 +413,11 @@ async def orchestrate(
         project = await postgres_client.get_project(project_id)
 
     assert project is not None
+    update_context(
+        company_id=str(project.get("company_id")) if project.get("company_id") else None,
+        project_id=project_id,
+        session_id=project_id,
+    )
 
     # Load session state mapping from database or initialize
     state = await postgres_client.get_session_state(project_id)
@@ -456,7 +471,9 @@ async def orchestrate(
         )
         await postgres_client.save_session_state(state)
         await postgres_client.save_chat_messages(project_id, state.messages)
+        log_event("session_state_created", status=state.status.value, mode=state.mode.value)
     else:
+        log_event("session_state_loaded", status=state.status.value, mode=state.mode.value)
         if payload.user_constraints is not None:
             state.user_constraints = payload.user_constraints
         if payload.lang is not None:
@@ -472,9 +489,45 @@ async def orchestrate(
             state.messages.append(Message(role="user", content=f"Q: {q}\nA: {ans}", name=None, tool_call_id=None))
         await postgres_client.save_chat_messages(project_id, state.messages)
         state.status = SessionStatus.PLANNING
+        log_event("clarification_responses_received", response_count=len(payload.clarification_responses))
 
     # Run the session orchestrator pipeline
+    run_id = generate_run_id()
+    update_context(run_id=run_id)
+    log_event(
+        "orchestration_started",
+        status=state.status.value,
+        mode=state.mode.value,
+        steps_taken=state.steps_taken,
+        max_steps=state.max_steps,
+        budget_spent_usd=state.budget_spent_usd,
+        max_budget_usd=state.max_budget_usd,
+    )
     updated_state = await orchestrator.run_pipeline(state, user_key=x_user_anthropic_key)
+    if updated_state.status == SessionStatus.AWAITING_CLARIFICATION:
+        log_event(
+            "orchestration_paused",
+            status=updated_state.status.value,
+            question_count=len(updated_state.clarification_questions),
+            steps_taken=updated_state.steps_taken,
+            budget_spent_usd=updated_state.budget_spent_usd,
+        )
+    elif updated_state.status == SessionStatus.FAILED:
+        log_event(
+            "orchestration_failed",
+            level="error",
+            status=updated_state.status.value,
+            failure_reason=updated_state.metadata.get("failure_reason"),
+            steps_taken=updated_state.steps_taken,
+            budget_spent_usd=updated_state.budget_spent_usd,
+        )
+    else:
+        log_event(
+            "orchestration_completed",
+            status=updated_state.status.value,
+            steps_taken=updated_state.steps_taken,
+            budget_spent_usd=updated_state.budget_spent_usd,
+        )
     
     # Sync messages back to DB
     await postgres_client.save_chat_messages(project_id, updated_state.messages)
@@ -576,6 +629,7 @@ async def startup_event() -> None:
     """
     Connects pool resources for Postgres/Redis and runs tables migrations on startup.
     """
+    log_event("app_startup_started")
     await redis_client.connect()
     await postgres_client.connect()
     
@@ -585,10 +639,13 @@ async def startup_event() -> None:
         try:
             await postgres_client.init_db(schema_path)
             print("Successfully verified PostgreSQL schema tables and RLS configurations.")
+            log_event("app_startup_completed", schema_verified=True)
         except Exception as e:
             print(f"Warning: PostgreSQL migrations setup aborted ({e})")
+            log_event("app_startup_completed", level="warning", schema_verified=False, error_type=type(e).__name__)
             
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    log_event("app_shutdown_started")
     await redis_client.disconnect()
     await postgres_client.disconnect()

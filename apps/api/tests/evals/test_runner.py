@@ -76,12 +76,26 @@ def make_mock_anthropic(scenario_turn: Turn):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", GOLDEN_SCENARIOS, ids=lambda s: s["name"])
-async def test_orchestrator_scenario(scenario) -> None:
+async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
     """
     E2E scenario test executing turns and validating routing, state accumulation,
     and semantic quality.
     """
     orchestrator = Orchestrator()
+    company_context = scenario.get("company_context", {})
+    company_name = company_context.get("name")
+    company_industry = company_context.get("industry")
+    company_core_tools = company_context.get("core_tools")
+
+    if company_context:
+        mock_postgres_and_redis["get_company"].side_effect = None
+        mock_postgres_and_redis["get_company"].return_value = {
+            "id": "mock-company-id",
+            "name": company_name,
+            "industry_vertical": company_industry,
+            "industry": company_industry,
+            "core_tools": company_core_tools,
+        }
     
     # Initialize session state
     state = SessionState(
@@ -92,7 +106,15 @@ async def test_orchestrator_scenario(scenario) -> None:
         max_steps=15,
         messages=[],
         clarification_turns=scenario.get("initial_turns_count", 0),
-        process_components=ProcessComponents()
+        process_components=ProcessComponents(),
+        company_name=company_name,
+        company_industry=company_industry,
+        company_core_tools=company_core_tools,
+        user_constraints=scenario.get("user_constraints") or [],
+        metadata={
+            "motivation": scenario["motivation"],
+            "backstory": scenario.get("backstory", ""),
+        },
     )
 
     # Variables to collect outputs for semantic grading
@@ -148,6 +170,10 @@ async def test_orchestrator_scenario(scenario) -> None:
             f"### ROI Economics\n"
             f"{state.metadata.get('roi_economics', '')}"
         )
+        for expected_text in scenario.get("expected_report_contains", []):
+            assert expected_text.lower() in synthesized_report.lower(), (
+                f"Scenario '{scenario['name']}' report missing expected text: {expected_text}"
+            )
         
         constraints_str = ", ".join(scenario["user_constraints"]) if scenario["user_constraints"] else "None"
         
@@ -168,14 +194,14 @@ async def test_orchestrator_scenario(scenario) -> None:
             assert grades["hierarchy_integrity_score"] >= 0.90, (
                 f"Hierarchy integrity compliance failed with score {grades['hierarchy_integrity_score']}. Justification: {grades['justification']}"
             )
-            assert grades["playback_formatting_score"] >= 0.90, (
-                f"Playback formatting failed with score {grades['playback_formatting_score']}. Justification: {grades['justification']}"
+            assert grades["consultant_intake_score"] >= 0.90, (
+                f"Consultant intake behavior failed with score {grades['consultant_intake_score']}. Justification: {grades['justification']}"
             )
         else:
             # When API key is absent, verify mocked fallback scores are returned
             assert grades["zero_jargon_score"] == 1.0
             assert grades["hierarchy_integrity_score"] == 1.0
-            assert grades["playback_formatting_score"] == 1.0
+            assert grades["consultant_intake_score"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -189,14 +215,10 @@ async def test_llm_judge_rubrics() -> None:
     if not api_key:
         pytest.skip("Skipping judge rubrics check: ANTHROPIC_API_KEY is not defined.")
 
-    # 1. Compliant Case: Zero technical jargon without explanation, proper hierarchy, scannable format
+    # 1. Compliant Case: Zero technical jargon without explanation, proper hierarchy, consultant intake behavior
     good_playback = (
-        "Here is a summary of what I understand about your workflow so far:\n\n"
-        "- 🚚 **When (trigger)**: High-volume customer emails arrive.\n"
-        "- 👤 **Who (actor)**: Dispatch clerk.\n"
-        "- ⚙️ **What (activity)**: Reads email and books delivery truck.\n"
-        "- 💻 **Where (system)**: Outlook email client and custom route planner database.\n"
-        "- ⚠️ **Bottleneck (friction)**: Manual coordinate entry takes 15 minutes per order."
+        "That helps. So the busy moment starts when high-volume customer emails arrive. "
+        "Who on your team handles the first pass at those emails?"
     )
     good_synthesis = (
         "### Current Manual Process (As-Is)\n"
@@ -218,15 +240,15 @@ async def test_llm_judge_rubrics() -> None:
         
     assert good_grades["zero_jargon_score"] >= 0.90
     assert good_grades["hierarchy_integrity_score"] >= 0.90
-    assert good_grades["playback_formatting_score"] >= 0.90
+    assert good_grades["consultant_intake_score"] >= 0.90
 
-    # 2. Non-Compliant Case: Unexplained jargon (CAC, LTV), violates hierarchy by immediately building Gen AI, missing emojis
+    # 2. Non-Compliant Case: Unexplained jargon (CAC, LTV), violates hierarchy by immediately building Gen AI, robotic multi-slot intake
     bad_playback = (
-        "Workflow details:\n"
         "Trigger: customer email\n"
         "Actor: dispatcher\n"
-        "System: Outlook\n"
-        "Friction: slow copy-pasting"
+        "System: Excel\n"
+        "Friction: slow copy-pasting\n"
+        "Who does this, what system do they use, and what is the bottleneck?"
     )
     bad_synthesis = (
         "### Current Manual Process (As-Is)\n"
@@ -241,4 +263,4 @@ async def test_llm_judge_rubrics() -> None:
     )
 
     bad_grades = await invoke_llm_judge(bad_playback, bad_synthesis, "Low Budget")
-    assert bad_grades["zero_jargon_score"] < 0.90 or bad_grades["hierarchy_integrity_score"] < 0.90 or bad_grades["playback_formatting_score"] < 0.90
+    assert bad_grades["zero_jargon_score"] < 0.90 or bad_grades["hierarchy_integrity_score"] < 0.90 or bad_grades["consultant_intake_score"] < 0.90

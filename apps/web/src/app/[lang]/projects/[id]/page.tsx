@@ -9,6 +9,7 @@ import { StrategicProgress } from "@/components/strategic-progress";
 import { useOrchestratorStream } from "@/lib/useOrchestratorStream";
 import { ClarificationModal } from "@/components/clarification-modal";
 import { getDictionary } from "@/lib/dictionaries";
+import { getApiBaseUrl } from "@/lib/api";
 import { GlobalHeader } from "@/components/global-header";
 
 // React Flow Imports
@@ -98,7 +99,7 @@ export default function ProjectWorkspacePage() {
   } = useOrchestratorStream();
 
   // Load project details on mount
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+  const apiBaseUrl = getApiBaseUrl();
 
   useEffect(() => {
     if (!token || !projectId) return;
@@ -156,7 +157,7 @@ export default function ProjectWorkspacePage() {
     loadProjectDetails();
     loadGraphDetails();
     checkExistingRun();
-  }, [token, projectId, executeOrchestratorRequest, lang]);
+  }, [token, projectId, executeOrchestratorRequest, lang, apiBaseUrl]);
 
   // Sync state transitions & clarification modals
   useEffect(() => {
@@ -199,7 +200,7 @@ export default function ProjectWorkspacePage() {
       };
       refreshGraph();
     }
-  }, [activeSessionState, projectId, token, apiBaseUrl]);
+  }, [activeSessionState, projectId, token, apiBaseUrl, activeTab]);
 
   // Audio timer management
   useEffect(() => {

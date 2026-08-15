@@ -76,7 +76,7 @@ class SessionState(BaseModel):
 
     Attributes:
         session_id: A unique identifier for the current session.
-        mode: The active SessionMode (e.g. SUGGESTER, EVALUATOR, OPTIMIZER).
+        mode: The active SessionMode. BuildSense currently supports only OPTIMIZER.
         status: The current pipeline SessionStatus.
         budget_spent_usd: Total cumulative USD cost of API calls in this session.
         max_budget_usd: Maximum allowed USD budget cap before execution halts.
@@ -89,7 +89,7 @@ class SessionState(BaseModel):
         metadata: Flexible dictionary for storing execution findings or logs.
     """
     session_id: str = Field(..., description="Unique UUID or key identifying the session.")
-    mode: SessionMode = Field(..., description="Operational motivation mode.")
+    mode: SessionMode = Field(..., description="Workflow optimization mode.")
     status: SessionStatus = Field(SessionStatus.ROUTING, description="Current pipeline progress phase.")
     budget_spent_usd: float = Field(0.0, description="Accumulated LLM and tool cost.")
     max_budget_usd: float = Field(0.0, description="Safety limit on spending.")

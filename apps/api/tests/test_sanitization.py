@@ -18,7 +18,7 @@ def test_route_after_sanitize_rules() -> None:
         "status": SessionStatus.ROUTING,
         "metadata": {"is_adversarial": False}
     }
-    assert orchestrator._route_after_sanitize(state_valid) == "route_intent"
+    assert orchestrator._route_after_sanitize(state_valid) == "context_architect"
 
     # 2. Test adversarial scenario
     state_adversarial = {

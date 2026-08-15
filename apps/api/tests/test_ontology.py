@@ -76,6 +76,10 @@ async def test_orchestrator_ontology_discovery_injection() -> None:
         # Verify vertical was classified as LOGISTICS
         assert updated_state.business_vertical == "LOGISTICS"
         
-        # Verify logistics discovery questions were injected into the awaiting loop
+        # Verify logistics context still pauses for one grounded consultant question.
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
-        assert any("WMS" in q or "transportation" in q for q in updated_state.clarification_questions)
+        assert len(updated_state.clarification_questions) == 1
+        question = updated_state.clarification_questions[0]
+        assert "where is your business based" in question.lower()
+        assert "WMS" not in question
+        assert "transportation" not in question.lower()

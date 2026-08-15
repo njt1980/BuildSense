@@ -26,6 +26,8 @@ dist/
 
 # Testing & Evals
 .pytest_cache/
+.pytest_tmp/
+apps/api/.pytest_tmp/
 .mypy_cache/
 .coverage
 htmlcov/
@@ -36,6 +38,7 @@ coverage.xml
 # System / OS files
 .DS_Store
 Thumbs.db
+.codex-runtime/
 
 # Environments / Secrets
 .env

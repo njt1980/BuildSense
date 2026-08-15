@@ -53,7 +53,7 @@ async def test_stateful_accumulator_accumulation_turns() -> None:
     mock_extract_response_1.usage.input_tokens = 100
     mock_extract_response_1.usage.output_tokens = 50
 
-    mock_question_response_1 = make_mock_response("What system or software do you use, and what is the primary friction?")
+    mock_question_response_1 = make_mock_response("That helps. What tool or place does your team use to track those orders today?")
     mock_question_response_1.usage.input_tokens = 120
     mock_question_response_1.usage.output_tokens = 40
 
@@ -85,7 +85,10 @@ async def test_stateful_accumulator_accumulation_turns() -> None:
         # Verify targeted question appended to messages list
         assert len(updated_state.messages) == 2
         assert updated_state.messages[-1].role == "assistant"
-        assert "What system or software" in updated_state.messages[-1].content
+        assistant_question = updated_state.messages[-1].content
+        assert "what tool" in assistant_question.lower()
+        assert "primary friction" not in assistant_question.lower()
+        assert assistant_question.count("?") == 1
 
 
 @pytest.mark.asyncio
@@ -269,10 +272,9 @@ async def test_conversational_mask_intake_question() -> None:
 
 
 @pytest.mark.asyncio
-async def test_playback_summary_emoji_formatting() -> None:
+async def test_playback_summary_uses_conversational_formatting() -> None:
     """
-    Verifies that the compiled playback summary contains required emojis and labels
-    for high scannability.
+    Verifies that the compiled playback summary avoids internal schema labels.
     """
     session_id = "test-emoji-formatting"
     components = ProcessComponents(
@@ -312,11 +314,13 @@ async def test_playback_summary_emoji_formatting() -> None:
 
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         summary = updated_state.messages[-1].content
-        assert "🚚" in summary
-        assert "👤" in summary
-        assert "⚙️" in summary
-        assert "💻" in summary
-        assert "⚠️" in summary
+        assert "Warehouse manager" in summary
+        assert "Order inventory replenishment" in summary
+        assert "If that sounds right" in summary
+        assert "Trigger:" not in summary
+        assert "Actor:" not in summary
+        assert "Activity:" not in summary
+        assert "System:" not in summary
 
 
 @pytest.mark.asyncio
@@ -348,7 +352,7 @@ async def test_escape_hatch_max_turns() -> None:
         assert updated_state.process_components.actor == "UNKNOWN"
         assert updated_state.process_components.system == "UNKNOWN"
         assert "UNKNOWN" in updated_state.messages[-1].content
-        assert "🚚" in updated_state.messages[-1].content
+        assert "Trigger:" not in updated_state.messages[-1].content
 
 
 @pytest.mark.asyncio
@@ -416,19 +420,19 @@ async def test_frictionless_intake_completeness_no_friction() -> None:
         # Intake is complete, should transition to AWAITING_CLARIFICATION to present Playback Summary
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         summary = updated_state.messages[-1].content
-        assert "🚚" in summary
-        assert "👤" in summary
-        assert "⚙️" in summary
-        assert "💻" in summary
-        assert "⚠️" in summary
-        assert "To be analyzed and deduced by BuildSense" in summary
+        assert "Warehouse manager" in summary
+        assert "Order inventory replenishment" in summary
+        assert "to be analyzed by BuildSense" in summary
+        assert "Trigger:" not in summary
+        assert "Actor:" not in summary
+        assert "Friction:" not in summary
 
 
 @pytest.mark.asyncio
 async def test_clarification_does_not_ask_about_bottlenecks() -> None:
     """
-    Verifies that the prompt used for clarifying questions explicitly forbids
-    asking about bottlenecks, inefficiencies, pain points, or friction.
+    Verifies that the consultant intake prompt forbids asking about bottlenecks
+    and only exposes one missing component to the LLM at a time.
     """
     session_id = "test-no-bottleneck-clarify-prompt"
     state = SessionState(
@@ -460,7 +464,8 @@ async def test_clarification_does_not_ask_about_bottlenecks() -> None:
         except Exception:
             pass  # We only care about the parameters passed to mock_messages_create
 
-        # Verify that prompt_question contains the strict constraint
+        # Verify that prompt_question contains the consultant intake constraints
+        # and a single selected missing detail rather than a checklist.
         called = False
         for call in mock_messages_create.call_args_list:
             kwargs = call[1]
@@ -472,11 +477,65 @@ async def test_clarification_does_not_ask_about_bottlenecks() -> None:
             else:
                 prompt = kwargs.get("system", "")
                 
-            if "bottlenecks, friction" in prompt or "STRICT CONSTRAINTS" in prompt:
+            if "McKinsey for the common man" in prompt:
                 called = True
-                assert "STRICT CONSTRAINTS" in prompt or "FORBIDDEN" in prompt
-                assert "bottlenecks, friction, time waste" in prompt or "bottlenecks or delays" not in prompt
+                assert "Do not ask the owner to name bottlenecks" in prompt
+                assert "Ask about exactly one missing detail" in prompt
+                assert "Ask one short question only" in prompt
+                assert "Do not invent, assume, or hallucinate systems" in prompt
+                assert "one missing detail: location" in prompt
+                assert "one missing detail: location, actor" not in prompt
         assert called, "client.messages.create was not called with the expected instructions."
+
+
+@pytest.mark.asyncio
+async def test_clarification_prompt_receives_one_high_priority_missing_item() -> None:
+    """
+    Verifies the route intent node mechanically passes one missing component
+    into the consultant prompt, preventing checklist-style multi-part questions.
+    """
+    state = SessionState(
+        session_id="test-one-missing-item-intake",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="A customer calls and asks for an update.")],
+        process_components=ProcessComponents(trigger="Customer asks for an update"),
+        playback_confirmed=False,
+    )
+
+    mock_extract = make_mock_response(json.dumps({
+        "trigger": "Customer asks for an update",
+        "actor": None,
+        "activity": None,
+        "system": None,
+        "friction": None,
+        "location": None,
+    }))
+    mock_question = make_mock_response("Got it, the customer call starts the work. Who usually handles that follow-up?")
+
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic_class, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(side_effect=[mock_extract, mock_question])
+        mock_anthropic_class.return_value = mock_client
+
+        updated_state = await Orchestrator().run_pipeline(state, user_key="mock-key")
+
+    prompts = [
+        call[1].get("messages", [{}])[0].get("content", "")
+        for call in mock_client.messages.create.call_args_list
+    ]
+    intake_prompt = next(prompt for prompt in prompts if "McKinsey for the common man" in prompt)
+
+    assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
+    assert "one missing detail: actor" in intake_prompt
+    assert "one missing detail: actor, activity" not in intake_prompt
+    assert "one missing detail: actor, system" not in intake_prompt
 
 
 @pytest.mark.asyncio
@@ -536,3 +595,115 @@ async def test_agentic_bottleneck_deduction_in_synthesis() -> None:
                 assert "Actor: Accountant" in system_prompt
                 assert "deduce the hidden friction, double-work" in system_prompt
         assert called
+
+
+@pytest.mark.asyncio
+async def test_offline_extractor_uses_user_context_for_pet_shop_whatsapp() -> None:
+    """
+    Verifies offline extraction does not fall back to canned logistics examples
+    for small retail workflows described by the user.
+    """
+    state = SessionState(
+        session_id="test-pet-shop-whatsapp-offline",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[
+            Message(
+                role="user",
+                content="We are a small pet shop and we take orders via Whatsapp",
+            )
+        ],
+        company_industry="General Business / Other",
+        company_core_tools="Whatsapp",
+        process_components=ProcessComponents(),
+        playback_confirmed=False,
+    )
+
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+        orchestrator = Orchestrator()
+        updated_state = await orchestrator.run_pipeline(state)
+
+    assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
+    assert updated_state.process_components.trigger == "Customer order received on WhatsApp"
+    assert updated_state.process_components.actor == "Shop staff"
+    assert updated_state.process_components.activity == "Review and fulfill customer orders"
+    assert updated_state.process_components.system == "WhatsApp"
+    assert updated_state.process_components.friction is None
+
+    assistant_message = updated_state.messages[-1].content
+    assert "Dispatcher" not in assistant_message
+    assert "Manual route scheduling" not in assistant_message
+    assert "Trigger:" not in assistant_message
+    assert "Actor:" not in assistant_message
+
+
+@pytest.mark.asyncio
+async def test_architect_requires_location_for_physical_shop() -> None:
+    """
+    Verifies the architect creates a location-aware intake plan for physical shops.
+    """
+    state = SessionState(
+        session_id="test-architect-location-required",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[
+            Message(
+                role="user",
+                content="We are a small pet shop and we take orders via Whatsapp",
+            )
+        ],
+        company_core_tools="Whatsapp",
+        process_components=ProcessComponents(),
+        playback_confirmed=False,
+    )
+
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+        orchestrator = Orchestrator()
+        updated_state = await orchestrator.run_pipeline(state)
+
+    architect_plan = updated_state.metadata["architect_plan"]
+    assert architect_plan["requires_location"] is True
+    assert "location" in architect_plan["required_components"]
+    assert updated_state.process_components.location is None
+    assert "Where is your business based" in updated_state.messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_architect_extracts_explicit_location_and_schedules_enrichment() -> None:
+    """
+    Verifies explicit locations are captured before analysis and queued for enrichment.
+    """
+    state = SessionState(
+        session_id="test-architect-location-present",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[
+            Message(
+                role="user",
+                content="We are a small pet shop based in Koramangala and we take orders via Whatsapp",
+            )
+        ],
+        company_core_tools="Whatsapp",
+        process_components=ProcessComponents(),
+        playback_confirmed=False,
+    )
+
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()), \
+         patch("app.core.orchestrator.Orchestrator._background_geographic_enrichment", AsyncMock()) as mock_enrich:
+        orchestrator = Orchestrator()
+        updated_state = await orchestrator.run_pipeline(state)
+
+    assert updated_state.process_components.location == "Koramangala"
+    assert mock_enrich.call_count >= 1

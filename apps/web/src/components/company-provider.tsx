@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { getApiBaseUrl } from "@/lib/api";
 import { useAuth } from "./auth-provider";
 
 interface Company {
@@ -21,6 +22,11 @@ interface CompanyContextType {
   createCompany: (name: string, industry: string, tools: string) => Promise<Company>;
 }
 
+interface ApiErrorPayload {
+  detail?: string;
+  message?: string;
+}
+
 const CompanyContext = createContext<CompanyContextType>({
   companies: [],
   activeCompany: null,
@@ -38,7 +44,7 @@ export function CompanyProvider({ children, lang }: { children: React.ReactNode;
   const [activeCompany, setActiveCompanyState] = useState<Company | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+  const apiBaseUrl = getApiBaseUrl();
 
   const fetchCompanies = useCallback(async (authToken: string) => {
     try {
@@ -94,7 +100,7 @@ export function CompanyProvider({ children, lang }: { children: React.ReactNode;
   const createCompany = useCallback(async (name: string, industry: string, tools: string): Promise<Company> => {
     if (!token) throw new Error("No auth credentials found.");
 
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8001";
+    const apiBaseUrl = getApiBaseUrl();
     const res = await fetch(`${apiBaseUrl}/api/v1/companies`, {
       method: "POST",
       headers: {
@@ -110,7 +116,16 @@ export function CompanyProvider({ children, lang }: { children: React.ReactNode;
     });
 
     if (!res.ok) {
-      throw new Error("Failed to establish business baseline.");
+      const responseText = await res.text();
+      let errorDetail = responseText;
+      try {
+        const payload = JSON.parse(responseText) as ApiErrorPayload;
+        errorDetail = payload.detail || payload.message || "";
+      } catch {
+        errorDetail = responseText;
+      }
+      const readableDetail = errorDetail ? ` ${errorDetail}` : "";
+      throw new Error(`Failed to establish business baseline (${res.status}).${readableDetail}`);
     }
 
     const data = await res.json();

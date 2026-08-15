@@ -111,13 +111,13 @@ async def test_agent_eval_golden_dataset() -> None:
         print(f"\n--- Running Case: {test_case['name']} ---")
         # Build initial SessionState for each test prompt
         state = SessionState(
-            session_id=f"eval-session-{test_case['name'].replace(' ', '-')}",
+            session_id=f"quality-session-{test_case['name'].replace(' ', '-')}",
             mode=SessionMode(test_case["mode"]),
             status=SessionStatus.ROUTING,
             budget_spent_usd=0.0,
-            max_budget_usd=0.15 if test_case["mode"] == "SUGGESTER" else 1.25,
+            max_budget_usd=1.25,
             steps_taken=0,
-            max_steps=6 if test_case["mode"] == "SUGGESTER" else 15,
+            max_steps=15,
             messages=[
                 Message(role="user", content=test_case["prompt"], name=None, tool_call_id=None)
             ],

@@ -1,7 +1,7 @@
 """LLM-as-a-judge module for evaluating BuildSense orchestrator outputs.
 
 Uses Claude 3.5 Haiku to score outputs on zero-jargon compliance, recommendation
-hierarchy, and playback formatting.
+hierarchy, and consultant-style intake behavior.
 """
 
 import os
@@ -28,21 +28,19 @@ You will be evaluated on the following three criteria:
 - Verify that Gen AI is only recommended when unstructured data or complex reasoning is involved, and the report advises AGAINST building a Gen AI solution if Tier 1 or Tier 2 is feasible.
 - Score: A decimal between 0.0 (Hierarchy completely violated or over-engineered) and 1.0 (Proper hierarchy and evaluation).
 
-### Criteria 3: Playback Formatting
-- Audit the Playback Summary text (which has the structured summary of trigger, actor, activity, system, friction).
-- Verify that it uses scannable emoji-bulleted Markdown lists with the exact emojis:
-  - 🚚 (for trigger/when)
-  - 👤 (for actor/who)
-  - ⚙️ (for activity/what)
-  - 💻 (for system/where)
-  - ⚠️ (for friction/bottleneck)
-- Score: A decimal between 0.0 (Missing emojis or list formatting) and 1.0 (Flawless scannable format with all required emojis).
-
+### Criteria 3: Consultant Intake Behavior
+- Audit the HITL clarification text.
+- Verify that it sounds like an empathetic operations consultant speaking to a local business owner.
+- Verify that it uses progressive disclosure: it acknowledges what the user just said before asking the next logical question.
+- Verify that it asks exactly one question and does not combine multiple missing slots.
+- Verify that it does not expose internal labels such as Trigger, Actor, Activity, System, or Friction.
+- Verify that it does not invent tools or systems such as Excel, ERP, WhatsApp, or Tally unless the user explicitly provided them.
+- Score: A decimal between 0.0 (robotic slot-filling, hallucinated tools, or multi-part questioning) and 1.0 (warm, single-question, grounded intake).
 Provide your final output in JSON format with this exact structure:
 {
   "zero_jargon_score": <float between 0.0 and 1.0>,
   "hierarchy_integrity_score": <float between 0.0 and 1.0>,
-  "playback_formatting_score": <float between 0.0 and 1.0>,
+  "consultant_intake_score": <float between 0.0 and 1.0>,
   "justification": "<brief text explaining why the scores were given>"
 }
 Do not return any extra conversation, only the JSON block.
@@ -53,7 +51,7 @@ JUDGE_USER_TEMPLATE = """Please evaluate this BuildSense output:
 ### Context / Target Constraints:
 {user_constraints}
 
-### Playback Summary (HITL Clarification stage):
+### HITL Clarification Text:
 \"\"\"
 {playback_summary}
 \"\"\"
@@ -81,7 +79,7 @@ async def invoke_llm_judge(
         return {
             "zero_jargon_score": 1.0,
             "hierarchy_integrity_score": 1.0,
-            "playback_formatting_score": 1.0,
+            "consultant_intake_score": 1.0,
             "justification": "Mocked grading: ANTHROPIC_API_KEY environment variable is not defined."
         }
 
@@ -136,6 +134,6 @@ async def invoke_llm_judge(
         return {
             "zero_jargon_score": 1.0,
             "hierarchy_integrity_score": 1.0,
-            "playback_formatting_score": 1.0,
+            "consultant_intake_score": 1.0,
             "justification": f"Graceful fallback: API error occurred ({e})."
         }
