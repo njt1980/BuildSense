@@ -351,7 +351,7 @@ async def test_escape_hatch_max_turns() -> None:
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         assert updated_state.process_components.actor == "UNKNOWN"
         assert updated_state.process_components.system == "UNKNOWN"
-        assert "UNKNOWN" in updated_state.messages[-1].content
+        assert "UNKNOWN" not in updated_state.messages[-1].content
         assert "Trigger:" not in updated_state.messages[-1].content
 
 
@@ -382,7 +382,7 @@ async def test_escape_hatch_user_dont_know() -> None:
 
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         assert updated_state.process_components.actor == "UNKNOWN"
-        assert "UNKNOWN" in updated_state.messages[-1].content
+        assert "UNKNOWN" not in updated_state.messages[-1].content
 
 
 @pytest.mark.asyncio
@@ -422,7 +422,7 @@ async def test_frictionless_intake_completeness_no_friction() -> None:
         summary = updated_state.messages[-1].content
         assert "Warehouse manager" in summary
         assert "Order inventory replenishment" in summary
-        assert "to be analyzed by BuildSense" in summary
+        assert "UNKNOWN" not in summary
         assert "Trigger:" not in summary
         assert "Actor:" not in summary
         assert "Friction:" not in summary
@@ -481,6 +481,7 @@ async def test_clarification_does_not_ask_about_bottlenecks() -> None:
                 called = True
                 assert "Do not ask the owner to name bottlenecks" in prompt
                 assert "Ask about exactly one missing detail" in prompt
+                assert "selected business blind spot" in prompt
                 assert "Ask one short question only" in prompt
                 assert "Do not invent, assume, or hallucinate systems" in prompt
                 assert "one missing detail: location" in prompt
@@ -591,10 +592,73 @@ async def test_agentic_bottleneck_deduction_in_synthesis() -> None:
                 called = True
                 assert "Agentic Bottleneck Deduction Instruction" in system_prompt
                 assert "Gathered Workflow Components (As-Is State):" in system_prompt
-                assert "Trigger: Invoice received" in system_prompt
-                assert "Actor: Accountant" in system_prompt
+                assert '"trigger": "Invoice received"' in system_prompt
+                assert '"actor": "Accountant"' in system_prompt
                 assert "deduce the hidden friction, double-work" in system_prompt
+                assert "Six-Pillar Consultant Rubric" in system_prompt
+                assert "Market, Operations, Financials, Personnel, Technology, and Risk" in system_prompt
         assert called
+
+
+@pytest.mark.asyncio
+async def test_correction_overwrites_prior_assumption_before_replayback() -> None:
+    """
+    Verifies direct corrections overwrite old assumptions and regenerate playback.
+    """
+    components = ProcessComponents(
+        trigger="Weekly ranking meeting",
+        actor="Drivers",
+        activity="Vote on customer priority",
+        system="Spreadsheet",
+        friction=None,
+    )
+    state = SessionState(
+        session_id="test-correction-overwrite-actor",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[
+            Message(role="assistant", content="Drivers vote on priority. If that sounds right, reply Yes."),
+            Message(role="user", content="No, customers vote, not drivers."),
+        ],
+        process_components=components,
+        playback_confirmed=False,
+    )
+
+    mock_confirm = make_mock_response(json.dumps({
+        "is_confirmation": False,
+        "corrections": {
+            "trigger": None,
+            "actor": "Customers",
+            "activity": None,
+            "system": None,
+            "friction": None,
+            "location": None,
+        },
+        "unmapped_correction": None,
+    }))
+    mock_playback = make_mock_response(
+        "Thanks, I have updated that: customers vote on customer priority using the spreadsheet. "
+        "If that sounds right, reply with 'Yes' to confirm, or correct any part."
+    )
+
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic_class, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+
+        mock_client = MagicMock()
+        mock_client.messages.create = AsyncMock(side_effect=[mock_confirm, mock_playback])
+        mock_anthropic_class.return_value = mock_client
+
+        updated_state = await Orchestrator().run_pipeline(state, user_key="mock-key")
+
+    assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
+    assert updated_state.playback_confirmed is False
+    assert updated_state.process_components.actor == "Customers"
+    assert "customers vote" in updated_state.messages[-1].content.lower()
+    assert "UNKNOWN" not in updated_state.messages[-1].content
 
 
 @pytest.mark.asyncio

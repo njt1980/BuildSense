@@ -449,7 +449,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                 "expected_status": "AWAITING_CLARIFICATION",
                 "expected_components": {
                     "trigger": None,
-                    "actor": "UNKNOWN",
+                    "actor": "Front desk staff",
                     "activity": "approvals",
                     "system": None,
                     "friction": "stuck in the office for days"
@@ -462,7 +462,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                     },
                     {
                         "node": "extractor",
-                        "response_content": '{"trigger": null, "actor": "UNKNOWN", "activity": "approvals", "system": null, "friction": "stuck in the office for days"}'
+                        "response_content": '{"trigger": null, "actor": "Front desk staff", "activity": "approvals", "system": null, "friction": "stuck in the office for days"}'
                     },
                     {
                         "node": "question_generator",
@@ -475,7 +475,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                 "expected_status": "AWAITING_CLARIFICATION",
                 "expected_components": {
                     "trigger": "Customer refund request form",
-                    "actor": "UNKNOWN",
+                    "actor": "Front desk staff",
                     "activity": "Sign and file refund request",
                     "system": "Physical filing cabinet",
                     "friction": "stuck in the office for days",
@@ -489,7 +489,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                     },
                     {
                         "node": "extractor",
-                        "response_content": '{"trigger": "Customer refund request form", "actor": "UNKNOWN", "activity": "Sign and file refund request", "system": "Physical filing cabinet", "friction": "stuck in the office for days", "location": "Rajajinagar"}'
+                        "response_content": '{"trigger": "Customer refund request form", "actor": "Front desk staff", "activity": "Sign and file refund request", "system": "Physical filing cabinet", "friction": "stuck in the office for days", "location": "Rajajinagar"}'
                     }
                 ]
             },
@@ -498,7 +498,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                 "expected_status": "COMPLETED",
                 "expected_components": {
                     "trigger": "Customer refund request form",
-                    "actor": "UNKNOWN",
+                    "actor": "Front desk staff",
                     "activity": "Sign and file refund request",
                     "system": "Physical filing cabinet",
                     "friction": "stuck in the office for days",
@@ -516,7 +516,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                     },
                     {
                         "node": "synthesize_report",
-                        "response_content": '{"as_is_workflow": "Customer refund request form paper documents arrive at the office, where they are signed by an UNKNOWN (unidentified role) actor and stored in a physical filing cabinet.", "friction_analysis": "The process suffers from a severe vulnerability due to Lack of Clear Ownership, as an UNKNOWN (unidentified role) actor handles approvals. Documents get stuck in the office for days, causing customer dissatisfaction.", "technology_neutral_recommendations": "1. Tier 1 (Policy): Assign clear ownership and roles for approving refund requests.\\n2. Tier 2 (SaaS): Adopt a standard ticketing SaaS (Software as a Service: online subscription tool) to log and route refund approvals digital workflows.\\n3. Tier 3 (Gen AI): A custom Gen AI (Generative Artificial Intelligence: advanced reasoning model) solution is NOT recommended here, as establishing clear policy ownership and digital ticketing solves the issue.", "roi_economics": "Reduces turnaround time from days to hours. ROI (Return on Investment: net benefit relative to cost) is immediate since Tier 1 policy shift is zero cost."}'
+                        "response_content": '{"as_is_workflow": "Customer refund request paper forms arrive at the Rajajinagar office, are signed, and then get stored in a physical filing cabinet.", "friction_analysis": "The biggest operating risk is unclear ownership: the workflow describes the form and storage location, but not the person accountable for moving the request forward. That missing owner can explain why documents sit for days and customers get upset.", "technology_neutral_recommendations": "1. Tier 1 (Policy): Assign one named desk role to own refund requests from arrival to filing.\\n2. Tier 2 (SaaS): Use a standard ticketing SaaS (Software as a Service: online subscription tool) or shared tracker to log each refund request and owner.\\n3. Tier 3 (Gen AI): A Gen AI (Generative Artificial Intelligence: software that reasons over language) solution is NOT recommended here because clear ownership and simple tracking should solve the core delay first.", "roi_economics": "Turnaround improvement should be measured only after the team records daily request volume, average delay, and rework time. ROI (Return on Investment: return compared with cost, like checking whether a repair saves more money than it costs) should be validated with real office data before decisions are final."}'
                     }
                 ]
             }

@@ -336,9 +336,12 @@ Your job is to ask the next natural question in a workflow discovery conversatio
 Conversation discipline:
 - Use Thread Pulling. Start by briefly acknowledging the concrete thing the owner just told you, then ask the next logical question.
 - Ask about exactly one missing detail: {missing_item}.
+- Consider the selected business blind spot: {blind_spot_json}.
+- If the blind spot is more decision-critical than the missing workflow detail, ask about the blind spot instead.
 - Ask one short question only. Do not ask multi-part questions.
 - Speak in the user's target language: {lang_code}.
 - Do not use internal labels such as Trigger, Actor, Activity, System, Friction, schema, slot, component, extraction, or JSON.
+- Do not use placeholder words such as UNKNOWN, null, None, or Not specified.
 - Do not ask the owner to name bottlenecks, friction, inefficiencies, pain points, or time waste during intake. BuildSense will infer those later.
 - Do not invent, assume, or hallucinate systems, software, people, steps, locations, or workflows. If the owner did not say they use Excel, Tally, WhatsApp, a notebook, an ERP, a dispatcher, or any other tool/person/process, do not mention it as fact.
 - You may offer a tiny example only as an optional possibility, never as a presumed fact.
@@ -346,6 +349,9 @@ Conversation discipline:
 
 Known workflow details, for grounding only:
 {components_json}
+
+Six-pillar coverage, for grounding only:
+{six_pillar_json}
 
 Conversation so far:
 {history}
@@ -365,6 +371,78 @@ MISSING_COMPONENT_QUESTION_FALLBACKS = {
 }
 
 
+CONSULTANT_PLAYBACK_PROMPT = """You are BuildSense's intake consultant.
+Write a natural playback summary of the owner's current workflow understanding and ask them to confirm or correct it.
+
+Rules:
+- Use only known concrete details from the structured context.
+- Treat UNKNOWN, null, None, empty strings, and Not specified as absent details. Do not mention them.
+- Do not use field labels, JSON, schema words, Trigger, Actor, Activity, System, or Friction.
+- If there is correction context, the newest user correction overrides earlier assistant summaries and extracted values.
+- Ask only for confirmation or correction in this turn. Do not ask a separate blind-spot question.
+- Speak in the user's target language: {lang_code}.
+
+Known workflow details, for grounding only:
+{components_json}
+
+Company and architect context, for grounding only:
+{architect_json}
+
+Pending correction context, if any:
+{pending_correction}
+
+Conversation so far:
+{history}
+
+Latest owner message:
+{latest_user_message}
+
+Return only the owner-facing playback message."""
+
+
+SIX_PILLARS: Dict[str, Dict[str, Any]] = {
+    "market": {
+        "name": "Market",
+        "description": "customers, demand, competitors, channels, and pricing pressure",
+        "keywords": ["customer", "client", "buyer", "demand", "competitor", "market", "price", "order", "vote"],
+        "open_question": "Who decides what gets ordered or prioritized?",
+    },
+    "operations": {
+        "name": "Operations",
+        "description": "workflow steps, handoffs, throughput, delays, and rework",
+        "keywords": ["workflow", "process", "order", "dispatch", "approval", "step", "handoff", "delay", "rework"],
+        "open_question": "What usually starts this work?",
+    },
+    "financials": {
+        "name": "Financials",
+        "description": "revenue model, costs, margins, payback, and cash constraints",
+        "keywords": ["cost", "revenue", "margin", "budget", "pay", "cash", "profit", "loss", "price"],
+        "open_question": "What does one delay or mistake usually cost you?",
+    },
+    "personnel": {
+        "name": "Personnel",
+        "description": "roles, ownership, staffing, training, and incentives",
+        "keywords": ["staff", "team", "manager", "driver", "dispatcher", "accountant", "receptionist", "owner"],
+        "open_question": "Who owns this work day to day?",
+    },
+    "technology": {
+        "name": "Technology",
+        "description": "tools, data flow, integrations, and automation readiness",
+        "keywords": ["excel", "whatsapp", "tally", "erp", "software", "app", "calendar", "sheet", "system"],
+        "open_question": "Where does your team track this work today?",
+    },
+    "risk": {
+        "name": "Risk",
+        "description": "compliance, reliability, privacy, safety, fraud, and dependency risks",
+        "keywords": ["privacy", "risk", "compliance", "fraud", "safety", "missed", "error", "security", "patient"],
+        "open_question": "What is the worst consequence if this step goes wrong?",
+    },
+}
+
+
+PLACEHOLDER_VALUES = {"", "unknown", "variable", "none", "null", "not specified"}
+
+
 def select_next_missing_component(required_keys: List[str], components: Dict[str, Any]) -> Optional[str]:
     """
     Selects one missing intake component for the next consultant question.
@@ -380,12 +458,177 @@ def select_next_missing_component(required_keys: List[str], components: Dict[str
     missing = [
         key
         for key in required_keys
-        if components.get(key) is None or str(components.get(key)).strip() == ""
+        if is_missing_component_value(components.get(key))
     ]
     for key in priority_order:
         if key in missing:
             return key
     return missing[0] if missing else None
+
+
+def is_missing_component_value(value: Any) -> bool:
+    """
+    Determines whether a component value is absent for user-facing language.
+
+    Args:
+        value: A raw component value from process state or metadata.
+
+    Returns:
+        True when the value is empty or a known placeholder sentinel.
+    """
+    if value is None:
+        return True
+    return str(value).strip().lower() in PLACEHOLDER_VALUES
+
+
+def sanitize_components_for_prompt(components: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """
+    Converts internal component sentinels into prompt-safe missing values.
+
+    Args:
+        components: Raw accumulated process components.
+
+    Returns:
+        A dictionary with absent or placeholder values represented as None.
+    """
+    return {
+        key: None if is_missing_component_value(value) else str(value).strip()
+        for key, value in components.items()
+    }
+
+
+def build_history_text(messages: List[Union[Message, Dict[str, Any]]]) -> str:
+    """
+    Builds compact conversation history for prompt grounding.
+
+    Args:
+        messages: Session messages as Pydantic models or dictionaries.
+
+    Returns:
+        A newline-delimited user/assistant transcript.
+    """
+    history_lines = []
+    for msg in messages:
+        role = msg.role if hasattr(msg, "role") else msg.get("role")
+        content = msg.content if hasattr(msg, "content") else msg.get("content", "")
+        if role in ["user", "assistant"]:
+            history_lines.append(f"{str(role).capitalize()}: {content}")
+    return "\n".join(history_lines)
+
+
+def _append_evidence(coverage: Dict[str, Dict[str, Any]], pillar: str, evidence: str) -> None:
+    """Adds a short evidence snippet to a pillar without duplicating it."""
+    evidence_list = coverage[pillar]["evidence"]
+    if evidence and evidence not in evidence_list:
+        evidence_list.append(evidence[:120])
+
+
+def build_six_pillar_coverage(
+    user_prompt: str,
+    components: Dict[str, Any],
+    company_context: Dict[str, Optional[str]],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Builds a lightweight six-pillar coverage map for intake planning.
+
+    Args:
+        user_prompt: The latest user message.
+        components: Accumulated workflow components.
+        company_context: Company name, industry, and core-tool context.
+
+    Returns:
+        Coverage status, evidence, and an open question for each pillar.
+    """
+    combined_text = " ".join(
+        str(value)
+        for value in [
+            user_prompt,
+            *components.values(),
+            *[value for value in company_context.values() if value],
+        ]
+        if value
+    ).lower()
+    sanitized = sanitize_components_for_prompt(components)
+    coverage: Dict[str, Dict[str, Any]] = {
+        key: {
+            "status": "missing",
+            "evidence": [],
+            "open_question": definition["open_question"],
+        }
+        for key, definition in SIX_PILLARS.items()
+    }
+
+    if sanitized.get("trigger") or sanitized.get("activity"):
+        _append_evidence(coverage, "operations", sanitized.get("trigger") or sanitized.get("activity") or "")
+    if sanitized.get("actor"):
+        _append_evidence(coverage, "personnel", sanitized["actor"] or "")
+    if sanitized.get("system"):
+        _append_evidence(coverage, "technology", sanitized["system"] or "")
+    if sanitized.get("friction"):
+        _append_evidence(coverage, "operations", sanitized["friction"] or "")
+        _append_evidence(coverage, "risk", sanitized["friction"] or "")
+
+    for pillar, definition in SIX_PILLARS.items():
+        for keyword in definition["keywords"]:
+            if keyword in combined_text:
+                _append_evidence(coverage, pillar, f"Mentions {keyword}")
+                break
+
+    for pillar, details in coverage.items():
+        evidence_count = len(details["evidence"])
+        if evidence_count >= 2:
+            details["status"] = "covered"
+            details["open_question"] = None
+        elif evidence_count == 1:
+            details["status"] = "partial"
+
+    return coverage
+
+
+def select_blind_spot(
+    six_pillar_coverage: Dict[str, Dict[str, Any]],
+    components: Dict[str, Any],
+    architect_plan: Dict[str, Any],
+) -> Dict[str, str]:
+    """
+    Selects the highest-value unanswered consulting blind spot.
+
+    Args:
+        six_pillar_coverage: Coverage details from the context architect.
+        components: Current process components.
+        architect_plan: Current architect planning metadata.
+
+    Returns:
+        The selected pillar, reason, and single question.
+    """
+    if architect_plan.get("requires_location") and is_missing_component_value(components.get("location")):
+        return {
+            "pillar": "operations",
+            "reason": "The business appears physical or local, but the operating area is still unknown.",
+            "question": "Where is your business based?",
+        }
+    if is_missing_component_value(components.get("trigger")):
+        return {
+            "pillar": "operations",
+            "reason": "The workflow cannot be analyzed until the starting event is known.",
+            "question": "What usually starts this work?",
+        }
+
+    priority = ["market", "financials", "risk", "personnel", "technology", "operations"]
+    for pillar in priority:
+        details = six_pillar_coverage.get(pillar, {})
+        if details.get("status") in {"missing", "partial"} and details.get("open_question"):
+            return {
+                "pillar": pillar,
+                "reason": f"{SIX_PILLARS[pillar]['name']} context is the biggest unresolved input for the next recommendation.",
+                "question": str(details["open_question"]),
+            }
+
+    return {
+        "pillar": "operations",
+        "reason": "The current workflow understanding needs confirmation before analysis.",
+        "question": "Does this workflow summary sound right?",
+    }
 
 
 def build_thread_pulling_acknowledgement(question: str, user_prompt: str) -> str:
@@ -400,10 +643,107 @@ def build_thread_pulling_acknowledgement(question: str, user_prompt: str) -> str
         A concise owner-facing acknowledgement followed by the question.
     """
     cleaned_prompt = re.sub(r"\s+", " ", user_prompt).strip()
+    for placeholder in ["UNKNOWN", "None", "null", "Not specified"]:
+        cleaned_prompt = cleaned_prompt.replace(placeholder, "").strip()
     if cleaned_prompt:
         acknowledged_text = cleaned_prompt[:120].rstrip(" .,;")
         return f"Thanks, I hear you: {acknowledged_text}. {question}"
     return question
+
+
+def build_known_details_playback(
+    components: Dict[str, Any],
+    pending_correction: Optional[str] = None,
+) -> str:
+    """
+    Builds deterministic playback copy from known details only.
+
+    Args:
+        components: Raw accumulated process components.
+        pending_correction: Optional unmapped correction text.
+
+    Returns:
+        Natural confirmation copy that avoids internal labels and placeholders.
+    """
+    known = sanitize_components_for_prompt(components)
+    details = []
+    if known.get("actor") and known.get("activity"):
+        details.append(f"{known['actor']} handle {known['activity']}")
+    elif known.get("activity"):
+        details.append(f"the work involves {known['activity']}")
+    elif known.get("actor"):
+        details.append(f"{known['actor']} are involved")
+
+    if known.get("trigger"):
+        details.append(f"it starts when {known['trigger']}")
+    if known.get("system"):
+        details.append(f"the current tracking place is {known['system']}")
+    if known.get("location"):
+        details.append(f"this happens around {known['location']}")
+    if known.get("friction"):
+        details.append(f"you mentioned {known['friction']}")
+
+    if details:
+        sentence = "Thanks, here is what I have so far: " + "; ".join(details) + "."
+    else:
+        sentence = "Thanks, I have only a rough outline so far."
+
+    if pending_correction:
+        sentence += f" I have noted your correction: {pending_correction.strip()}."
+
+    return f"{sentence}\n\nIf that sounds right, reply with 'Yes' to confirm, or correct any part."
+
+
+def build_natural_fallback_report(
+    components: Dict[str, Any],
+    architect_plan: Dict[str, Any],
+    selected_blind_spot: Dict[str, str],
+) -> Dict[str, str]:
+    """
+    Builds a cautious natural report when live synthesis is unavailable.
+
+    Args:
+        components: Raw accumulated process components.
+        architect_plan: Context architect metadata.
+        selected_blind_spot: Current blind-spot metadata.
+
+    Returns:
+        Backward-compatible report sections without placeholder leakage.
+    """
+    known = sanitize_components_for_prompt(components)
+    known_parts = []
+    if known.get("trigger"):
+        known_parts.append(f"The work starts when {known['trigger']}.")
+    if known.get("actor") and known.get("activity"):
+        known_parts.append(f"{known['actor']} handle {known['activity']}.")
+    elif known.get("activity"):
+        known_parts.append(f"The main work described is {known['activity']}.")
+    if known.get("system"):
+        known_parts.append(f"The team currently uses {known['system']}.")
+    if known.get("location"):
+        known_parts.append(f"The operating area is {known['location']}.")
+    if known.get("friction"):
+        known_parts.append(f"The stated issue is {known['friction']}.")
+
+    blind_question = selected_blind_spot.get("question") or "Confirm the missing workflow details with the process owner."
+    blind_pillar = selected_blind_spot.get("pillar", "operations")
+    workflow = " ".join(known_parts) if known_parts else "The workflow needs one more confirmed example before BuildSense can map it safely."
+
+    return {
+        "as_is_workflow": workflow,
+        "friction_analysis": (
+            f"The most important unresolved area is {blind_pillar}. "
+            f"Before treating recommendations as final, answer this question: {blind_question}"
+        ),
+        "technology_neutral_recommendations": (
+            "1. Observe one real example of the work from start to finish.\n"
+            "2. Confirm who owns each handoff before changing tools.\n"
+            "3. Validate the unresolved blind spot before choosing software or automation."
+        ),
+        "roi_economics": (
+            "Savings should be calculated only after volume, time spent, error rate, and implementation cost are known."
+        ),
+    }
 
 
 def ensure_jargon_analogies(text: str) -> str:
@@ -849,17 +1189,25 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         if inferred_location:
             components["location"] = inferred_location
 
+        company_context = {
+            "company_name": state.get("company_name"),
+            "company_industry": company_industry,
+            "company_core_tools": company_core_tools,
+        }
+        six_pillar_coverage = build_six_pillar_coverage(user_prompt, components, company_context)
         architect_plan = {
             "business_vertical": vertical,
             "requires_location": requires_location,
             "required_components": required_components,
-            "known_context": {
-                "company_name": state.get("company_name"),
-                "company_industry": company_industry,
-                "company_core_tools": company_core_tools,
-            },
+            "known_context": company_context,
+            "six_pillar_coverage": six_pillar_coverage,
             "next_node": "route_intent",
         }
+        architect_plan["selected_blind_spot"] = select_blind_spot(
+            six_pillar_coverage,
+            components,
+            architect_plan,
+        )
 
         metadata = dict(state.get("metadata", {}))
         metadata["architect_plan"] = architect_plan
@@ -940,23 +1288,29 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     components["location"] = None
 
                 # 2b. Check completeness against dynamic required keys (friction remains optional)
-                all_required_present = all(components.get(k) is not None and str(components.get(k)).strip() != "" for k in required_keys)
+                all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
                 initial_required_present = all_required_present
+                six_pillar_coverage = architect_plan.get("six_pillar_coverage", {})
+                selected_blind_spot = architect_plan.get("selected_blind_spot", {})
 
                 # 3. Handle Confirmation / Correction Gate
                 if initial_required_present:
                     is_confirmation = False
                     corrections = {}
+                    unmapped_correction = None
 
                     if api_key and HAS_ANTHROPIC:
                         try:
                             client = AsyncAnthropic(api_key=api_key)
                             prompt_confirm = (
                                 "You are an intake confirmation classifier.\n"
-                                "Your job is to analyze the user's latest response and determine if they are confirming the Playback Summary as accurate, or if they are correcting/modifying the details.\n\n"
+                                "Your job is to analyze the user's latest response and determine if they are confirming the Playback Summary as accurate, or if they are correcting/modifying the details.\n"
+                                "Newest user statements override older accumulated components and assistant summaries. If the user says 'No, X not Y', overwrite the old assumption with X where possible.\n\n"
                                 f"User's Latest Response: {user_prompt}\n\n"
                                 "Current Accumulated Operational Components:\n"
-                                f"{json.dumps(components, indent=2)}\n\n"
+                                f"{json.dumps(sanitize_components_for_prompt(components), indent=2)}\n\n"
+                                "Current Architect Plan:\n"
+                                f"{json.dumps(architect_plan, indent=2)}\n\n"
                                 "Output ONLY a valid JSON object matching this schema:\n"
                                 "{\n"
                                 '  "is_confirmation": true | false,\n'
@@ -965,8 +1319,10 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 '    "actor": "updated actor string or null",\n'
                                 '    "activity": "updated activity string or null",\n'
                                 '    "system": "updated system string or null",\n'
-                                '    "friction": "updated friction string or null"\n'
-                                '  }\n'
+                                '    "friction": "updated friction string or null",\n'
+                                '    "location": "updated location string or null"\n'
+                                '  },\n'
+                                '  "unmapped_correction": "correction text that cannot be mapped or null"\n'
                                 "}"
                             )
                             response = await traced_anthropic_messages_create(
@@ -981,6 +1337,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             result = _parse_json_clean(_extract_text_content(response))
                             is_confirmation = result.get("is_confirmation", False)
                             corrections = result.get("corrections", {})
+                            unmapped_correction = result.get("unmapped_correction")
  
                             # Cost Tracking
                             input_tokens = response.usage.input_tokens
@@ -1003,24 +1360,34 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             is_confirmation = any(w in user_prompt.lower() for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
                     else:
                         is_confirmation = any(w in user_prompt.lower() for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
+                        negative_correction_starts = ("no", "not ", "actually", "rather", "instead")
+                        if user_prompt.strip().lower().startswith(negative_correction_starts):
+                            is_confirmation = False
+                            unmapped_correction = user_prompt
 
                     if is_confirmation:
                         playback_confirmed = True
                     else:
                         # Apply corrections
-                        if corrections:
-                            for k, v in corrections.items():
-                                if v:
-                                    components[k] = v
-                        else:
-                            # If the classifier is unavailable, keep the correction
-                            # as review context instead of guessing which slot changed.
+                        applied_correction = False
+                        for k, v in (corrections or {}).items():
+                            if v:
+                                components[k] = v
+                                applied_correction = True
+                        if unmapped_correction or not applied_correction:
+                            # If the classifier is unavailable or cannot map the
+                            # correction, keep it as review context instead of
+                            # guessing which slot changed.
                             state_metadata = dict(state.get("metadata", {}))
-                            state_metadata["pending_intake_correction"] = user_prompt
+                            state_metadata["pending_intake_correction"] = unmapped_correction or user_prompt
+                            state["metadata"] = state_metadata
+                        else:
+                            state_metadata = dict(state.get("metadata", {}))
+                            state_metadata.pop("pending_intake_correction", None)
                             state["metadata"] = state_metadata
 
                         # Re-verify completeness against dynamic required keys
-                        all_required_present = all(components.get(k) is not None and str(components.get(k)).strip() != "" for k in required_keys)
+                        all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
 
                 # 4. Extract and accumulate components if incomplete
                 else:
@@ -1083,7 +1450,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 )
                                 extracted = _parse_json_clean(_extract_text_content(response))
                                 for k in ["trigger", "actor", "activity", "system", "friction", "location"]:
-                                    if extracted.get(k):
+                                    if extracted.get(k) and not is_missing_component_value(extracted.get(k)):
                                         components[k] = extracted[k]
 
                                 # Schedule geographic enrichment in background if a location was found
@@ -1129,27 +1496,25 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                     print(f"Failed to schedule geographic enrichment from fallback extraction: {e}")
 
                         # Re-verify completeness against the architect-selected requirements.
-                        all_required_present = all(components.get(k) is not None and str(components.get(k)).strip() != "" for k in required_keys)
+                        all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
 
                 # 5. Determine conversational next action
                 if not all_required_present:
                     question = ""
                     clarification_questions = []
                     selected_missing_item = select_next_missing_component(required_keys, components)
+                    sanitized_components = sanitize_components_for_prompt(components)
                     if api_key and HAS_ANTHROPIC:
                         try:
                             client = AsyncAnthropic(api_key=api_key)
-                            history_str = ""
-                            for msg in state["messages"]:
-                                role = msg.role if hasattr(msg, "role") else msg.get("role")
-                                content = msg.content if hasattr(msg, "content") else msg.get("content", "")
-                                if role in ["user", "assistant"]:
-                                    history_str += f"{role.capitalize()}: {content}\n"
+                            history_str = build_history_text(state["messages"])
 
                             prompt_question = CONSULTANT_INTAKE_PROMPT.format(
                                 missing_item=selected_missing_item or "the next concrete workflow detail",
+                                blind_spot_json=json.dumps(selected_blind_spot, indent=2),
                                 lang_code=lang_code,
-                                components_json=json.dumps(components, indent=2),
+                                components_json=json.dumps(sanitized_components, indent=2),
+                                six_pillar_json=json.dumps(six_pillar_coverage, indent=2),
                                 history=history_str,
                                 latest_user_message=user_prompt,
                             )
@@ -1168,10 +1533,13 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             print(f"Question generation LLM error: {e}")
 
                     if not question:
-                        question = MISSING_COMPONENT_QUESTION_FALLBACKS.get(
-                            selected_missing_item or "",
-                            "Thanks, that helps. What is the next step your team takes in this process?",
-                        )
+                        if selected_blind_spot and selected_blind_spot.get("question") and not selected_missing_item:
+                            question = selected_blind_spot["question"]
+                        else:
+                            question = MISSING_COMPONENT_QUESTION_FALLBACKS.get(
+                                selected_missing_item or "",
+                                selected_blind_spot.get("question", "Thanks, that helps. What is the next step your team takes in this process?"),
+                            )
                     clarification_questions = [question]
 
                     # Pull one thread from the user's latest statement without echoing
@@ -1209,19 +1577,37 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     return updates
 
                 elif not playback_confirmed:
-                    # Use a natural conversational acknowledgement for playback instead of a rigid schema dump.
-                    # This preserves internal mapping but avoids echoing internal keys back to the user.
-                    actor_phrase = components.get("actor") or "your team"
-                    activity_phrase = components.get("activity") or "the task"
-                    trigger_phrase = components.get("trigger") or "the triggering event"
-                    system_phrase = components.get("system") or "your current tools"
-                    friction_phrase = components.get("friction") or "to be analyzed by BuildSense"
+                    sanitized_components = sanitize_components_for_prompt(components)
+                    pending_correction = dict(state.get("metadata", {})).get("pending_intake_correction")
+                    acknowledgement = ""
+                    if api_key and HAS_ANTHROPIC:
+                        try:
+                            client = AsyncAnthropic(api_key=api_key)
+                            playback_prompt = CONSULTANT_PLAYBACK_PROMPT.format(
+                                lang_code=lang_code,
+                                components_json=json.dumps(sanitized_components, indent=2),
+                                architect_json=json.dumps(architect_plan, indent=2),
+                                pending_correction=pending_correction or "None",
+                                history=build_history_text(state["messages"]),
+                                latest_user_message=user_prompt,
+                            )
+                            response = await traced_anthropic_messages_create(
+                                client,
+                                model="claude-haiku-4-5-20251001",
+                                purpose="generate_playback_summary",
+                                is_byok=bool(self.user_key),
+                                max_tokens=1000,
+                                temperature=0.0,
+                                messages=[{"role": "user", "content": playback_prompt}]
+                            )
+                            candidate = _extract_text_content(response).strip()
+                            if candidate and not candidate.lstrip().startswith("{") and "UNKNOWN" not in candidate:
+                                acknowledgement = candidate
+                        except Exception as e:
+                            print(f"Playback generation LLM error: {e}")
 
-                    acknowledgement = (
-                        f"Thanks — from what you've shared, {actor_phrase} {activity_phrase} when {trigger_phrase}, using {system_phrase}. "
-                        f"I will analyze potential issues (for example: {friction_phrase}).\n\n"
-                        "If that sounds right, reply with 'Yes' to confirm, or correct any part."
-                    )
+                    if not acknowledgement:
+                        acknowledgement = build_known_details_playback(components, pending_correction)
 
                     full_message = acknowledgement
 
@@ -1354,6 +1740,10 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         }
         lang_code = state.get("lang") or "en"
         language_name = lang_names.get(lang_code, "English")
+        state_metadata = dict(state.get("metadata", {}))
+        architect_plan = state_metadata.get("architect_plan", {}) if isinstance(state_metadata.get("architect_plan"), dict) else {}
+        six_pillar_coverage = architect_plan.get("six_pillar_coverage", {})
+        selected_blind_spot = architect_plan.get("selected_blind_spot", {})
 
         # Call Sonnet to synthesize the report
         api_key = self.user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -1383,13 +1773,10 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 components = state.get("process_components", {})
                 components_context = ""
                 if components:
+                    sanitized_components = sanitize_components_for_prompt(dict(components))
                     components_context = (
                         "Gathered Workflow Components (As-Is State):\n"
-                        f"- Trigger: {components.get('trigger') or 'Not specified'}\n"
-                        f"- Actor: {components.get('actor') or 'Not specified'}\n"
-                        f"- Activity: {components.get('activity') or 'Not specified'}\n"
-                        f"- System: {components.get('system') or 'Not specified'}\n"
-                        f"- User-stated Friction: {components.get('friction') or 'None'}\n\n"
+                        f"{json.dumps(sanitized_components, indent=2)}\n\n"
                     )
 
                 system_prompt = (
@@ -1407,6 +1794,12 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "The user might not have specified any friction or bottleneck. You must independently analyze the gathered workflow "
                     "and deduce the hidden friction, double-work, transcription errors, communication gaps, or bottlenecks on behalf of the user. "
                     "Write a comprehensive friction analysis that uncovers these inefficiencies, even if the user did not report them.\n\n"
+                    "Six-Pillar Consultant Rubric:\n"
+                    "Evaluate Market, Operations, Financials, Personnel, Technology, and Risk before recommending any action. "
+                    "Use this rubric to think laterally about the business, not as a checklist the user must complete.\n"
+                    f"Six-Pillar Coverage: {json.dumps(six_pillar_coverage, indent=2)}\n"
+                    f"Selected Blind Spot: {json.dumps(selected_blind_spot, indent=2)}\n"
+                    "If the selected blind spot remains unresolved, state it as a caveat instead of treating it as a fact.\n\n"
                     + ("Geographic Enrichment Guidance:\nIf the session state contains `geographic_context` (or `metadata.geographic_context`), weave the neighborhood intelligence into your analysis: mention nearby wholesale sectors, major transit arteries, and local delivery constraints, and recommend localized operational mitigations (for example: avoid specific morning arterial windows, use curbside pickup rules, leverage nearby B2B distribution nodes).\n\n" if state.get("geographic_context") or state.get("metadata", {}).get("geographic_context") else "")
                     + "Recommendation Hierarchy Rule & Constraint Compliance Rule:\n"
                     "Evaluate solutions in this exact order to prevent over-engineering:\n"
@@ -1451,7 +1844,6 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 roi_economics = result.get("roi_economics", "")
 
                 # Store the new fields in metadata
-                state_metadata = dict(state.get("metadata", {}))
                 state_metadata["as_is_workflow"] = as_is_workflow
                 state_metadata["friction_analysis"] = friction_analysis
                 state_metadata["technology_neutral_recommendations"] = tech_neutral_recs
@@ -1485,40 +1877,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         if not quick_insights_text or not deep_dive_text:
             state_metadata = dict(state.get("metadata", {}))
             fallback_components = dict(state.get("process_components", {})) if state.get("process_components") else {}
-            
-            def captured_or_unknown(component_key: str) -> str:
-                """Return a captured workflow component without inventing fallback details."""
-                value = fallback_components.get(component_key)
-                if value is None or str(value).strip() == "":
-                    return "UNKNOWN"
-                return str(value).strip()
-
-            as_is_lines = [
-                f"1. Trigger: {captured_or_unknown('trigger')}",
-                f"2. Actor: {captured_or_unknown('actor')}",
-                f"3. Activity: {captured_or_unknown('activity')}",
-                f"4. System: {captured_or_unknown('system')}",
-                f"5. Friction: {captured_or_unknown('friction')}",
-            ]
-            if "location" in fallback_components:
-                as_is_lines.append(f"6. Location: {captured_or_unknown('location')}")
-
-            fallback = {
-                "as_is_workflow": "\n".join(as_is_lines),
-                "friction_analysis": (
-                    "- BuildSense needs to analyze the captured workflow before naming a root cause.\n"
-                    "- Any UNKNOWN field above should be confirmed with the business owner before recommendations are treated as final."
-                ),
-                "technology_neutral_recommendations": (
-                    "1. Confirm any UNKNOWN workflow details with the person who runs this process day to day.\n"
-                    "2. Observe one real example of the workflow before changing tools or policies.\n"
-                    "3. Only recommend software after the current tools and handoffs are explicitly confirmed."
-                ),
-                "roi_economics": (
-                    "- Estimated savings: UNKNOWN until volume, time spent, and rework are captured.\n"
-                    "- Payback period: UNKNOWN until implementation cost is known."
-                ),
-            }
+            architect_plan = state_metadata.get("architect_plan", {}) if isinstance(state_metadata.get("architect_plan"), dict) else {}
+            selected_blind_spot = architect_plan.get("selected_blind_spot", {})
+            fallback = build_natural_fallback_report(fallback_components, architect_plan, selected_blind_spot)
             
             # Populate new fields
             state_metadata["as_is_workflow"] = fallback["as_is_workflow"]

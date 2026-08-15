@@ -34,8 +34,9 @@ You will be evaluated on the following three criteria:
 - Verify that it uses progressive disclosure: it acknowledges what the user just said before asking the next logical question.
 - Verify that it asks exactly one question and does not combine multiple missing slots.
 - Verify that it does not expose internal labels such as Trigger, Actor, Activity, System, or Friction.
+- Verify that it does not expose placeholder tokens such as UNKNOWN, null, None, or Not specified.
 - Verify that it does not invent tools or systems such as Excel, ERP, WhatsApp, or Tally unless the user explicitly provided them.
-- Score: A decimal between 0.0 (robotic slot-filling, hallucinated tools, or multi-part questioning) and 1.0 (warm, single-question, grounded intake).
+- Score: A decimal between 0.0 (robotic slot-filling, placeholder leakage, hallucinated tools, or multi-part questioning) and 1.0 (warm, single-question, grounded intake).
 Provide your final output in JSON format with this exact structure:
 {
   "zero_jargon_score": <float between 0.0 and 1.0>,

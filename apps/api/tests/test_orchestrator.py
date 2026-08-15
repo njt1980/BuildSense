@@ -168,7 +168,8 @@ async def test_orchestrator_budget_exhaustion_limits() -> None:
     )
 
     with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
-         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)):
+         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)), \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", False):
         
         await orchestrator._execute_task_loop(state)
         
@@ -201,7 +202,8 @@ async def test_orchestrator_document_ingestion() -> None:
     )
 
     with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
-         patch.object(orchestrator, "_execute_task_loop", AsyncMock()):
+         patch.object(orchestrator, "_execute_task_loop", AsyncMock()), \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", False):
         updated_state = await orchestrator.run_pipeline(state)
         
         # Check that state has reached planning
@@ -409,4 +411,3 @@ async def test_orchestrator_starter_chip_routing() -> None:
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         assert len(updated_state.clarification_questions) in [1, 3]
         assert mock_save.call_count >= 1
-

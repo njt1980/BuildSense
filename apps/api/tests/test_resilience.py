@@ -99,7 +99,8 @@ async def test_hitl_pause_serializes_state_and_resumes_cleanly(mock_postgres_sto
         messages=[Message(role="user", content="Too short")],
     )
 
-    paused_state = await orchestrator.run_pipeline(initial_state)
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False):
+        paused_state = await orchestrator.run_pipeline(initial_state)
 
     assert paused_state.status == SessionStatus.AWAITING_CLARIFICATION
     assert paused_state.clarification_questions
@@ -128,7 +129,8 @@ async def test_hitl_pause_serializes_state_and_resumes_cleanly(mock_postgres_sto
         ),
     )
 
-    completed_state = await orchestrator.run_pipeline(resumed_state)
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False):
+        completed_state = await orchestrator.run_pipeline(resumed_state)
 
     assert completed_state.status == SessionStatus.COMPLETED
     assert any("Too short" in msg.content for msg in completed_state.messages)
@@ -229,6 +231,8 @@ async def test_synthesize_report_fallback_on_external_llm_failure(side_effect: E
     assert "quick_insights" in updates["metadata"]
     assert "deep_dive" in updates["metadata"]
     assert updates["metadata"]["as_is_workflow"] != ""
+    assert "UNKNOWN" not in updates["metadata"]["quick_insights"]
+    assert "Trigger:" not in updates["metadata"]["as_is_workflow"]
 
 
 # 4. Auth Fallback & Global Rate Limiting
