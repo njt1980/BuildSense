@@ -1,154 +1,415 @@
-# Design Proposal: BuildSense End-to-End Evaluation Suite
+# Design Proposal: Management Consulting Discovery Evals
 
-This proposal details the architecture, file structure, dataset schema, and assertion strategy to implement a systematic End-to-End Evaluation Suite (`apps/api/tests/evals/`) for the BuildSense LangGraph orchestrator (`orchestrator.py`).
+This proposal covers the requested evolution of the LangGraph orchestrator and E2E evaluation suite. It is design-only; no orchestrator or eval code should be changed until this plan is approved.
 
----
+## Objective
 
-## 1. Proposed File Structure
+BuildSense should behave like a careful operations consultant during intake. When the user says something vague like “Billing is a mess,” the graph should not behave like a form filler, ask for internal schema labels, or jump to recommendations. It should empathize, identify what is missing, ask one plain-language question at a time, and only synthesize a solution after enough business/process facts have been confirmed.
 
-We will isolate the evaluation suite under `apps/api/tests/evals/` to avoid mixing integration/eval tests with unit tests:
+## Current State
 
-```
-apps/api/
-└── tests/
-    └── evals/
-        ├── __init__.py
-        ├── conftest.py       # Global database/cache mocks & custom pytest terminal summary reporter
-        ├── eval_dataset.py   # Dataset definitions & multi-turn exchange structures
-        ├── judge.py          # Claude 3.5 Haiku judge client & semantic grading rubrics
-        └── test_runner.py    # Pytest E2E orchestrator assertions (routing & state accumulation)
+The graph now includes:
+
+```text
+sanitize_input -> context_architect -> route_intent -> await_human / execute_tools -> synthesize_report
 ```
 
----
+Relevant current behavior:
 
-## 2. Dataset Schema & Test Scenario Construction
+- `context_architect` creates `metadata.architect_plan` and can require `location` for physical businesses.
+- `route_intent` still owns most interview behavior, including extraction, confirmation, escape hatch handling, and question generation.
+- The question-generation prompt already bans some machine labels and forbids asking directly for “bottlenecks,” but it does not yet consistently prioritize the three consulting discovery dimensions:
+  - hand-offs,
+  - volume/frequency,
+  - quantified friction.
+- The E2E eval dataset is structured for multi-turn mocked LLM responses, but its assertions focus mostly on status and `process_components`, not question quality or final ROI defaulting.
 
-We will define our scenarios in `apps/api/tests/evals/eval_dataset.py`. The schema structure is designed to represent both single-input routing prompts and ordered multi-turn interactions.
+## Proposed Behavior
 
-### Dataset Schema (`EvalScenario`)
+For vague complaints, the intake flow should follow a “Management Consulting Discovery” ladder.
 
-We will use TypedDict definitions for clean schema modeling:
+1. Acknowledge the problem in human terms.
+2. Identify the process area without pretending to know the workflow.
+3. Ask for hand-offs first: who sends work to whom, and where the information moves.
+4. Ask for volume/frequency next: how often it happens per day/week/month.
+5. Ask for quantified friction next: rough time lost, rework, error count, or delay.
+6. Confirm the understood workflow naturally.
+7. Only after confirmation, execute tools and synthesize tiered recommendations.
 
-```python
-from typing import Any, Dict, List, Optional, TypedDict
+The graph should still honor the existing `clarification_turns >= 2` escape hatch. When the turn limit is reached, it should stop interrogating and proceed with explicit `UNKNOWN` or defaulted assumptions, clearly framed in the final report as assumptions.
 
-class Turn(TypedDict):
-    user_input: str
-    expected_status: str
-    expected_components: Dict[str, Any]  # Key-value assertions on process_components
+## Orchestrator Changes
 
-class EvalScenario(TypedDict):
-    name: str
-    mode: str
-    motivation: str
-    turns: List[Turn]
-    expect_synthesis: bool               # True if this scenario completes the entire workflow
-    user_constraints: Optional[List[str]]
-```
+### 1. Expand Architect Plan
 
-### The 5 Golden Scenarios
+Add a `discovery_plan` section inside `metadata.architect_plan`.
 
-1. **Short Starter Chips (HITL Clarification)**
-   - **Input**: `"Walk through customer order"` (< 50 characters)
-   - **Assertion**: Immediately routes to `SessionStatus.AWAITING_CLARIFICATION`, `playback_confirmed=False`, and asks ontology questions.
+Proposed shape:
 
-2. **Messy Multi-Turn Conversation (Intake Accumulation)**
-   - **Input Flow**:
-     - **Turn 1**: `"I run a pet shop."` (Assesses vertical, updates state, asks clarification).
-     - **Turn 2**: `"We receive orders on WhatsApp."` (Updates trigger/source, asks clarification).
-     - **Turn 3**: `"I manually type them into Excel."` (Completes the mandatory components loop, presents Playback summary).
-   - **Assertion**: Each turn updates `state.process_components` fields. After Turn 3, `process_components` contains `actor="pet shop staff/owner"`, `system="Excel"`, and `trigger="WhatsApp orders"`.
-
-3. **The Escape Hatch (Fallback to Unknown)**
-   - **Scenario A (User input "I don't know")**:
-     - **Input**: `"I don't know what tools they use."`
-     - **Assertion**: System forcefully fills missing components (`system` or `actor`) with `"UNKNOWN"` and presents the Playback Summary.
-   - **Scenario B (Clarification Turn limit = 2)**:
-     - **Setup**: Inject state with `clarification_turns = 2` and submit a vague query.
-     - **Assertion**: Gracefully falls back to `"UNKNOWN"` for missing slots and enters Playback.
-
-4. **Correction Handling (State Mutation & Re-Playback)**
-   - **Input Flow**:
-     - **Turn 1**: High completeness input triggering Playback (e.g., invoice tracking via Excel).
-     - **Turn 2**: User rejects the Playback Summary with corrections: `"No, we use Tally, not Excel."`
-     - **Assertion**: The `system` component in `process_components` changes from `"Excel"` to `"Tally"`, `playback_confirmed` remains `False`, and a new Playback Summary mentioning "Tally" is emitted.
-
-5. **Full Workflow to Execution & Synthesis**
-   - **Input Flow**:
-     - **Turn 1**: Full business process details.
-     - **Turn 2**: Confirming playback summary: `"Yes, correct."`
-   - **Assertion**: State transitions from `ROUTING` -> `AWAITING_CLARIFICATION` -> `PLANNING` -> `EXECUTING` -> `COMPLETED`. Mocks tool executions and builds a full synthesis report.
-
----
-
-## 3. Deterministic State Machine Assertions
-
-We will build a test runner in `test_runner.py` that imports `orchestrator` and runs `run_pipeline` programmatically. 
-
-### Turn Loop Simulation
-For multi-turn tests, the runner will iteratively invoke `orchestrator.run_pipeline` by appending the new user message to the output state's messages and passing it to the next step:
-```python
-state = SessionState(...)
-for turn in scenario["turns"]:
-    state.messages.append(Message(role="user", content=turn.user_input))
-    state = await orchestrator.run_pipeline(state)
-    assert state.status == turn.expected_status
-    # Assert specific process components mutations
-    for k, v in turn.expected_components.items():
-        assert getattr(state.process_components, k) == v
-```
-
-### Safety & Loop Protections
-- Assertion that `steps_taken` does not exceed `max_steps`.
-- Verification that session status transitions to `SessionStatus.FAILED` if budget or step limits are breached, avoiding infinite loop traps.
-
----
-
-## 4. LLM-as-a-Judge Semantic Assertions
-
-We will build a lightweight judge in `judge.py` calling `claude-3-5-haiku-20241022` to score generated outputs.
-
-### Grading Criteria & Rubrics
-1. **Zero-Jargon Compliance**:
-   - Check if jargon terms like *ROI*, *LTV*, *CAC*, *MRR* are accompanied by everyday analogies in parentheses.
-2. **Recommendation Hierarchy Integrity**:
-   - Ensure the recommendations section evaluates Tier 1 (Process/Policy Change) and Tier 2 (Deterministic SaaS/Automation) before suggesting Tier 3 (Gen AI/Agents).
-3. **Playback Formatting**:
-   - Verify that Playback Summaries utilize scannable emoji-bulleted Markdown lists with the custom emojis (`🚚`, `👤`, `⚙️`, `💻`, `⚠️`).
-
-### JSON Output Schema
 ```json
 {
-  "zero_jargon_score": float,         // Range 0.0 - 1.0 (threshold >= 0.90)
-  "hierarchy_integrity_score": float, // Range 0.0 - 1.0 (threshold >= 0.90)
-  "playback_formatting_score": float,  // Range 0.0 - 1.0 (threshold >= 0.90)
-  "justification": "string"
+  "business_vertical": "GENERIC",
+  "requires_location": false,
+  "required_components": ["trigger", "actor", "activity", "system"],
+  "discovery_plan": {
+    "is_vague_complaint": true,
+    "process_area": "billing",
+    "priority_dimensions": ["handoffs", "volume_frequency", "quantified_friction"],
+    "collected_dimensions": {
+      "handoffs": false,
+      "volume_frequency": false,
+      "quantified_friction": false
+    },
+    "next_dimension": "handoffs"
+  }
 }
 ```
 
-If the API key is not present in the local environment, the judge will fail gracefully and return mock passing scores (`1.0`) to avoid blocking local developer pipelines.
+Detection heuristics:
 
----
+- Vague complaint examples: “billing is a mess,” “dispatch is slow,” “things get delayed,” “invoices are painful,” “orders are chaotic.”
+- If there is a complaint but no clear actors/systems/volume/time loss, mark `is_vague_complaint=true`.
+- If the user supplies concrete actors and systems in the first turn, skip directly to the missing dimension.
 
-## 5. Custom Execution CLI & Terminal Reporter
+### 2. Add Discovery Dimensions To State
 
-The evaluation suite will be executed with:
+Use metadata for low-risk implementation first:
+
+```python
+metadata["discovery_context"] = {
+    "handoffs": Optional[str],
+    "volume_frequency": Optional[str],
+    "quantified_friction": Optional[str],
+    "labor_rate_assumption": Optional[dict],
+}
+```
+
+Do not add new Pydantic fields until this shape stabilizes. The final report can consume `metadata.discovery_context`.
+
+### 3. Update Extraction Prompt
+
+Update the `extract_process_components` prompt to extract the extra dimensions in addition to existing process components:
+
+```json
+{
+  "trigger": "...",
+  "actor": "...",
+  "activity": "...",
+  "system": "...",
+  "friction": "...",
+  "location": "...",
+  "handoffs": "...",
+  "volume_frequency": "...",
+  "quantified_friction": "...",
+  "hourly_wage": null
+}
+```
+
+Extraction rules:
+
+- `handoffs`: who sends/receives work and which systems or artifacts carry it.
+- `volume_frequency`: count per day/week/month or qualitative frequency if no count is available.
+- `quantified_friction`: hours lost, delay time, error rate, rework count, or “not provided.”
+- `hourly_wage`: only if explicitly provided by the user.
+
+### 4. Update Clarification Question Prompt
+
+Replace the current generic “missing component” question prompt with dimension-aware question generation.
+
+Prompt requirements:
+
+- Ask one question only.
+- Use everyday language.
+- Strictly forbid these words during discovery:
+  - bottleneck
+  - throughput
+  - SOP
+  - workflow optimization
+  - ROI
+  - leverage
+  - automation architecture
+  - CAC
+  - LTV
+- Do not ask “what is the friction?” Instead ask concrete variants:
+  - “Where does the work wait?”
+  - “How many of these happen in a normal week?”
+  - “About how much time does someone lose each time?”
+  - “Who gets the request first, and where do they pass it next?”
+
+Question priority:
+
+1. If `handoffs` missing: ask who receives/sends the work and what tools/artifacts each side uses.
+2. Else if `volume_frequency` missing: ask how many times it happens in a typical day/week/month.
+3. Else if `quantified_friction` missing: ask for a rough time loss, delay, rework, or error estimate.
+4. Else if required process component missing: ask for the missing component in plain language.
+5. Else present natural confirmation.
+
+### 5. Escape Hatch Behavior
+
+Keep the current `clarification_turns >= 2` limit, but change the fallback response strategy:
+
+- Fill missing process fields with `UNKNOWN`.
+- Fill missing discovery fields with `UNKNOWN`.
+- Set `metadata["assumptions_needed"] = True`.
+- Continue to confirmation rather than asking more.
+
+Final synthesis must explicitly say where assumptions were used.
+
+### 6. Dynamic ROI Economics Defaulting
+
+Add a small deterministic helper in the synthesizer path:
+
+```python
+derive_labor_rate_assumption(
+    role: str | None,
+    business_vertical: str | None,
+    location: str | None,
+    company_industry: str | None,
+) -> dict
+```
+
+Initial default table:
+
+```python
+WAREHOUSE_OR_DISPATCH = {
+    "hourly_rate": 250,
+    "currency": "INR",
+    "basis": "default local operations staff assumption"
+}
+
+ACCOUNTING_OR_ADMIN = {
+    "hourly_rate": 350,
+    "currency": "INR",
+    "basis": "default local bookkeeping/admin assumption"
+}
+
+GENERIC_SMB_STAFF = {
+    "hourly_rate": 300,
+    "currency": "INR",
+    "basis": "default small business staff assumption"
+}
+```
+
+Rules:
+
+- If user provides wage, use user-provided wage.
+- Else infer from role/process:
+  - warehouse, picker, dispatcher, driver, packing staff -> warehouse/dispatch default.
+  - accountant, bookkeeper, admin, invoicing clerk -> accounting/admin default.
+  - otherwise -> generic SMB staff default.
+- Store the chosen default in `metadata.discovery_context.labor_rate_assumption`.
+- Synthesis prompt must state that this is an assumption and can be adjusted.
+
+Synthesis prompt addition:
+
+> If hourly wage is missing, use the provided labor-rate assumption from metadata. Present it clearly as an assumption, not a fact. Calculate simple ROI from frequency × time lost × assumed hourly labor cost. If volume or time loss is unknown, provide a conservative scenario range and label it as a rough planning estimate.
+
+## E2E Evaluation Changes
+
+### Dataset Schema Updates
+
+Extend `Turn` in `apps/api/tests/evals/eval_dataset.py`:
+
+```python
+class Turn(TypedDict):
+    user_input: str
+    expected_status: str
+    expected_components: Dict[str, Any]
+    expected_discovery: NotRequired[Dict[str, Any]]
+    expected_question_contains: NotRequired[List[str]]
+    forbidden_question_terms: NotRequired[List[str]]
+    expected_metadata: NotRequired[Dict[str, Any]]
+    mock_llm_responses: List[MockLLMCall]
+    clarification_turns: Optional[int]
+```
+
+Update `test_runner.py` to assert:
+
+- `expected_discovery` against `state.metadata["discovery_context"]`.
+- `expected_question_contains` against latest assistant message or latest clarification question.
+- `forbidden_question_terms` are absent from the latest user-facing question.
+- `expected_metadata` for labor-rate assumptions and architect plan flags.
+
+Also update playback capture. It currently looks for old emoji/schema strings. It should capture messages containing:
+
+- `If that sounds right`
+- `from what you've shared`
+- or the latest assistant message before confirmation.
+
+### Scenario A: Physical Operations
+
+Name:
+
+`Consulting Discovery - Warehouse Dispatch Delays`
+
+Purpose:
+
+Validate vague physical-operations discovery with hand-offs, volume/frequency, quantified friction, completion, and tiered recommendations.
+
+Turn outline:
+
+1. User: `Dispatch is always delayed. Sales says warehouse is the problem.`
+   - Expected: `AWAITING_CLARIFICATION`
+   - Expected question should ask about hand-offs.
+   - Required wording should include something like `who gets the order first` or `where does it go next`.
+   - Forbidden terms: `bottleneck`, `throughput`, `SOP`, `optimization`, `ROI`.
+   - Mock extractor returns only broad area/friction, no complete components.
+
+2. User: `Sales emails orders to a shared inbox. Warehouse supervisor reads email, writes jobs on a whiteboard, then tells pickers from memory.`
+   - Expected components:
+     - trigger: sales order email received
+     - actor: warehouse supervisor and pickers
+     - activity: write jobs on whiteboard and verbally assign picking
+     - system: shared email inbox, whiteboard, memory
+   - Expected discovery:
+     - handoffs: sales email -> warehouse supervisor -> whiteboard -> pickers
+   - Expected question asks volume/frequency.
+
+3. User: `Maybe 35 orders a day, more on Mondays.`
+   - Expected discovery:
+     - volume_frequency: 35 orders/day, higher Mondays
+   - Expected question asks for rough time lost/errors.
+
+4. User: `About 2 hours a day are lost checking status, and maybe 5 orders a week get picked late.`
+   - Expected discovery:
+     - quantified_friction: 2 hours/day and 5 late picks/week
+   - Expected: `AWAITING_CLARIFICATION`
+   - Expected confirmation message, not solution.
+
+5. User: `Yes, correct.`
+   - Expected: `COMPLETED`
+   - Mock synthesis includes:
+     - Tier 1: whiteboard cutoff/check-in routine
+     - Tier 2: shared order tracker or Kanban board
+     - Tier 3: not recommended unless unstructured email parsing is unavoidable
+     - ROI: uses warehouse/dispatch labor default if wage not provided.
+
+### Scenario B: Financial Operations
+
+Name:
+
+`Consulting Discovery - Field Technician Invoicing Delays`
+
+Purpose:
+
+Validate financial/admin workflow discovery with multiple systems, WhatsApp image hand-off, volume/frequency, quantified friction, and accounting labor default.
+
+Turn outline:
+
+1. User: `Invoicing takes forever and customers keep chasing us.`
+   - Expected: `AWAITING_CLARIFICATION`
+   - Expected question asks where the job details come from and who receives them.
+   - Forbidden terms: `bottleneck`, `throughput`, `SOP`, `ROI`, `automation architecture`.
+
+2. User: `Field technicians send WhatsApp photos of job cards to the office. Admin types them into Excel and then again into Zoho Books.`
+   - Expected components:
+     - trigger: technician sends job card photo
+     - actor: field technicians and office admin
+     - activity: type job-card details into Excel and Zoho Books
+     - system: WhatsApp, Excel, Zoho Books
+   - Expected discovery:
+     - handoffs: technician WhatsApp photo -> admin -> Excel -> Zoho Books
+   - Expected question asks volume/frequency.
+
+3. User: `Around 60 job cards a week.`
+   - Expected discovery:
+     - volume_frequency: 60 job cards/week
+   - Expected question asks time lost or error/rework estimate.
+
+4. User: `Each one takes 8 minutes to type, and 10 percent need corrections because photos are unclear.`
+   - Expected discovery:
+     - quantified_friction: 8 minutes/card and 10 percent correction rate
+   - Expected confirmation.
+
+5. User: `Yes, that's right.`
+   - Expected: `COMPLETED`
+   - Mock synthesis includes:
+     - Tier 1: photo quality/job-card checklist
+     - Tier 2: form capture or Zoho intake form
+     - Tier 3: OCR/AI only if photo variability remains high
+     - ROI: uses accounting/admin labor default if wage not provided.
+
+## Test Runner Assertion Design
+
+Add helper functions:
+
+```python
+def latest_assistant_text(state: SessionState) -> str: ...
+def assert_contains_all(text: str, snippets: list[str]) -> None: ...
+def assert_contains_none(text: str, forbidden_terms: list[str]) -> None: ...
+def assert_nested_metadata(state: SessionState, expected: dict) -> None: ...
+```
+
+For deterministic LLM mocking, update `make_mock_anthropic()` so it can map the new prompt type:
+
+- `management consulting discovery`
+- `discovery question`
+- `labor-rate assumption`
+
+If we keep this inside existing extractor/question prompts, no new node classifier is needed. If we introduce a separate prompt purpose later, use `MockLLMCall.node = "discovery_question_generator"`.
+
+## Expected Prompt Adjustments
+
+### Question Generator Prompt
+
+Add a section:
+
+```text
+MANAGEMENT CONSULTING DISCOVERY MODE
+When the user gives a vague operational complaint, do not ask for labels. Ask one practical question that uncovers the next missing dimension:
+1. hand-offs: who receives the work, who passes it next, and what tool or artifact carries it
+2. volume/frequency: how many times per day/week/month
+3. quantified friction: rough time lost, delay, rework, or error count
+
+Use everyday language. Do not use: bottleneck, throughput, SOP, ROI, optimization, architecture, leverage.
+```
+
+### Extractor Prompt
+
+Add fields:
+
+```json
+"handoffs": "who passes work to whom and through what tools/artifacts, or null",
+"volume_frequency": "how often this happens, or null",
+"quantified_friction": "rough time lost, delay, error rate, or rework count, or null",
+"hourly_wage": "explicit wage only, or null"
+```
+
+### Synthesis Prompt
+
+Add:
+
+```text
+ROI DEFAULTING RULE
+If the user did not provide hourly wages, use metadata.discovery_context.labor_rate_assumption. State clearly that it is an assumption. If volume and time loss are available, calculate estimated weekly/monthly cost. If either is missing, show a conservative range and ask the user to validate it before financial decisions.
+```
+
+## Risks And Mitigations
+
+- Risk: More required discovery dimensions can make users feel interrogated.
+  - Mitigation: Keep one-question turns and preserve escape hatch.
+- Risk: Default labor rates may appear too authoritative.
+  - Mitigation: Always label them as planning assumptions.
+- Risk: E2E mocked evals may pass while live LLM wording drifts.
+  - Mitigation: Add deterministic forbidden-term assertions and later add LLM-judge rubrics specifically for discovery tone.
+- Risk: Existing evals expect old playback/schema formatting.
+  - Mitigation: Update playback capture logic and judge rubrics to prefer conversational confirmation.
+
+## Implementation Order After Approval
+
+1. Add discovery metadata helpers and labor-rate default helper.
+2. Update extractor and question-generation prompts.
+3. Update synthesis prompt to use default labor assumptions.
+4. Extend `eval_dataset.py` schema with question/metadata assertions.
+5. Add Scenario A and Scenario B fixtures.
+6. Update `test_runner.py` assertions.
+7. Run:
+
 ```powershell
-pytest apps/api/tests/evals
+cd apps/api
+.\.venv\Scripts\python.exe -m pytest tests/evals -v
+.\.venv\Scripts\python.exe -m pytest tests/test_analyst_behavior.py tests/test_interview.py tests/test_ontology.py tests/test_langgraph.py -v
+.\.venv\Scripts\python.exe -m mypy app
 ```
 
-We will implement `pytest_terminal_summary` inside `apps/api/tests/evals/conftest.py` to capture test execution duration (latency) and status. It will render a clean terminal summary:
-
-```
-========================= E2E EVALUATION REPORT =========================
-SCENARIO NAME                               STATUS    LATENCY (s)
--------------------------------------------------------------------------
-Vague Starter Chip Clarification            PASSED    0.12s
-Messy Multi-Turn Intake Accumulation        PASSED    2.84s
-The Escape Hatch Fallback                   PASSED    0.15s
-Correction Handling & Re-Playback           PASSED    1.22s
-Full Workflow Execution & Synthesis         PASSED    4.52s
--------------------------------------------------------------------------
-Overall Pass Rate: 100.0% | Total Latency: 8.85s
-=========================================================================
-```
+8. Fix failures until all discovery and synthesis behavior matches the approved contract.
