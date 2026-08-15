@@ -1,4 +1,4 @@
-# Specification: Dynamic Consultant Orchestration And Six-Pillar Blind-Spot Intake
+# Specification: Dynamic Consultant Orchestration, Six-Pillar Blind-Spot Intake, And Expanded E2E Evals
 
 ## 1. Problem
 
@@ -15,6 +15,8 @@ The current orchestration prompts also focus too narrowly on workflow slots and 
 5. Instruct the LLM to identify the biggest blind spot based on what the user has not said across the six pillars, then ask exactly one targeted question about that blind spot.
 6. Ensure user corrections overwrite previous assumptions instead of being treated as failed confirmations or forced into a rigid progression.
 7. Preserve Optimizer-only mode, budget caps, untrusted-tool XML boundaries, context pruning, tenant isolation, and existing API contracts.
+8. Expand the end-to-end eval suite so it covers realistic fictional SMB companies, multi-turn consultation behavior, adversarial inputs, fallback paths, and final synthesis quality.
+9. Ensure every eval path, old or new, follows the current six-pillar blind-spot intake approach and does not preserve legacy placeholder-slot, rigid routing, or retired-mode expectations.
 
 ## 3. Non-Goals
 
@@ -50,6 +52,8 @@ The implementation is expected to focus on `apps/api/app/core/orchestrator.py`:
 5. Tests and eval fixtures
    - Existing tests intentionally assert `UNKNOWN` in some escape-hatch messages. Those tests must be updated to assert the new behavior.
    - Golden eval fixtures containing `UNKNOWN`-driven outputs must be revised so they do not reward placeholder dialogue.
+   - Existing and new eval runners must be audited so their mocked LLM node matching, expected playback text, judge rubrics, and scenario assertions reflect the current consultant approach.
+   - Any legacy golden dataset that still assumes rigid slot questioning, multiple intake questions, placeholder playback, or retired modes must be migrated or deleted.
 
 ## 5. Functional Requirements
 
@@ -124,6 +128,73 @@ The implementation is expected to focus on `apps/api/app/core/orchestrator.py`:
   - `roi_economics`.
 - Any fallback report path must avoid placeholder slot dumps and instead produce cautious, natural language based only on confirmed known information.
 
+### 5.7 Expanded End-To-End Eval Coverage
+
+- The eval suite must include a broad fictional-company catalog that feels operationally realistic rather than prompt-only.
+- Each fictional company scenario should define, where relevant:
+  - company name,
+  - industry,
+  - geography,
+  - team roles,
+  - current tools,
+  - operating constraints,
+  - privacy or compliance sensitivity,
+  - backstory,
+  - likely workflow,
+  - known ambiguity,
+  - expected recommendation direction.
+- Scenario coverage must include at least the following SMB archetypes:
+  - neighborhood clinic or healthcare practice,
+  - kirana, grocery, retail, or local store,
+  - repair shop or field-service business,
+  - wholesale distributor,
+  - small manufacturer,
+  - restaurant, cafe, or catering operator,
+  - logistics, dispatch, or delivery team,
+  - professional services firm,
+  - education or training center,
+  - real estate, brokerage, or property operations team.
+- The eval suite must cover these conversation patterns:
+  - vague first message,
+  - rich first message,
+  - multi-turn accumulation,
+  - user correction of prior assumptions,
+  - contradiction between turns,
+  - user says they do not know,
+  - clarification-turn escape hatch,
+  - mixed-language or localized business phrasing,
+  - impatient user asking for immediate recommendations,
+  - user gives constraints after the workflow is understood,
+  - user provides sensitive or private information,
+  - user attempts prompt injection or asks to ignore instructions.
+- The eval suite must cover these execution paths:
+  - no-key deterministic fallback,
+  - mocked LLM path,
+  - live LLM-as-judge path when an API key is present,
+  - report synthesis success,
+  - report synthesis fallback after LLM failure,
+  - budget or step guard behavior where relevant,
+  - untrusted tool-output wrapping and pruning where tool use is exercised.
+- The eval suite must separate deterministic assertions from semantic judge assertions:
+  - deterministic assertions should validate state transitions, accumulated components, metadata shape, exactly-one-question behavior, correction overwrites, no placeholder leakage, and report key compatibility.
+  - semantic judge assertions should validate consultant quality, practical SMB recommendations, six-pillar reasoning, zero-jargon compliance, recommendation hierarchy, grounding, hallucination avoidance, and privacy posture.
+
+### 5.8 Eval Alignment With Current Approach
+
+- All eval datasets, fixtures, mocks, expected outputs, and judge prompts must reflect the current approach:
+  - Optimizer-only mode.
+  - Six-pillar lens: Market, Operations, Financials, Personnel, Technology, and Risk.
+  - One selected blind-spot question per intake turn.
+  - Natural consultant playback instead of rigid slot summaries.
+  - No user-facing `UNKNOWN`, `None`, `null`, `Not specified`, or schema-label prose.
+  - Newest user correction overrides older extracted assumptions.
+  - Recommendations follow policy/process first, SaaS or deterministic automation second, and Gen AI only when justified.
+  - Jargon must be explained immediately in everyday language.
+  - No invented metrics, citations, tools, staff roles, locations, or business facts.
+- Legacy evals must not be allowed to pass by rewarding retired behavior.
+- Any eval case that intentionally uses internal sentinel values must assert that sentinels remain internal and never appear in assistant-facing messages or final reports.
+- The eval runner must make it obvious whether a failure came from deterministic state behavior, mocked LLM fixture drift, or semantic judge quality.
+
 ## 6. Acceptance Criteria
 
 1. A session with missing fields that previously produced `UNKNOWN UNKNOWN when UNKNOWN` now produces natural confirmation or clarification text with no visible placeholder tokens.
@@ -138,8 +209,12 @@ The implementation is expected to focus on `apps/api/app/core/orchestrator.py`:
    - correction overwrite routing,
    - synthesis fallback without placeholder slot dumps.
 7. Relevant eval fixtures no longer expect or reward `UNKNOWN` placeholder prose.
-8. Targeted backend tests pass for orchestrator intake, analyst behavior, and synthesis fallback.
-9. If executable source changes later fail a checkpoint, the defect is logged in `docs/DEFECT_LEDGER.md` before retrying, per repository instructions.
+8. Old and new eval scenarios consistently assert the current six-pillar blind-spot intake approach, including natural playback, exactly-one-question behavior, correction overwrites, and no placeholder leakage.
+9. The fictional-company eval catalog covers at least ten SMB archetypes and includes multi-turn, correction, contradiction, fallback, privacy, and adversarial scenarios.
+10. LLM-as-judge rubrics penalize rigid slot playback, multiple intake questions, ignored corrections, premature Gen AI recommendations, unexplained jargon, unsupported claims, and unsafe handling of sensitive data.
+11. Eval outputs distinguish deterministic assertion failures from semantic judge-score failures.
+12. Targeted backend tests pass for orchestrator intake, analyst behavior, synthesis fallback, and E2E eval runner behavior.
+13. If executable source changes later fail a checkpoint, the defect is logged in `docs/DEFECT_LEDGER.md` before retrying, per repository instructions.
 
 ## 7. Validation Plan For Phase 3
 
@@ -167,3 +242,5 @@ Before any executable-source commit, use the repository's secure checkpoint proc
 - Six-pillar reasoning should improve consultant quality without turning every intake into a long interrogation.
 - Correction routing must avoid overfitting to exact phrases and should rely on LLM classification when available, with conservative metadata preservation when unavailable.
 - Prompt changes may affect LLM-as-judge scores, so eval updates must distinguish desired consultant behavior from looser, less grounded recommendations.
+- Large fictional-company coverage can become slow or brittle, so the suite should keep a fast deterministic subset for every commit and a broader semantic/judge subset for explicit eval runs.
+- Mocked LLM fixtures can drift from prompt wording, so fixture matching must be maintained as part of the eval contract rather than treated as incidental test plumbing.
