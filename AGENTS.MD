@@ -55,7 +55,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 - **Core Architecture**:
   - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Shadcn UI.
   - **Backend**: FastAPI (Python 3.11+), Uvicorn, Pydantic v2.
-  - **Orchestration**: Native Python `while` loop (Anthropic Tool Use API) — *No LangGraph or external agent frameworks*.
+  - **Orchestration**: LangGraph for stateful multi-agent routing and execution. LangSmith for tracing, evals, and observability. (Anthropic Tool Use API integrated via LangChain/LangGraph ecosystem).
   - **Tool Layer**: Model Context Protocol (`mcp-python-sdk`) connecting off-the-shelf and custom FastMCP tools.
   - **Database / Infra**: PostgreSQL with `pgvector` (Cloud hosted via Neon/Supabase), Redis (Cloud hosted via Upstash), AWS ECS (Fargate).
   - **Local development note**: Port `8000` may be restricted on some Windows laptops; if so, configure the backend to run on another available port and update the frontend API URL accordingly.
@@ -73,7 +73,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 │   │   └── src/lib/                 # SSE client & LocalStorage session helpers
 │   └── api/                         # FastAPI Backend Engine
 │       ├── app/
-│       │   ├── core/                # Orchestrator while loop & OTEL middleware
+│       │   ├── core/                # LangGraph orchestrator nodes & LangSmith middleware
 │       │   ├── mcp/                 # MCP Client Hub & Custom FastMCP Server
 │       │   ├── models/              # Pydantic state schemas (SessionState)
 │       │   ├── db/                  # Postgres + pgvector dual-namespace client
@@ -114,7 +114,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 
 **Defect Tracking**: If a bug is discovered, or if a test fails during the Secure Checkpoint phase, you must fix the issue and immediately invoke the `.antigravity/skills/log-defect.md` skill before attempting to commit again.
 
-**Change Management Ledger**: All future agents modifying this codebase MUST track approach shifts, persona adjustments, and bug fixes in `docs/DEFECT_LEDGER.md` without fail before marking a task as complete. Do not alter core orchestrator state routing or system prompts without logging the architectural reasoning.
+**Change Management Ledger**: All future agents modifying this codebase MUST track approach shifts, persona adjustments, and bug fixes in `docs/DEFECT_LEDGER.md` without fail before marking a task as complete. Do not alter core LangGraph state routing or system prompts without logging the architectural reasoning.
 </CRITICAL_DIRECTIVES>
 
 ---
@@ -145,11 +145,11 @@ def calculate_financial_metrics(users: int, avg_revenue_per_user: float) -> dict
   - `🔬 Deep Dive` (Full 4-pillar dossier).
 
 ### Code Documentation & Comments
-- **Python (Backend)**: Every function, class, and method MUST have a complete PEP 257 compliant docstring explaining its purpose, arguments, and return types. Complex logic within the orchestrator while loop must have inline comments explaining why a state transition or guardrail is happening.
+- **Python (Backend)**: Every function, class, and method MUST have a complete PEP 257 compliant docstring explaining its purpose, arguments, and return types. Complex logic within LangGraph nodes and conditional edges must have inline comments explaining why a state transition or guardrail is happening.
 - **TypeScript (Frontend)**: Use JSDoc comments (`/** ... */`) for all React components, custom hooks, and shared interfaces.
 - **File-Level Context**: Every new source file MUST start with a concise module/file docstring or header comment explaining what the file owns, where it fits in the architecture, and what it deliberately does not own.
 - **Public Contracts**: Public APIs, FastAPI routes, MCP tools, telemetry wrappers, orchestration nodes, eval fixtures, React page components, shared hooks, and exported helpers MUST document inputs, outputs, side effects, error behavior, and privacy/security assumptions where relevant.
-- **Architectural Reasoning**: Any change to prompts, while-loop state routing, budget controls, telemetry, eval harnesses, or persistence boundaries MUST include a short code comment or nearby documentation note explaining the reason for the design, not just what the code does.
+- **Architectural Reasoning**: Any change to prompts, LangGraph state routing, budget controls, telemetry, eval harnesses, or persistence boundaries MUST include a short code comment or nearby documentation note explaining the reason for the design, not just what the code does.
 - **Documentation Drift Check**: When code behavior changes, update all matching human/agent-facing docs in the same change (`AGENTS.MD`, `docs/DEFECT_LEDGER.md`, `docs/PRD.md`, `docs/RunAndTest.md`, feature specs, eval docs, or inline docstrings as applicable). Do not leave stale examples, retired modes, old ports, or outdated prompt behavior in docs or tests.
 - **Self-Documenting Code**: Prioritize descriptive variable names (e.g., use `has_exceeded_token_budget` instead of `limit_hit`).
 
