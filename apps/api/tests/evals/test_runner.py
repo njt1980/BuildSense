@@ -5,14 +5,36 @@ to grade output quality.
 """
 
 import os
-import json
+import re
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.models.state import SessionState, SessionMode, SessionStatus, Message, ProcessComponents
 from app.core.orchestrator import Orchestrator
-from tests.evals.eval_dataset import GOLDEN_SCENARIOS, Turn
+from tests.evals.eval_dataset import (
+    DEFAULT_FORBIDDEN_ASSISTANT_TERMS,
+    GOLDEN_SCENARIOS,
+    REQUIRED_ARCHETYPES,
+    REQUIRED_SCENARIO_TAGS,
+    Turn,
+)
 from tests.evals.judge import invoke_llm_judge
+
+
+FAILURE_PREFIXES = {
+    "state": "STATE_TRANSITION",
+    "components": "COMPONENT_ACCUMULATION",
+    "pillar": "PILLAR_METADATA",
+    "blind_spot": "BLIND_SPOT_SELECTION",
+    "assistant_text": "ASSISTANT_TEXT_POLICY",
+    "correction": "CORRECTION_OVERWRITE",
+    "synthesis": "SYNTHESIS_SCHEMA",
+    "judge": "JUDGE_SCORE",
+    "mock": "MOCK_FIXTURE_DRIFT",
+}
+
+
+QUESTION_PATTERN = re.compile(r"[?？؟]")
 
 class MockResponse:
     """Mock structure mimicking Anthropic API client message response."""
@@ -30,6 +52,77 @@ class MockResponse:
                 self.cache_creation_input_tokens = 0
         self.usage = Usage(input_tokens, output_tokens)
         self.stop_reason = stop_reason
+
+
+def count_questions(text: str) -> int:
+    """Counts visible question marks in assistant-facing text."""
+    return len(QUESTION_PATTERN.findall(text))
+
+
+def latest_assistant_text(state: SessionState) -> str:
+    """Returns the latest assistant message content from a session state."""
+    for message in reversed(state.messages):
+        if message.role == "assistant":
+            return message.content
+    return ""
+
+
+def assert_current_approach_metadata(state: SessionState, scenario_name: str) -> None:
+    """Asserts that the current six-pillar, single-blind-spot metadata exists."""
+    architect_plan = state.metadata.get("architect_plan", {})
+    coverage = architect_plan.get("six_pillar_coverage", {})
+    blind_spot = architect_plan.get("selected_blind_spot")
+    expected_pillars = {"market", "operations", "financials", "personnel", "technology", "risk"}
+
+    assert expected_pillars.issubset(set(coverage)), (
+        f"{FAILURE_PREFIXES['pillar']}: Scenario '{scenario_name}' missing six-pillar coverage. "
+        f"Expected at least {sorted(expected_pillars)}, got {sorted(coverage)}."
+    )
+    assert isinstance(blind_spot, dict), (
+        f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario_name}' did not store one selected blind spot."
+    )
+    assert isinstance(blind_spot.get("pillar"), str) and blind_spot["pillar"], (
+        f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario_name}' selected blind spot has no pillar."
+    )
+    assert isinstance(blind_spot.get("question"), str) and blind_spot["question"], (
+        f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario_name}' selected blind spot has no question."
+    )
+
+
+def assert_assistant_text_policy(text: str, scenario_name: str, forbidden_terms) -> None:
+    """Asserts assistant-facing text follows the current no-placeholder policy."""
+    assert text, f"{FAILURE_PREFIXES['assistant_text']}: Scenario '{scenario_name}' has no assistant text to inspect."
+    for term in forbidden_terms:
+        assert term not in text, (
+            f"{FAILURE_PREFIXES['assistant_text']}: Scenario '{scenario_name}' leaked forbidden term '{term}' "
+            f"in assistant text: {text}"
+        )
+
+
+def assert_catalog_contract() -> None:
+    """Asserts the fictional-company catalog covers the required archetypes and tags."""
+    observed_tags = {
+        tag
+        for scenario in GOLDEN_SCENARIOS
+        for tag in scenario.get("scenario_tags", [])
+    }
+    observed_archetypes = {
+        scenario.get("eval_archetype")
+        for scenario in GOLDEN_SCENARIOS
+        if scenario.get("eval_archetype")
+    }
+    assert REQUIRED_SCENARIO_TAGS.issubset(observed_tags), (
+        f"{FAILURE_PREFIXES['mock']}: Eval catalog missing required scenario tags: "
+        f"{sorted(REQUIRED_SCENARIO_TAGS - observed_tags)}"
+    )
+    assert REQUIRED_ARCHETYPES.issubset(observed_archetypes), (
+        f"{FAILURE_PREFIXES['mock']}: Eval catalog missing required SMB archetypes: "
+        f"{sorted(REQUIRED_ARCHETYPES - observed_archetypes)}"
+    )
+    for scenario in GOLDEN_SCENARIOS:
+        assert scenario["mode"] == "OPTIMIZER", (
+            f"{FAILURE_PREFIXES['mock']}: Scenario '{scenario['name']}' uses retired mode {scenario['mode']}."
+        )
 
 
 def make_mock_anthropic(scenario_turn: Turn):
@@ -55,8 +148,24 @@ def make_mock_anthropic(scenario_turn: Turn):
             node_name = "confirm_gate"
         elif "process mapping assistant" in system_prompt or "process mapping assistant" in user_prompt:
             node_name = "extractor"
-        elif "plain-spoken operational consultant" in system_prompt or "plain-spoken operational consultant" in user_prompt:
+        elif (
+            "plain-spoken operational consultant" in system_prompt
+            or "plain-spoken operational consultant" in user_prompt
+            or "next natural question" in system_prompt
+            or "next natural question" in user_prompt
+            or "Your job is to ask" in system_prompt
+            or "Your job is to ask" in user_prompt
+        ):
             node_name = "question_generator"
+        elif (
+            "natural playback summary" in system_prompt
+            or "natural playback summary" in user_prompt
+            or "current workflow understanding" in system_prompt
+            or "current workflow understanding" in user_prompt
+            or "confirm or correct" in system_prompt
+            or "confirm or correct" in user_prompt
+        ):
+            node_name = "playback"
         elif "report writer" in system_prompt or "report writer" in user_prompt:
             node_name = "synthesize_report"
 
@@ -65,6 +174,11 @@ def make_mock_anthropic(scenario_turn: Turn):
             for resp in scenario_turn.get("mock_llm_responses", []):
                 if resp["node"] == node_name:
                     return MockResponse(resp["response_content"])
+
+        if node_name == "playback":
+            return MockResponse("That matches what I have so far. Is that right, or would you correct anything?")
+        if node_name == "question_generator":
+            return MockResponse("That helps. What usually starts this work?")
 
         # Default fallback
         return MockResponse("{}")
@@ -82,6 +196,9 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
     and semantic quality.
     """
     orchestrator = Orchestrator()
+    assert scenario["mode"] == "OPTIMIZER", (
+        f"{FAILURE_PREFIXES['mock']}: Scenario '{scenario['name']}' uses retired mode {scenario['mode']}."
+    )
     company_context = scenario.get("company_context", {})
     company_name = company_context.get("name")
     company_industry = company_context.get("industry")
@@ -105,7 +222,7 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
         max_budget_usd=1.25,
         max_steps=15,
         messages=[],
-        clarification_turns=scenario.get("initial_turns_count", 0),
+        clarification_turns=scenario.get("initial_turns_count") or 0,
         process_components=ProcessComponents(),
         company_name=company_name,
         company_industry=company_industry,
@@ -141,22 +258,41 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
             
         # Assertions: state status
         assert state.status.value == turn["expected_status"], (
-            f"Scenario '{scenario['name']}' status mismatch. Expected {turn['expected_status']}, got {state.status.value}"
+            f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' status mismatch. "
+            f"Expected {turn['expected_status']}, got {state.status.value}"
         )
+
+        assert_current_approach_metadata(state, scenario["name"])
+
+        expected_blind_spot_pillar = scenario.get("expected_blind_spot_pillar")
+        if expected_blind_spot_pillar:
+            actual_pillar = state.metadata["architect_plan"]["selected_blind_spot"]["pillar"]
+            assert actual_pillar == expected_blind_spot_pillar, (
+                f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario['name']}' expected blind-spot pillar "
+                f"{expected_blind_spot_pillar}, got {actual_pillar}."
+            )
         
         # Assertions: process components accumulation
         expected_comps = turn["expected_components"]
         for k, v in expected_comps.items():
             actual_val = getattr(state.process_components, k)
             assert actual_val == v, (
-                f"Scenario '{scenario['name']}' component '{k}' mismatch. Expected '{v}', got '{actual_val}'"
+                f"{FAILURE_PREFIXES['components']}: Scenario '{scenario['name']}' component '{k}' mismatch. "
+                f"Expected '{v}', got '{actual_val}'"
             )
 
-        # Check messages for playback summary to save for the judge
-        for msg in reversed(state.messages):
-            if "Here is a summary of what I understand" in msg.content or "🚚" in msg.content:
-                playback_summary = msg.content
-                break
+        assistant_text = latest_assistant_text(state)
+        forbidden_terms = scenario.get("forbidden_assistant_terms") or DEFAULT_FORBIDDEN_ASSISTANT_TERMS
+        assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
+
+        if state.status == SessionStatus.AWAITING_CLARIFICATION:
+            expected_question_count = scenario.get("expected_question_count")
+            if expected_question_count is not None:
+                assert count_questions(assistant_text) == expected_question_count, (
+                    f"{FAILURE_PREFIXES['assistant_text']}: Scenario '{scenario['name']}' expected "
+                    f"{expected_question_count} assistant question(s), got {count_questions(assistant_text)}: {assistant_text}"
+                )
+            playback_summary = assistant_text
 
     # If the scenario finishes the full synthesis workflow, grade the output using the judge
     if scenario["expect_synthesis"]:
@@ -172,8 +308,9 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
         )
         for expected_text in scenario.get("expected_report_contains", []):
             assert expected_text.lower() in synthesized_report.lower(), (
-                f"Scenario '{scenario['name']}' report missing expected text: {expected_text}"
+                f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report missing expected text: {expected_text}"
             )
+        assert_assistant_text_policy(synthesized_report, scenario["name"], DEFAULT_FORBIDDEN_ASSISTANT_TERMS)
         
         constraints_str = ", ".join(scenario["user_constraints"]) if scenario["user_constraints"] else "None"
         
@@ -189,19 +326,44 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
         if api_key:
             # Assert semantic criteria are scored >= 0.90 (passing threshold)
             assert grades["zero_jargon_score"] >= 0.90, (
-                f"Zero Jargon compliance failed with score {grades['zero_jargon_score']}. Justification: {grades['justification']}"
+                f"{FAILURE_PREFIXES['judge']}: Zero Jargon compliance failed with score "
+                f"{grades['zero_jargon_score']}. Justification: {grades['justification']}"
             )
             assert grades["hierarchy_integrity_score"] >= 0.90, (
-                f"Hierarchy integrity compliance failed with score {grades['hierarchy_integrity_score']}. Justification: {grades['justification']}"
+                f"{FAILURE_PREFIXES['judge']}: Hierarchy integrity compliance failed with score "
+                f"{grades['hierarchy_integrity_score']}. Justification: {grades['justification']}"
             )
             assert grades["consultant_intake_score"] >= 0.90, (
-                f"Consultant intake behavior failed with score {grades['consultant_intake_score']}. Justification: {grades['justification']}"
+                f"{FAILURE_PREFIXES['judge']}: Consultant intake behavior failed with score "
+                f"{grades['consultant_intake_score']}. Justification: {grades['justification']}"
+            )
+            assert grades["single_blind_spot_score"] >= 0.90, (
+                f"{FAILURE_PREFIXES['judge']}: Single blind-spot discipline failed with score "
+                f"{grades['single_blind_spot_score']}. Justification: {grades['justification']}"
+            )
+            assert grades["factual_grounding_score"] >= 0.90, (
+                f"{FAILURE_PREFIXES['judge']}: Factual grounding failed with score "
+                f"{grades['factual_grounding_score']}. Justification: {grades['justification']}"
+            )
+            assert grades["privacy_safety_score"] >= 0.90, (
+                f"{FAILURE_PREFIXES['judge']}: Privacy and safety posture failed with score "
+                f"{grades['privacy_safety_score']}. Justification: {grades['justification']}"
             )
         else:
             # When API key is absent, verify mocked fallback scores are returned
             assert grades["zero_jargon_score"] == 1.0
             assert grades["hierarchy_integrity_score"] == 1.0
             assert grades["consultant_intake_score"] == 1.0
+            assert grades["single_blind_spot_score"] == 1.0
+            assert grades["factual_grounding_score"] == 1.0
+            assert grades["privacy_safety_score"] == 1.0
+
+
+def test_eval_catalog_covers_required_current_approach_matrix() -> None:
+    """
+    Validates catalog-level coverage for current BuildSense eval requirements.
+    """
+    assert_catalog_contract()
 
 
 @pytest.mark.asyncio
@@ -241,6 +403,9 @@ async def test_llm_judge_rubrics() -> None:
     assert good_grades["zero_jargon_score"] >= 0.90
     assert good_grades["hierarchy_integrity_score"] >= 0.90
     assert good_grades["consultant_intake_score"] >= 0.90
+    assert good_grades["single_blind_spot_score"] >= 0.90
+    assert good_grades["factual_grounding_score"] >= 0.90
+    assert good_grades["privacy_safety_score"] >= 0.90
 
     # 2. Non-Compliant Case: Unexplained jargon (CAC, LTV), violates hierarchy by immediately building Gen AI, robotic multi-slot intake
     bad_playback = (
@@ -263,4 +428,11 @@ async def test_llm_judge_rubrics() -> None:
     )
 
     bad_grades = await invoke_llm_judge(bad_playback, bad_synthesis, "Low Budget")
-    assert bad_grades["zero_jargon_score"] < 0.90 or bad_grades["hierarchy_integrity_score"] < 0.90 or bad_grades["consultant_intake_score"] < 0.90
+    assert (
+        bad_grades["zero_jargon_score"] < 0.90
+        or bad_grades["hierarchy_integrity_score"] < 0.90
+        or bad_grades["consultant_intake_score"] < 0.90
+        or bad_grades["single_blind_spot_score"] < 0.90
+        or bad_grades["factual_grounding_score"] < 0.90
+        or bad_grades["privacy_safety_score"] < 0.90
+    )

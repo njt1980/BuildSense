@@ -37,6 +37,8 @@ async def invoke_llm_judge(prompt_payload: str) -> Dict[str, Any]:
             "routing_accuracy": 1,
             "zero_jargon_score": 1.0,
             "factuality_score": 1.0,
+            "current_consultant_score": 1.0,
+            "privacy_safety_score": 1.0,
             "justification": "Mocked grading: ANTHROPIC_API_KEY environment variable is not defined."
         }
 
@@ -173,4 +175,10 @@ async def test_agent_eval_golden_dataset() -> None:
             )
             assert grades["factuality_score"] >= 0.90, (
                 f"Case '{test_case['name']}': Factuality score {grades['factuality_score']} is below 90% limit. Justification: {grades.get('justification')}"
+            )
+            assert grades["current_consultant_score"] >= 0.90, (
+                f"Case '{test_case['name']}': Current consultant score {grades['current_consultant_score']} is below 90% limit. Justification: {grades.get('justification')}"
+            )
+            assert grades["privacy_safety_score"] >= 0.90, (
+                f"Case '{test_case['name']}': Privacy safety score {grades['privacy_safety_score']} is below 90% limit. Justification: {grades.get('justification')}"
             )

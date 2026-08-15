@@ -155,3 +155,15 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** The test did not explicitly disable the live Anthropic path, so environments with an available API key could classify the initial workflow text as confirmation and continue to completion instead of exercising the deterministic playback gate.
 * **Resolution:** Patched the test to force `HAS_ANTHROPIC = False`, matching its purpose as an offline deterministic playback regression.
 * **Files Touched:** `apps/api/tests/test_interview.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-021] - Date: 2026-08-15
+* **Issue:** Expanded fictional-company eval scenarios failed before orchestrator execution because their `initial_turns_count` values were set to `None`.
+* **Root Cause:** The new eval metadata followed the optional fixture style, but `SessionState.clarification_turns` requires an integer when the runner initializes state.
+* **Resolution:** Normalize missing `initial_turns_count` values to `0` in the eval runner and update new fixtures to use integer defaults.
+* **Files Touched:** `apps/api/tests/evals/eval_dataset.py`, `apps/api/tests/evals/test_runner.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-022] - Date: 2026-08-15
+* **Issue:** Several expanded eval scenarios reached assistant text `{}` instead of a consultant question or playback message.
+* **Root Cause:** The mocked Anthropic node matcher did not recognize all current intake and playback prompt phrases, so it fell through to the generic JSON fallback response.
+* **Resolution:** Expand mock prompt detection to include the current consultant intake and playback wording used by the orchestrator.
+* **Files Touched:** `apps/api/tests/evals/test_runner.py`, `docs/DEFECT_LEDGER.md`
