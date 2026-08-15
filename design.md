@@ -1,4 +1,4 @@
-# Design: Dynamic Consultant Orchestration And Six-Pillar Blind-Spot Intake
+# Design: Dynamic Consultant Orchestration, Six-Pillar Blind-Spot Intake, And Expanded E2E Evals
 
 ## 1. Overview
 
@@ -8,7 +8,7 @@ The new backend flow is:
 
 ```text
 sanitize_input
-  -> context_architect builds six-pillar coverage and selected blind spot
+  -> context_architect builds six-pillar coverage and one top blind spot across all pillars
   -> route_intent extracts or corrects internal process state
   -> route_intent asks one LLM-synthesized blind-spot question or natural playback
   -> user confirms
@@ -17,6 +17,8 @@ sanitize_input
 ```
 
 The design deliberately avoids new services or schema-breaking API changes. Metadata gains lightweight keys that are safe to persist and safe for downstream prompt construction.
+
+The six pillars are a decision lens, not six separate intake queues. Each intake turn should evaluate all pillars and choose one top blind spot overall. The system must not ask one question per pillar.
 
 ## 2. Files
 
@@ -36,6 +38,9 @@ apps/api/tests/test_resilience.py
 apps/api/tests/evals/eval_dataset.py
 apps/api/tests/evals/judge.py
 apps/api/tests/evals/test_runner.py
+apps/api/evals/golden_dataset.json
+apps/api/evals/judge_prompts.py
+apps/api/evals/test_agent_quality.py
 ```
 
 Change ledger update for Phase 3:
@@ -90,6 +95,8 @@ covered
 
 The six-pillar metadata is not a required-user-input checklist. It is a consulting lens used to pick the next highest-value question and to ground final synthesis.
 
+Only one selected blind spot should be stored per turn. If multiple pillars are weak, the selector must rank them and persist the single highest-leverage item in `selected_blind_spot`.
+
 ## 4. Context Architect Design
 
 `_node_context_architect` will remain a non-speaking node, but it will gain a deterministic six-pillar coverage builder.
@@ -142,6 +149,7 @@ Selection priority:
 2. Prefer decision-critical gaps over rigid slot order.
 3. Keep operations/process basics high enough priority to preserve current intake behavior when the workflow itself is unclear.
 4. Never select a blind spot whose question would require multiple answers.
+5. Select exactly one top blind spot across all six pillars, not one blind spot per pillar.
 
 Example priority by context:
 
@@ -440,6 +448,165 @@ Update judge guidance to penalize:
 - ignoring explicit corrections,
 - asking multiple blind-spot questions.
 
+### 9.4 Expanded Eval Architecture
+
+The eval suite should have three layers so broad coverage does not make every local run slow or brittle:
+
+```text
+fast deterministic evals
+  -> mocked LLM scenario replay
+  -> optional live LLM-as-judge quality evals
+```
+
+#### 9.4.1 Fast Deterministic Evals
+
+Fast evals should run in normal targeted validation and should not require network access or live API keys. They validate:
+
+- state transitions,
+- accumulated process components,
+- `six_pillar_coverage` shape,
+- exactly one `selected_blind_spot`,
+- exactly one assistant question during intake,
+- no user-facing placeholder leakage,
+- correction overwrite behavior,
+- fallback report JSON key compatibility,
+- no retired `SUGGESTER` or `EVALUATOR` mode assumptions.
+
+These checks should live primarily in `apps/api/tests/evals/test_runner.py` and adjacent deterministic test modules.
+
+#### 9.4.2 Mocked LLM Scenario Replay
+
+Mocked scenario replay should use fictional companies and deterministic mock responses to exercise the full orchestrator path without relying on live model variance.
+
+The existing `EvalScenario` shape in `apps/api/tests/evals/eval_dataset.py` should be extended rather than replaced. Add optional fields such as:
+
+```text
+scenario_tags
+expected_blind_spot_pillar
+expected_blind_spot_reason_contains
+expected_question_count
+forbidden_assistant_terms
+expected_judge_dimensions
+privacy_sensitivity
+adversarial_input
+```
+
+The mock Anthropic node matcher in `apps/api/tests/evals/test_runner.py` must recognize the current prompt vocabulary:
+
+- sanitization,
+- process mapping,
+- intake confirmation classifier,
+- plain-spoken operational consultant,
+- consultant playback,
+- report writer.
+
+This keeps fixture failures understandable when prompt names change.
+
+#### 9.4.3 Live LLM-As-Judge Evals
+
+Live judge evals remain optional and should run only when an API key is present or when explicitly requested with the eval marker. The judge should score separate dimensions:
+
+- routing and state correctness,
+- consultant intake quality,
+- single-blind-spot discipline,
+- six-pillar reasoning,
+- zero-jargon compliance,
+- recommendation hierarchy,
+- factual grounding,
+- privacy and safety posture,
+- correction handling.
+
+The judge must penalize:
+
+- rigid field-label summaries,
+- multiple intake questions in one turn,
+- hidden reintroduction of placeholder prose,
+- unsupported metrics or invented facts,
+- ignored user corrections,
+- premature Gen AI recommendations,
+- unsafe handling of private, payment, health, employee, or customer data.
+
+### 9.5 Fictional Company Catalog
+
+Add or expand scenarios so the suite covers at least these ten SMB archetypes:
+
+1. Neighborhood clinic or healthcare practice.
+2. Kirana, grocery, retail, or local store.
+3. Repair shop or field-service business.
+4. Wholesale distributor.
+5. Small manufacturer.
+6. Restaurant, cafe, or catering operator.
+7. Logistics, dispatch, or delivery team.
+8. Professional services firm.
+9. Education or training center.
+10. Real estate, brokerage, or property operations team.
+
+Each company scenario should include enough operational texture to test real consultation behavior:
+
+- company context,
+- geography,
+- staff roles,
+- current systems,
+- recurring workflow,
+- user constraints,
+- known ambiguity,
+- privacy or compliance sensitivity when relevant,
+- expected recommendation direction.
+
+### 9.6 Scenario Pattern Matrix
+
+The fictional catalog should be tagged so coverage can be audited without reading every fixture. Required tags:
+
+```text
+vague_start
+rich_start
+multi_turn
+correction
+contradiction
+dont_know
+escape_hatch
+mixed_language
+impatient_user
+late_constraints
+privacy_sensitive
+prompt_injection
+fallback_no_key
+synthesis_success
+synthesis_failure
+tool_untrusted_output
+```
+
+Not every company needs every tag, but the whole suite must cover the full matrix.
+
+### 9.7 Legacy Eval Migration
+
+Existing evals must be audited before adding large new coverage. Migration rules:
+
+1. Keep useful scenarios, but update expected playback and judge examples to the new consultant behavior.
+2. Delete or rewrite cases whose only purpose was to reward placeholder output or rigid slot order.
+3. Keep internal `UNKNOWN` sentinel values only where they test fallback compatibility.
+4. Add assertions that internal sentinels never reach assistant messages or final reports.
+5. Update judge prompts in both eval locations so old and new runners score the same product behavior.
+6. Ensure every scenario uses `OPTIMIZER`; retired modes should fail fixture review.
+
+### 9.8 Eval Failure Reporting
+
+Eval failure messages should identify the failure class:
+
+```text
+STATE_TRANSITION
+COMPONENT_ACCUMULATION
+PILLAR_METADATA
+BLIND_SPOT_SELECTION
+ASSISTANT_TEXT_POLICY
+CORRECTION_OVERWRITE
+SYNTHESIS_SCHEMA
+JUDGE_SCORE
+MOCK_FIXTURE_DRIFT
+```
+
+This avoids the common failure mode where a semantic quality regression looks like a fixture mismatch, or a fixture drift looks like a product bug.
+
 ## 10. Validation
 
 Phase 3 targeted validation:
@@ -455,6 +622,20 @@ If prompt, synthesis, or routing behavior changes materially:
 ```powershell
 cd apps/api
 pytest evals/ -v --run-evals
+```
+
+For expanded eval work, also run the fastest deterministic subset before any source commit:
+
+```powershell
+cd apps/api
+pytest tests/evals/test_runner.py -q
+```
+
+Run broader semantic judge coverage explicitly when API keys are available:
+
+```powershell
+cd apps/api
+pytest evals/ tests/evals/ -v --run-evals
 ```
 
 Executable-source commits must use the repository secure checkpoint path. Documentation-only changes remain eligible for `--no-verify` after confirming only documentation files are staged.
