@@ -148,3 +148,87 @@ Before executable-source commits, use the repository secure checkpoint process a
 - The ambiguity fallback must be useful without pretending the workflow was fully mapped.
 - Iterative discovery must remain bounded so impatient owners still receive a practical report quickly.
 - The existing six-pillar consultant metadata can inform Next Horizons, but the discovery loop must stay focused on the immediate bleeding-neck problem.
+
+---
+
+# Specification Addendum: Evaluation Harness, Dashboard, and Quality Enhancements (Phase 4)
+
+## 1. Problem Statement
+
+While BuildSense has a comprehensive set of E2E evaluation scenarios, the verification pipeline suffers from two distinct gaps:
+1. **Mock Execution Limitation**: The 22 E2E scenarios mock the Anthropic Claude API responses during the state machine's execution turns. This means we verify state-machine transitions and metadata mapping, but we do not verify the actual quality, tone, or compliance of the active LLM prompts when running live.
+2. **Lack of Visual Observability**: Running evaluations from the command line only outputs simple pass/fail logs. It is difficult for a developer to trace step-by-step turn inputs, parsed components, confidence scores, and individual judge rubric scores without manually parsing raw terminal trace outputs.
+3. **Untested Quality Constraints**: Business rules—such as the Zero-Jargon rule requiring parenthesized analogies on *every single occurrence* of jargon (not just the first)—and strict constraint compliance (e.g., "Strict Data Privacy" or "No Budget") are not deterministically tested.
+
+## 2. Goals
+
+1. **E2E Live Execution Flag**: Add a command-line parameter `--live` to the test runner so E2E scenarios can execute live (un-mocked) Anthropic API calls for all nodes when desired.
+2. **Configurable Model Settings**: Allow developers to select model configurations (e.g. using `claude-haiku-4-5-20251001` or `claude-sonnet-5`) to control API cost vs grading accuracy during live evaluations.
+3. **Deterministic Quality Unit Tests**:
+   - Write unit tests verifying that the Zero-Jargon rule is strictly followed on repeated terms (e.g., LTV, CAC, ROI).
+   - Write integration tests verifying that constraints (e.g., "Strict Data Privacy", "No Budget") dynamically restrict or shape recommendation tiers.
+4. **Evaluation Results Exporter**: Build a custom exporter in `conftest.py` that serializes detailed evaluation traces, latencies, cost, and LLM judge scores to `apps/api/evals/eval_results.json` after running the suite.
+5. **Dev Evaluations Endpoint**: Expose `GET /api/dev/evaluations/results` in FastAPI to serve the serialized E2E execution log.
+6. **Evaluations Dashboard**: Design a developer dashboard page in Next.js at `/dev/evaluations` to visualize pass/fail rates, execution statistics, step-by-step turn dialogues, and LLM judge scorecard ratings.
+
+## 3. Non-Goals
+
+1. Do not replace `pytest`. All evaluations should still run via standard pytest triggers.
+2. Do not expose the evaluations dev routes or dashboard in production environments.
+3. Do not run live E2E evals by default to avoid accidental token billing; live runs must require the explicit `--live` flag.
+
+## 4. Functional Requirements
+
+### 4.1 CLI & Execution Harness
+- Extend [`conftest.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/conftest.py) to accept the `--live` flag.
+- When `--live` is specified:
+  - Bypasses the mock Anthropic client in [`test_runner.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/evals/test_runner.py) and connects to the active Anthropic model API.
+  - Allows model configuration overrides (e.g., defaulting to Claude 3.5 Haiku to minimize live evaluation run costs).
+- Capture execution metrics for every run:
+  - Turn latency (seconds) and cumulative scenario duration.
+  - Calculated input/output token usage and USD costs using standard Anthropic pricing.
+
+### 4.2 Quality Enhancement Assertions
+- **Jargon Analogy Leakage Test**: Write a unit test that verifies that any occurrence of a jargon term (LTV, CAC, ROI, MRR, SaaS, Webhook, API, DB) in synthesized reports is followed by parenthesized analogies on *all* occurrences, failing if a repeat occurrence is unparenthesized.
+- **Constraint Compliance Verification**: Write unit tests asserting that:
+  - Under `No Budget` / `Low Budget` constraints, the recommendation tier avoids paid SaaS licenses or custom cloud software.
+  - Under `Strict Data Privacy` constraints, cloud webhook integrations or SaaS platforms that process sensitive details are warned against or skipped.
+
+### 4.3 Evaluations Exporter
+- Capture the step-by-step history of each scenario:
+  - User turn input.
+  - Assistant playback, neutral gap, or clarification question.
+  - Extracted `process_components` (trigger, actor, activity, system, friction, location).
+  - Calculated `e2e_confidence_score` and chosen `next_question_strategy`.
+- Capture LLM-as-a-judge scorecards:
+  - `zero_jargon_score`, `hierarchy_integrity_score`, `consultant_intake_score`, `single_blind_spot_score`, `factual_grounding_score`, and `privacy_safety_score`.
+- Serialize results to `apps/api/evals/eval_results.json` upon completion of the test suite.
+
+### 4.4 FastAPI Dev Route
+- Expose `GET /api/dev/evaluations/results`.
+- Return the parsed contents of `eval_results.json`.
+- Gate the route to local development mode only:
+  - `settings.environment == "local"` and `settings.local_telemetry_viewer_enabled == True`.
+
+### 4.5 Next.js Evaluations Dashboard
+- Accessible at `/en/dev/evaluations` (and general `/dev/evaluations` route).
+- **KPI Summary Cards**:
+  - Overall Pass Rate (%)
+  - Total Cost ($)
+  - Average Latency (s)
+  - Execution Type (Mock vs. Live)
+- **Scenario Timeline & Details**:
+  - Render a filterable list of all scenarios (All, Passed, Failed).
+  - Expandable case detail section showing the step-by-step conversation bubbles (matching user inputs and assistant responses).
+  - Comparative view of expected vs. actual process components.
+  - Visualization of the 6 LLM judge scorecards.
+
+## 5. Acceptance Criteria
+
+1. Running `pytest tests/evals --run-evals` runs successfully in mock mode.
+2. Running `pytest tests/evals --run-evals --live` executes un-mocked runs with the live Anthropic API and LLM Judge.
+3. Tests fail if jargon repeat occurrences are unparenthesized or constraints are violated.
+4. An `eval_results.json` file is correctly written to `apps/api/evals/` containing the E2E case traces.
+5. The `GET /api/dev/evaluations/results` API returns the JSON log.
+6. The Next.js `/dev/evaluations` page renders the KPI summaries, case lists, turn traces, and judge metrics accurately.
+
