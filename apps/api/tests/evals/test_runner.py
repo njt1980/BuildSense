@@ -68,10 +68,11 @@ def latest_assistant_text(state: SessionState) -> str:
 
 
 def assert_current_approach_metadata(state: SessionState, scenario_name: str) -> None:
-    """Asserts that the current six-pillar, single-blind-spot metadata exists."""
+    """Asserts that current consultant and iterative-discovery metadata exists."""
     architect_plan = state.metadata.get("architect_plan", {})
     coverage = architect_plan.get("six_pillar_coverage", {})
     blind_spot = architect_plan.get("selected_blind_spot")
+    iterative_discovery = state.metadata.get("iterative_discovery", {})
     expected_pillars = {"market", "operations", "financials", "personnel", "technology", "risk"}
 
     assert expected_pillars.issubset(set(coverage)), (
@@ -86,6 +87,15 @@ def assert_current_approach_metadata(state: SessionState, scenario_name: str) ->
     )
     assert isinstance(blind_spot.get("question"), str) and blind_spot["question"], (
         f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario_name}' selected blind spot has no question."
+    )
+    assert isinstance(iterative_discovery, dict), (
+        f"{FAILURE_PREFIXES['state']}: Scenario '{scenario_name}' missing iterative discovery metadata."
+    )
+    assert iterative_discovery.get("max_turns") == 3, (
+        f"{FAILURE_PREFIXES['state']}: Scenario '{scenario_name}' does not enforce MAX_CLARIFICATION_TURNS=3."
+    )
+    assert isinstance(iterative_discovery.get("e2e_confidence_score"), (int, float)), (
+        f"{FAILURE_PREFIXES['state']}: Scenario '{scenario_name}' missing e2e confidence score."
     )
 
 
@@ -271,6 +281,20 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
                 f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario['name']}' expected blind-spot pillar "
                 f"{expected_blind_spot_pillar}, got {actual_pillar}."
             )
+
+        iterative_discovery = state.metadata.get("iterative_discovery", {})
+        expected_strategy = turn.get("expected_discovery_strategy")
+        if expected_strategy:
+            actual_strategy = iterative_discovery.get("next_question_strategy")
+            assert actual_strategy == expected_strategy, (
+                f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' expected discovery strategy "
+                f"{expected_strategy}, got {actual_strategy}."
+            )
+        if turn.get("expected_ambiguity_fallback") is not None:
+            assert iterative_discovery.get("ambiguity_fallback") is turn["expected_ambiguity_fallback"], (
+                f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' ambiguity fallback mismatch. "
+                f"Expected {turn['expected_ambiguity_fallback']}, got {iterative_discovery.get('ambiguity_fallback')}."
+            )
         
         # Assertions: process components accumulation
         expected_comps = turn["expected_components"]
@@ -283,7 +307,10 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
 
         assistant_text = latest_assistant_text(state)
         forbidden_terms = scenario.get("forbidden_assistant_terms") or DEFAULT_FORBIDDEN_ASSISTANT_TERMS
-        assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
+        if assistant_text:
+            assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
+        elif state.status == SessionStatus.AWAITING_CLARIFICATION:
+            assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
 
         if state.status == SessionStatus.AWAITING_CLARIFICATION:
             expected_question_count = scenario.get("expected_question_count")
@@ -309,6 +336,10 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
         for expected_text in scenario.get("expected_report_contains", []):
             assert expected_text.lower() in synthesized_report.lower(), (
                 f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report missing expected text: {expected_text}"
+            )
+        for forbidden_text in scenario.get("expected_report_forbidden_terms", []):
+            assert forbidden_text.lower() not in synthesized_report.lower(), (
+                f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report included forbidden fallback text: {forbidden_text}"
             )
         assert_assistant_text_policy(synthesized_report, scenario["name"], DEFAULT_FORBIDDEN_ASSISTANT_TERMS)
         

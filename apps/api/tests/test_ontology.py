@@ -80,6 +80,9 @@ async def test_orchestrator_ontology_discovery_injection() -> None:
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         assert len(updated_state.clarification_questions) == 1
         question = updated_state.clarification_questions[0]
-        assert "where is your business based" in question.lower()
+        assert updated_state.metadata["architect_plan"]["requires_location"] is True
+        assert "location" in updated_state.metadata["architect_plan"]["required_components"]
+        assert updated_state.metadata["iterative_discovery"]["next_question_strategy"] == "handshake"
+        assert "look at how" in question.lower()
         assert "WMS" not in question
         assert "transportation" not in question.lower()

@@ -334,11 +334,18 @@ Think "McKinsey for the common man": careful, practical, empathetic, and allergi
 Your job is to ask the next natural question in a workflow discovery conversation.
 
 Conversation discipline:
+- Follow this discovery strategy: {next_question_strategy}.
+- If strategy is handshake, validate the pain, promise to help with the immediate issue, and ask permission to look at the broader workflow.
+- If strategy is neutral_gap, anchor on a known fact and ask one open-ended How or What question.
+- If strategy is multiple_choice_anchor, acknowledge the vague answer and offer 2-3 relatable options in one question to lower cognitive load.
 - Use Thread Pulling. Start by briefly acknowledging the concrete thing the owner just told you, then ask the next logical question.
 - Ask about exactly one missing detail: {missing_item}.
 - Consider the selected business blind spot: {blind_spot_json}.
 - If the blind spot is more decision-critical than the missing workflow detail, ask about the blind spot instead.
 - Ask one short question only. Do not ask multi-part questions.
+- Do not ask leading yes/no questions.
+- Mirror the owner's domain vocabulary from these terms: {domain_mirror_terms_json}.
+- Stay focused on the immediate bleeding-neck workflow. Do not turn this into a broad business audit.
 - Speak in the user's target language: {lang_code}.
 - Do not use internal labels such as Trigger, Actor, Activity, System, Friction, schema, slot, component, extraction, or JSON.
 - Do not use placeholder words such as UNKNOWN, null, None, or Not specified.
@@ -352,6 +359,9 @@ Known workflow details, for grounding only:
 
 Six-pillar coverage, for grounding only:
 {six_pillar_json}
+
+Iterative discovery metadata, for routing context only:
+{iterative_discovery_json}
 
 Conversation so far:
 {history}
@@ -441,6 +451,234 @@ SIX_PILLARS: Dict[str, Dict[str, Any]] = {
 
 
 PLACEHOLDER_VALUES = {"", "unknown", "variable", "none", "null", "not specified"}
+MAX_CLARIFICATION_TURNS = 3
+E2E_CONFIDENCE_THRESHOLD = 0.72
+LOW_CONFIDENCE_THRESHOLD = 0.5
+
+
+def classify_answer_quality(user_prompt: str, components: Dict[str, Any]) -> str:
+    """
+    Classifies the latest owner answer for iterative discovery routing.
+
+    Args:
+        user_prompt: Latest owner response.
+        components: Current workflow components.
+
+    Returns:
+        A quality label used to choose handshake, neutral-gap, multiple-choice, or fallback behavior.
+    """
+    prompt_lower = user_prompt.lower().strip()
+    unknown_markers = ["don't know", "dont know", "not sure", "no idea", "unknown", "not documented", "undocumented"]
+    dead_end_markers = ["depends on the day", "whatever works", "in the moment", "changes day", "really depends"]
+    vague_markers = ["just email", "just flag", "try to remember", "figure it out", "usually", "just do", "we just"]
+    correction_markers = ("no", "not ", "actually", "rather", "instead")
+    confirmation_markers = {"yes", "correct", "confirmed", "accurate", "that's right", "that is right"}
+
+    if any(marker in prompt_lower for marker in unknown_markers):
+        return "unknown"
+    if any(marker in prompt_lower for marker in dead_end_markers):
+        return "dead_end"
+    if prompt_lower.startswith(correction_markers):
+        return "correction"
+    if any(marker in prompt_lower for marker in confirmation_markers) and len(prompt_lower.split()) <= 5:
+        return "confirmation"
+    if any(marker in prompt_lower for marker in vague_markers) or len(prompt_lower.split()) <= 5:
+        return "vague"
+    known_count = sum(1 for value in components.values() if not is_missing_component_value(value))
+    return "specific" if known_count >= 2 or len(prompt_lower.split()) > 8 else "vague"
+
+
+def build_known_workflow_facts(messages: List[Any], components: Dict[str, Any]) -> List[str]:
+    """
+    Builds short workflow facts for iterative discovery metadata.
+
+    Args:
+        messages: Current conversation history.
+        components: Current workflow components.
+
+    Returns:
+        A compact list of known facts without raw transcript bloat.
+    """
+    known = sanitize_components_for_prompt(components)
+    facts = []
+    if known.get("trigger"):
+        facts.append(f"Work starts when {known['trigger']}")
+    if known.get("actor"):
+        facts.append(f"{known['actor']} owns or performs part of the workflow")
+    if known.get("activity"):
+        facts.append(f"The work involves {known['activity']}")
+    if known.get("system"):
+        facts.append(f"The current tracking place is {known['system']}")
+    if known.get("friction"):
+        facts.append(f"The stated pain is {known['friction']}")
+
+    for message in messages[-4:]:
+        role = message.role if hasattr(message, "role") else message.get("role")
+        content = message.content if hasattr(message, "content") else message.get("content", "")
+        if role == "user" and content and len(facts) < 6:
+            facts.append(re.sub(r"\s+", " ", content).strip()[:140])
+    return facts[:6]
+
+
+def build_open_workflow_gaps(components: Dict[str, Any], answer_quality: str) -> List[str]:
+    """
+    Names unresolved workflow gaps for confidence scoring and fallback synthesis.
+
+    Args:
+        components: Current workflow components.
+        answer_quality: Latest answer quality label.
+
+    Returns:
+        A compact list of missing or unstable workflow details.
+    """
+    known = sanitize_components_for_prompt(components)
+    gaps = []
+    if not known.get("trigger"):
+        gaps.append("what event starts the workflow")
+    if not known.get("actor"):
+        gaps.append("who owns the step day to day")
+    if not known.get("activity"):
+        gaps.append("what steps happen from start to finish")
+    if not known.get("system"):
+        gaps.append("where the work is tracked")
+    if answer_quality in {"vague", "dead_end", "unknown"}:
+        gaps.append("whether the workflow is stable or changes day to day")
+    return gaps[:6]
+
+
+def calculate_e2e_confidence_score(
+    components: Dict[str, Any],
+    answer_quality: str,
+    architect_plan: Dict[str, Any],
+) -> Tuple[float, List[str]]:
+    """
+    Scores whether the as-is workflow is mapped well enough for safe synthesis.
+
+    Args:
+        components: Current workflow components.
+        answer_quality: Latest answer quality label.
+        architect_plan: Architect metadata including dynamic required components.
+
+    Returns:
+        A confidence score and short reasons explaining the score.
+    """
+    required = architect_plan.get("required_components")
+    required_keys = list(required) if isinstance(required, list) else ["trigger", "actor", "activity", "system"]
+    score = 0.0
+    reasons = []
+    per_component = 0.65 / max(len(required_keys), 1)
+    for key in required_keys:
+        if not is_missing_component_value(components.get(key)):
+            score += per_component
+            reasons.append(f"{key} is known")
+        else:
+            reasons.append(f"{key} is not mapped")
+
+    if not is_missing_component_value(components.get("friction")):
+        score += 0.15
+        reasons.append("the bleeding-neck pain is explicit")
+    if answer_quality == "specific":
+        score += 0.2
+        reasons.append("latest answer added specific workflow detail")
+    elif answer_quality == "vague":
+        score -= 0.1
+        reasons.append("latest answer was vague")
+    elif answer_quality in {"dead_end", "unknown"}:
+        score -= 0.22
+        reasons.append("latest answer did not reveal a stable workflow")
+
+    return max(0.0, min(1.0, round(score, 2))), reasons
+
+
+def build_domain_mirror_terms(user_prompt: str, company_context: Dict[str, Optional[str]]) -> Dict[str, str]:
+    """
+    Infers domain vocabulary for owner-facing discovery prompts.
+
+    Args:
+        user_prompt: Latest owner message.
+        company_context: Known company context.
+
+    Returns:
+        Short phrases that prompts can mirror without inventing process facts.
+    """
+    text = f"{user_prompt} {' '.join(str(v) for v in company_context.values() if v)}".lower()
+    if any(term in text for term in ["vendor", "contract", "florist", "event"]):
+        return {
+            "business_object": "vendor contracts",
+            "failure_event": "a vendor not showing up",
+            "workflow_name": "vendor approval flow",
+        }
+    if any(term in text for term in ["bakery", "wholesale", "pastry"]):
+        return {
+            "business_object": "wholesale orders",
+            "failure_event": "missed or late kitchen prep",
+            "workflow_name": "order-to-kitchen flow",
+        }
+    if any(term in text for term in ["hvac", "tech", "van", "work order"]):
+        return {
+            "business_object": "work orders",
+            "failure_event": "delayed invoicing",
+            "workflow_name": "dispatch-to-invoice flow",
+        }
+    if any(term in text for term in ["yoga", "class", "mat", "waitlist"]):
+        return {
+            "business_object": "class bookings",
+            "failure_event": "empty mats and last-minute texting",
+            "workflow_name": "booking-to-waitlist flow",
+        }
+    return {
+        "business_object": "this work",
+        "failure_event": "the problem you described",
+        "workflow_name": "workflow",
+    }
+
+
+def build_iterative_discovery_metadata(
+    state: AgentState,
+    components: Dict[str, Any],
+    architect_plan: Dict[str, Any],
+    answer_quality: str,
+) -> Dict[str, Any]:
+    """
+    Builds routing metadata for bounded iterative discovery.
+
+    Args:
+        state: Current graph state.
+        components: Current workflow components.
+        architect_plan: Current context architect plan.
+        answer_quality: Latest answer quality label.
+
+    Returns:
+        JSON-compatible metadata used by prompts, routing, and synthesis.
+    """
+    current_turns = int(state.get("clarification_turns", 0))
+    confidence, reasons = calculate_e2e_confidence_score(components, answer_quality, architect_plan)
+    should_synthesize = confidence >= E2E_CONFIDENCE_THRESHOLD or current_turns >= MAX_CLARIFICATION_TURNS
+    ambiguity_fallback = current_turns >= MAX_CLARIFICATION_TURNS and confidence < LOW_CONFIDENCE_THRESHOLD
+
+    if ambiguity_fallback:
+        strategy = "ambiguity_fallback"
+    elif current_turns == 0:
+        strategy = "handshake"
+    elif current_turns == 1:
+        strategy = "neutral_gap"
+    elif answer_quality in {"vague", "dead_end", "unknown"}:
+        strategy = "multiple_choice_anchor"
+    else:
+        strategy = "neutral_gap"
+
+    return {
+        "turn_index": current_turns,
+        "max_turns": MAX_CLARIFICATION_TURNS,
+        "e2e_confidence_score": confidence,
+        "confidence_reasons": reasons,
+        "known_workflow_facts": build_known_workflow_facts(state.get("messages", []), components),
+        "open_workflow_gaps": build_open_workflow_gaps(components, answer_quality),
+        "latest_answer_quality": answer_quality,
+        "next_question_strategy": strategy,
+        "should_synthesize_now": should_synthesize,
+        "ambiguity_fallback": ambiguity_fallback,
+    }
 
 
 def select_next_missing_component(required_keys: List[str], components: Dict[str, Any]) -> Optional[str]:
@@ -694,6 +932,108 @@ def build_known_details_playback(
     return f"{sentence}\n\nIf that sounds right, reply with 'Yes' to confirm, or correct any part."
 
 
+def build_handshake_fallback(user_prompt: str, domain_terms: Dict[str, str]) -> str:
+    """
+    Builds deterministic consultative handshake copy when the LLM is unavailable.
+
+    Args:
+        user_prompt: Latest owner message.
+        domain_terms: Domain vocabulary inferred by the context architect.
+
+    Returns:
+        A single owner-facing handshake question.
+    """
+    business_object = domain_terms.get("business_object", "this workflow")
+    failure_event = domain_terms.get("failure_event", "the problem you described")
+    workflow_name = domain_terms.get("workflow_name", "workflow")
+    if business_object == "vendor contracts":
+        return (
+            "A missing vendor on the day of an event is incredibly stressful. "
+            f"I can help organize that {business_object} flow. "
+            f"To make sure we fix the root cause, can we look at how the {workflow_name} works from start to finish?"
+        )
+    return (
+        f"{failure_event.capitalize()} can put a lot of pressure on the business. "
+        f"I can help tighten up {business_object}. "
+        f"Can we look at how the {workflow_name} works from start to finish?"
+    )
+
+
+def build_neutral_gap_fallback(components: Dict[str, Any], domain_terms: Dict[str, str]) -> str:
+    """
+    Builds a deterministic neutral-gap question.
+
+    Args:
+        components: Current workflow components.
+        domain_terms: Domain vocabulary inferred by the context architect.
+
+    Returns:
+        One open-ended How/What question.
+    """
+    known = sanitize_components_for_prompt(components)
+    if domain_terms.get("business_object") == "vendor contracts":
+        return "Got it. Since everything is happening over email, how do you currently separate the emails with signed contracts from the ones you still need to review?"
+    if known.get("system"):
+        return f"Got it. Since the work is happening in {known['system']}, how does the next person know what needs attention?"
+    if known.get("trigger"):
+        return f"Got it. Once {known['trigger']} happens, what is the next step your team takes?"
+    return "Got it. What happens next in that workflow?"
+
+
+def build_multiple_choice_anchor_fallback(components: Dict[str, Any], domain_terms: Dict[str, str]) -> str:
+    """
+    Builds a deterministic multiple-choice anchor for vague answers.
+
+    Args:
+        components: Current workflow components.
+        domain_terms: Domain vocabulary inferred by the context architect.
+
+    Returns:
+        One question with two or three non-assumptive options.
+    """
+    if domain_terms.get("business_object") == "vendor contracts":
+        return "Relying on memory with an inbox that full is exhausting. When you flag them, do you eventually move them to a specific folder, log them in a spreadsheet, or just leave them in the main inbox?"
+    known = sanitize_components_for_prompt(components)
+    object_name = domain_terms.get("business_object", "items")
+    if known.get("system"):
+        return f"When {object_name} are in {known['system']}, do they get moved to a shared list, handed to one person, or left where they arrived?"
+    return f"When that happens, do you write it somewhere, tell someone directly, or keep it in the same place it arrived?"
+
+
+def build_discovery_fallback_question(
+    strategy: str,
+    user_prompt: str,
+    components: Dict[str, Any],
+    domain_terms: Dict[str, str],
+    selected_missing_item: Optional[str],
+    selected_blind_spot: Dict[str, str],
+) -> str:
+    """
+    Selects deterministic discovery copy for the active strategy.
+
+    Args:
+        strategy: Current iterative discovery prompt strategy.
+        user_prompt: Latest owner message.
+        components: Current workflow components.
+        domain_terms: Domain vocabulary inferred by the architect.
+        selected_missing_item: The next missing component, if any.
+        selected_blind_spot: Existing six-pillar blind-spot question.
+
+    Returns:
+        One owner-facing question.
+    """
+    if strategy == "handshake":
+        return build_handshake_fallback(user_prompt, domain_terms)
+    if strategy == "multiple_choice_anchor":
+        return build_multiple_choice_anchor_fallback(components, domain_terms)
+    if strategy == "neutral_gap":
+        return build_neutral_gap_fallback(components, domain_terms)
+    return MISSING_COMPONENT_QUESTION_FALLBACKS.get(
+        selected_missing_item or "",
+        selected_blind_spot.get("question", "Thanks, that helps. What is the next step your team takes in this process?"),
+    )
+
+
 def build_natural_fallback_report(
     components: Dict[str, Any],
     architect_plan: Dict[str, Any],
@@ -742,6 +1082,76 @@ def build_natural_fallback_report(
         ),
         "roi_economics": (
             "Savings should be calculated only after volume, time spent, error rate, and implementation cost are known."
+        ),
+    }
+
+
+def build_ambiguity_fallback_report(
+    components: Dict[str, Any],
+    iterative_discovery: Dict[str, Any],
+    domain_terms: Dict[str, str],
+) -> Dict[str, str]:
+    """
+    Builds a principle-based report when discovery hits the turn cap with low confidence.
+
+    Args:
+        components: Raw accumulated process components.
+        iterative_discovery: Confidence and gap metadata.
+        domain_terms: Domain vocabulary inferred by the architect.
+
+    Returns:
+        Backward-compatible report sections that avoid software-first advice.
+    """
+    known = sanitize_components_for_prompt(components)
+    business_object = domain_terms.get("business_object", "the workflow")
+    workflow_name = domain_terms.get("workflow_name", "workflow")
+    gaps = iterative_discovery.get("open_workflow_gaps") or ["the standardized end-to-end flow"]
+    assumption_text = (
+        "Unverified Assumptions:\n"
+        f"Because we have not mapped a standardized {workflow_name}, this strategy assumes "
+        f"there is not yet a central, consistently used record for {business_object}. "
+        f"Missing data: {', '.join(str(gap) for gap in gaps)}."
+    )
+
+    if business_object == "vendor contracts":
+        recommendation = (
+            "Recommendations:\n"
+            "1. Create one strict contract intake channel, such as contracts@starlight.com, and use it only for vendor contracts.\n"
+            "2. Define three plain statuses: received, needs counter-signature, and fully signed.\n"
+            "3. Review that inbox at the same time every business day before adding any new contract software.\n\n"
+            "Next Horizons:\n"
+            "Once the dedicated contract inbox is stable, automate the signature process itself using e-sign templates."
+        )
+        as_is = (
+            "The current contract flow appears to rely on email flags and owner memory rather than a stable approval path. "
+            "That makes a missed counter-signature easy to overlook."
+        )
+    else:
+        recommendation = (
+            "Recommendations:\n"
+            f"1. Pick one intake channel for {business_object} and make it the only place new items start.\n"
+            "2. Name one owner for moving each item to the next status.\n"
+            "3. Use a simple daily review rhythm before choosing automation or paid software.\n\n"
+            "Next Horizons:\n"
+            "Once the intake channel and ownership rules are stable, the next step is automating the repeatable handoff."
+        )
+        as_is = (
+            f"The current {workflow_name} appears highly custom and reliant on personal intuition. "
+            "BuildSense has enough to identify the control problem, but not enough to safely map every step."
+        )
+
+    if known.get("system"):
+        as_is += f" The known tracking place is {known['system']}."
+    if known.get("friction"):
+        as_is += f" The immediate pain is {known['friction']}."
+
+    return {
+        "as_is_workflow": as_is,
+        "friction_analysis": assumption_text,
+        "technology_neutral_recommendations": recommendation,
+        "roi_economics": (
+            "Do not calculate savings yet. First measure how many items arrive each week, how many need review, "
+            "and how often a missing approval creates rework or event risk."
         ),
     }
 
@@ -925,6 +1335,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             {
                 "await_human": "await_human",
                 "execute_tools": "execute_tools",
+                "synthesize_report": "synthesize_report",
             }
         )
 
@@ -1194,6 +1605,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             "company_industry": company_industry,
             "company_core_tools": company_core_tools,
         }
+        answer_quality = classify_answer_quality(user_prompt, components)
+        domain_mirror_terms = build_domain_mirror_terms(user_prompt, company_context)
         six_pillar_coverage = build_six_pillar_coverage(user_prompt, components, company_context)
         architect_plan = {
             "business_vertical": vertical,
@@ -1201,6 +1614,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             "required_components": required_components,
             "known_context": company_context,
             "six_pillar_coverage": six_pillar_coverage,
+            "domain_mirror_terms": domain_mirror_terms,
             "next_node": "route_intent",
         }
         architect_plan["selected_blind_spot"] = select_blind_spot(
@@ -1208,9 +1622,16 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             components,
             architect_plan,
         )
+        iterative_discovery = build_iterative_discovery_metadata(
+            state,
+            components,
+            architect_plan,
+            answer_quality,
+        )
 
         metadata = dict(state.get("metadata", {}))
         metadata["architect_plan"] = architect_plan
+        metadata["iterative_discovery"] = iterative_discovery
 
         updates: Dict[str, Any] = {
             "business_vertical": vertical,
@@ -1292,6 +1713,16 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 initial_required_present = all_required_present
                 six_pillar_coverage = architect_plan.get("six_pillar_coverage", {})
                 selected_blind_spot = architect_plan.get("selected_blind_spot", {})
+                domain_mirror_terms = architect_plan.get("domain_mirror_terms", {})
+                answer_quality = classify_answer_quality(user_prompt, components)
+                iterative_discovery = build_iterative_discovery_metadata(
+                    state,
+                    components,
+                    architect_plan,
+                    answer_quality,
+                )
+                metadata["iterative_discovery"] = iterative_discovery
+                state["metadata"] = metadata
 
                 # 3. Handle Confirmation / Correction Gate
                 if initial_required_present:
@@ -1395,7 +1826,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     unk_keywords = ["don't know", "dont know", "not sure", "no idea", "unknown", "variable", "not documented", "undocumented"]
                     user_declined = any(kw in user_prompt.lower() for kw in unk_keywords)
 
-                    if user_declined or clarification_turns >= 2:
+                    if user_declined and clarification_turns >= MAX_CLARIFICATION_TURNS:
                         for k in [*required_keys, "friction"]:
                             if not components.get(k) or str(components[k]).strip() == "":
                                 components[k] = "UNKNOWN"
@@ -1498,6 +1929,38 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         # Re-verify completeness against the architect-selected requirements.
                         all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
 
+                answer_quality = classify_answer_quality(user_prompt, components)
+                iterative_discovery = build_iterative_discovery_metadata(
+                    {**state, "metadata": metadata},
+                    components,
+                    architect_plan,
+                    answer_quality,
+                )
+                metadata = dict(state.get("metadata", {}))
+                metadata["iterative_discovery"] = iterative_discovery
+                metadata.setdefault("architect_plan", architect_plan)
+                state["metadata"] = metadata
+
+                if iterative_discovery.get("should_synthesize_now") and clarification_turns >= MAX_CLARIFICATION_TURNS:
+                    state_metadata = dict(state.get("metadata", {}))
+                    state_metadata["process_components"] = components
+                    state_metadata["iterative_discovery"] = iterative_discovery
+                    updates = {
+                        "status": SessionStatus.SYNTHESIZING,
+                        "messages": updated_messages,
+                        "business_vertical": vertical,
+                        "mode": SessionMode(mode_val),
+                        "max_budget_usd": max_budget,
+                        "max_steps": max_steps,
+                        "metadata": state_metadata,
+                        "budget_spent_usd": state.get("budget_spent_usd", 0.0),
+                        "process_components": components,
+                        "playback_confirmed": False,
+                        "clarification_turns": clarification_turns,
+                    }
+                    await self._save_intermediate_state({**state, **updates})
+                    return updates
+
                 # 5. Determine conversational next action
                 if not all_required_present:
                     question = ""
@@ -1510,11 +1973,14 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             history_str = build_history_text(state["messages"])
 
                             prompt_question = CONSULTANT_INTAKE_PROMPT.format(
+                                next_question_strategy=iterative_discovery.get("next_question_strategy", "neutral_gap"),
                                 missing_item=selected_missing_item or "the next concrete workflow detail",
                                 blind_spot_json=json.dumps(selected_blind_spot, indent=2),
+                                domain_mirror_terms_json=json.dumps(domain_mirror_terms, indent=2),
                                 lang_code=lang_code,
                                 components_json=json.dumps(sanitized_components, indent=2),
                                 six_pillar_json=json.dumps(six_pillar_coverage, indent=2),
+                                iterative_discovery_json=json.dumps(iterative_discovery, indent=2),
                                 history=history_str,
                                 latest_user_message=user_prompt,
                             )
@@ -1533,13 +1999,14 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             print(f"Question generation LLM error: {e}")
 
                     if not question:
-                        if selected_blind_spot and selected_blind_spot.get("question") and not selected_missing_item:
-                            question = selected_blind_spot["question"]
-                        else:
-                            question = MISSING_COMPONENT_QUESTION_FALLBACKS.get(
-                                selected_missing_item or "",
-                                selected_blind_spot.get("question", "Thanks, that helps. What is the next step your team takes in this process?"),
-                            )
+                        question = build_discovery_fallback_question(
+                            str(iterative_discovery.get("next_question_strategy", "neutral_gap")),
+                            user_prompt,
+                            components,
+                            domain_mirror_terms,
+                            selected_missing_item,
+                            selected_blind_spot,
+                        )
                     clarification_questions = [question]
 
                     # Pull one thread from the user's latest statement without echoing
@@ -1744,6 +2211,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         architect_plan = state_metadata.get("architect_plan", {}) if isinstance(state_metadata.get("architect_plan"), dict) else {}
         six_pillar_coverage = architect_plan.get("six_pillar_coverage", {})
         selected_blind_spot = architect_plan.get("selected_blind_spot", {})
+        iterative_discovery = state_metadata.get("iterative_discovery", {}) if isinstance(state_metadata.get("iterative_discovery"), dict) else {}
+        domain_mirror_terms = architect_plan.get("domain_mirror_terms", {}) if isinstance(architect_plan.get("domain_mirror_terms"), dict) else {}
 
         # Call Sonnet to synthesize the report
         api_key = self.user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -1799,7 +2268,15 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "Use this rubric to think laterally about the business, not as a checklist the user must complete.\n"
                     f"Six-Pillar Coverage: {json.dumps(six_pillar_coverage, indent=2)}\n"
                     f"Selected Blind Spot: {json.dumps(selected_blind_spot, indent=2)}\n"
+                    f"Iterative Discovery Metadata: {json.dumps(iterative_discovery, indent=2)}\n"
                     "If the selected blind spot remains unresolved, state it as a caveat instead of treating it as a fact.\n\n"
+                    "Iceberg Delivery Rule:\n"
+                    "Solve the user's immediate bleeding-neck issue first, then include a clearly labeled Next Horizons section for one adjacent improvement intentionally left for later.\n\n"
+                    "Ambiguity Fallback Rule:\n"
+                    "If Iterative Discovery Metadata has ambiguity_fallback=true, frame the workflow as highly custom and reliant on personal intuition. "
+                    "Do not hallucinate missing workflow steps. Include an explicit 'Unverified Assumptions' block naming the missing data. "
+                    "In that fallback state, do not recommend specific software, CRMs, Zapier-style automations, or contract-management platforms as the immediate fix. "
+                    "Recommend foundational process principles first.\n\n"
                     + ("Geographic Enrichment Guidance:\nIf the session state contains `geographic_context` (or `metadata.geographic_context`), weave the neighborhood intelligence into your analysis: mention nearby wholesale sectors, major transit arteries, and local delivery constraints, and recommend localized operational mitigations (for example: avoid specific morning arterial windows, use curbside pickup rules, leverage nearby B2B distribution nodes).\n\n" if state.get("geographic_context") or state.get("metadata", {}).get("geographic_context") else "")
                     + "Recommendation Hierarchy Rule & Constraint Compliance Rule:\n"
                     "Evaluate solutions in this exact order to prevent over-engineering:\n"
@@ -1842,6 +2319,15 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 friction_analysis = result.get("friction_analysis", "")
                 tech_neutral_recs = result.get("technology_neutral_recommendations", "")
                 roi_economics = result.get("roi_economics", "")
+                if not any([as_is_workflow, friction_analysis, tech_neutral_recs, roi_economics]) and (
+                    result.get("quick_insights") or result.get("deep_dive")
+                ):
+                    as_is_workflow = result.get("quick_insights", "")
+                    tech_neutral_recs = result.get("deep_dive", "")
+                    friction_analysis = result.get("deep_dive", "")
+                    roi_economics = result.get("quick_insights", "")
+                if not any([as_is_workflow, friction_analysis, tech_neutral_recs, roi_economics]):
+                    raise ValueError("Synthesis response did not include any report content.")
 
                 # Store the new fields in metadata
                 state_metadata["as_is_workflow"] = as_is_workflow
@@ -1879,7 +2365,12 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             fallback_components = dict(state.get("process_components", {})) if state.get("process_components") else {}
             architect_plan = state_metadata.get("architect_plan", {}) if isinstance(state_metadata.get("architect_plan"), dict) else {}
             selected_blind_spot = architect_plan.get("selected_blind_spot", {})
-            fallback = build_natural_fallback_report(fallback_components, architect_plan, selected_blind_spot)
+            iterative_discovery = state_metadata.get("iterative_discovery", {}) if isinstance(state_metadata.get("iterative_discovery"), dict) else {}
+            domain_mirror_terms = architect_plan.get("domain_mirror_terms", {}) if isinstance(architect_plan.get("domain_mirror_terms"), dict) else {}
+            if iterative_discovery.get("ambiguity_fallback"):
+                fallback = build_ambiguity_fallback_report(fallback_components, iterative_discovery, domain_mirror_terms)
+            else:
+                fallback = build_natural_fallback_report(fallback_components, architect_plan, selected_blind_spot)
             
             # Populate new fields
             state_metadata["as_is_workflow"] = fallback["as_is_workflow"]
@@ -2015,6 +2506,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         status_val = state["status"].value if hasattr(state["status"], "value") else state["status"]
         if status_val == "AWAITING_CLARIFICATION":
             return "await_human"
+        if status_val == "SYNTHESIZING":
+            return "synthesize_report"
         return "execute_tools"
 
     def _route_after_execute(self, state: AgentState) -> str:

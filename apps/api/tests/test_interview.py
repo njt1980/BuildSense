@@ -326,8 +326,8 @@ async def test_playback_summary_uses_conversational_formatting() -> None:
 @pytest.mark.asyncio
 async def test_escape_hatch_max_turns() -> None:
     """
-    Verifies that when clarification_turns reaches 2, the system forcefully fills missing slots
-    with UNKNOWN/VARIABLE and presents the Playback Summary.
+    Verifies that when clarification_turns reaches the three-turn cap, the system
+    routes to cautious synthesis instead of fabricating UNKNOWN playback details.
     """
     session_id = "test-escape-hatch-turns"
     state = SessionState(
@@ -339,7 +339,7 @@ async def test_escape_hatch_max_turns() -> None:
         messages=[Message(role="user", content="We do fleet ops.")],
         process_components=ProcessComponents(trigger="dispatch alert"),
         playback_confirmed=False,
-        clarification_turns=2
+        clarification_turns=3
     )
 
     with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
@@ -349,18 +349,20 @@ async def test_escape_hatch_max_turns() -> None:
         orchestrator = Orchestrator()
         updated_state = await orchestrator.run_pipeline(state)
 
-        assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
-        assert updated_state.process_components.actor == "UNKNOWN"
-        assert updated_state.process_components.system == "UNKNOWN"
-        assert "UNKNOWN" not in updated_state.messages[-1].content
-        assert "Trigger:" not in updated_state.messages[-1].content
+        assert updated_state.status == SessionStatus.COMPLETED
+        assert updated_state.metadata["iterative_discovery"]["ambiguity_fallback"] is True
+        assert "Unverified Assumptions" in updated_state.metadata["friction_analysis"]
+        assert updated_state.process_components.actor is None
+        assert updated_state.process_components.system is None
+        assert "UNKNOWN" not in updated_state.metadata["as_is_workflow"]
+        assert "Trigger:" not in updated_state.metadata["as_is_workflow"]
 
 
 @pytest.mark.asyncio
 async def test_escape_hatch_user_dont_know() -> None:
     """
-    Verifies that when the user replies with "I don't know" keywords, the system forcefully fills
-    missing slots with UNKNOWN/VARIABLE and presents the Playback Summary.
+    Verifies that an early "I don't know" answer does not force fake completeness
+    before the three-turn discovery cap.
     """
     session_id = "test-escape-hatch-dont-know"
     state = SessionState(
@@ -383,7 +385,8 @@ async def test_escape_hatch_user_dont_know() -> None:
         updated_state = await orchestrator.run_pipeline(state)
 
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
-        assert updated_state.process_components.actor == "UNKNOWN"
+        assert updated_state.process_components.actor is None
+        assert updated_state.metadata["iterative_discovery"]["latest_answer_quality"] == "unknown"
         assert "UNKNOWN" not in updated_state.messages[-1].content
 
 
@@ -740,7 +743,8 @@ async def test_architect_requires_location_for_physical_shop() -> None:
     assert architect_plan["requires_location"] is True
     assert "location" in architect_plan["required_components"]
     assert updated_state.process_components.location is None
-    assert "Where is your business based" in updated_state.messages[-1].content
+    assert updated_state.metadata["iterative_discovery"]["next_question_strategy"] == "handshake"
+    assert "look at how" in updated_state.messages[-1].content.lower()
 
 
 @pytest.mark.asyncio

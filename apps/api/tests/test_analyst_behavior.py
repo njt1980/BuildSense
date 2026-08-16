@@ -67,7 +67,8 @@ async def test_physical_business_missing_location_pauses_before_solution() -> No
     assert output.status == SessionStatus.AWAITING_CLARIFICATION
     assert output.metadata["architect_plan"]["requires_location"] is True
     assert output.process_components.location is None
-    assert "Where is your business based" in assistant_text
+    assert output.metadata["iterative_discovery"]["next_question_strategy"] == "handshake"
+    assert "look at how" in assistant_text.lower()
     assert_no_terms(assistant_text, FORBIDDEN_MACHINE_LABELS)
     assert_no_terms(assistant_text, FORBIDDEN_PREMATURE_SOLUTION_TERMS)
 
@@ -129,7 +130,8 @@ async def test_ambiguous_office_approval_asks_for_process_context() -> None:
     assert output.status == SessionStatus.AWAITING_CLARIFICATION
     assert output.playback_confirmed is False
     assert output.process_components.system is None
-    assert "What usually starts this work" in assistant_text
+    assert output.metadata["iterative_discovery"]["next_question_strategy"] == "handshake"
+    assert "look at how" in assistant_text.lower()
     assert_no_terms(assistant_text, FORBIDDEN_MACHINE_LABELS)
     assert_no_terms(assistant_text, FORBIDDEN_PREMATURE_SOLUTION_TERMS)
 

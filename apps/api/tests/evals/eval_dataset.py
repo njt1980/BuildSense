@@ -17,6 +17,8 @@ class Turn(TypedDict):
     expected_components: Dict[str, Any]
     mock_llm_responses: List[MockLLMCall]
     clarification_turns: Optional[int] # Override state.clarification_turns before running this turn
+    expected_discovery_strategy: Optional[str]
+    expected_ambiguity_fallback: Optional[bool]
 
 class EvalScenario(TypedDict, total=False):
     name: str
@@ -33,6 +35,7 @@ class EvalScenario(TypedDict, total=False):
     eval_archetype: str
     expected_blind_spot_pillar: Optional[str]
     expected_question_count: Optional[int]
+    expected_report_forbidden_terms: List[str]
     forbidden_assistant_terms: List[str]
     privacy_sensitivity: Optional[str]
     adversarial_input: bool
@@ -215,11 +218,11 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                 "user_input": "I don't know the exact software name.",
                 "expected_status": "AWAITING_CLARIFICATION",
                 "expected_components": {
-                    "trigger": "UNKNOWN",
-                    "actor": "UNKNOWN",
-                    "activity": "UNKNOWN",
-                    "system": "UNKNOWN",
-                    "friction": "UNKNOWN"
+                    "trigger": None,
+                    "actor": None,
+                    "activity": None,
+                    "system": None,
+                    "friction": None
                 },
                 "clarification_turns": None,
                 "mock_llm_responses": [
@@ -237,28 +240,27 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
         "motivation": "REVENUE",
         "company_context": {},
         "backstory": "",
-        "expect_synthesis": False,
+        "expect_synthesis": True,
         "user_constraints": None,
-        "initial_turns_count": 2,
-        "expected_report_contains": [],
+        "initial_turns_count": 3,
+        "expected_report_contains": ["Unverified Assumptions"],
         "turns": [
             {
                 "user_input": "Checking the fleet routes",
-                "expected_status": "AWAITING_CLARIFICATION",
-                "expected_components": {
-                    "trigger": "UNKNOWN",
-                    "actor": "UNKNOWN",
-                    "activity": "UNKNOWN",
-                    "system": "UNKNOWN",
-                    "friction": "UNKNOWN"
-                },
+                "expected_status": "COMPLETED",
+                "expected_components": {},
                 "clarification_turns": None,
                 "mock_llm_responses": [
                     {
                         "node": "sanitize_input",
                         "response_content": "Checking the fleet routes"
+                    },
+                    {
+                        "node": "extractor",
+                        "response_content": '{"trigger": null, "actor": null, "activity": null, "system": null, "friction": null, "location": null}'
                     }
-                ]
+                ],
+                "expected_ambiguity_fallback": True
             }
         ]
     },
@@ -317,6 +319,101 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
                 ]
             }
         ]
+    },
+    {
+        "name": "Golden Scenario 4 Ambiguity Fallback Event Planning",
+        "mode": "OPTIMIZER",
+        "motivation": "REVENUE",
+        "company_context": {
+            "name": "Starlight Events",
+            "industry": "Event planning",
+            "core_tools": "Email inbox, PDF contracts",
+        },
+        "backstory": "The owner missed a florist counter-signature because vendor contracts are buried in email.",
+        "expect_synthesis": True,
+        "user_constraints": ["Avoid adding chaos"],
+        "initial_turns_count": 0,
+        "expected_report_contains": ["Unverified Assumptions", "contracts@starlight.com", "Next Horizons"],
+        "expected_report_forbidden_terms": ["Zapier", "CRM", "contract management software"],
+        "scenario_tags": ["multi_turn", "vague_start", "escape_hatch", "synthesis_success"],
+        "eval_archetype": "professional_services",
+        "expected_question_count": 1,
+        "forbidden_assistant_terms": DEFAULT_FORBIDDEN_ASSISTANT_TERMS,
+        "privacy_sensitivity": None,
+        "adversarial_input": False,
+        "turns": [
+            {
+                "user_input": "I keep losing track of vendor contracts. Last week the florist didn't show up because I forgot to counter-sign their PDF. My inbox is a disaster.",
+                "expected_status": "AWAITING_CLARIFICATION",
+                "expected_components": {
+                    "trigger": "Vendor contract arrives",
+                    "actor": None,
+                    "activity": "Counter-sign vendor PDFs",
+                    "system": "Email inbox",
+                    "friction": "Forgot to counter-sign florist PDF",
+                },
+                "clarification_turns": None,
+                "expected_discovery_strategy": "handshake",
+                "mock_llm_responses": [
+                    {"node": "sanitize_input", "response_content": "I keep losing track of vendor contracts. Last week the florist didn't show up because I forgot to counter-sign their PDF. My inbox is a disaster."},
+                    {"node": "extractor", "response_content": '{"trigger": "Vendor contract arrives", "actor": null, "activity": "Counter-sign vendor PDFs", "system": "Email inbox", "friction": "Forgot to counter-sign florist PDF", "location": null}'},
+                    {"node": "question_generator", "response_content": "A missing vendor on the day of an event is incredibly stressful. I can definitely help organize that contract flow. To make sure we fix the root cause, how does a vendor get approved from start to finish?"},
+                ],
+            },
+            {
+                "user_input": "We just email them.",
+                "expected_status": "AWAITING_CLARIFICATION",
+                "expected_components": {
+                    "trigger": "Vendor contract arrives",
+                    "actor": None,
+                    "activity": "Email vendors",
+                    "system": "Email inbox",
+                    "friction": "Forgot to counter-sign florist PDF",
+                },
+                "clarification_turns": None,
+                "expected_discovery_strategy": "neutral_gap",
+                "mock_llm_responses": [
+                    {"node": "sanitize_input", "response_content": "We just email them."},
+                    {"node": "extractor", "response_content": '{"trigger": null, "actor": null, "activity": "Email vendors", "system": "Email inbox", "friction": null, "location": null}'},
+                    {"node": "question_generator", "response_content": "Got it. Since everything is happening over email, how do you currently separate the emails with signed contracts from the ones you still need to review?"},
+                ],
+            },
+            {
+                "user_input": "I just flag them in my inbox usually, or try to remember.",
+                "expected_status": "AWAITING_CLARIFICATION",
+                "expected_components": {
+                    "trigger": "Vendor contract arrives",
+                    "actor": None,
+                    "activity": "Email vendors",
+                    "system": "Email inbox flags",
+                    "friction": "Forgot to counter-sign florist PDF",
+                },
+                "clarification_turns": None,
+                "expected_discovery_strategy": "multiple_choice_anchor",
+                "mock_llm_responses": [
+                    {"node": "sanitize_input", "response_content": "I just flag them in my inbox usually, or try to remember."},
+                    {"node": "extractor", "response_content": '{"trigger": null, "actor": null, "activity": null, "system": "Email inbox flags", "friction": null, "location": null}'},
+                    {"node": "question_generator", "response_content": "Relying on memory with an inbox that full is exhausting. When you flag them, do you eventually move them to a specific folder, log them in a spreadsheet, or just leave them in the main inbox?"},
+                ],
+            },
+            {
+                "user_input": "It really depends on the day and how busy I am. I just do whatever works in the moment.",
+                "expected_status": "COMPLETED",
+                "expected_components": {
+                    "trigger": "Vendor contract arrives",
+                    "actor": None,
+                    "activity": "Email vendors",
+                    "system": "Email inbox flags",
+                    "friction": "Forgot to counter-sign florist PDF",
+                },
+                "clarification_turns": None,
+                "expected_ambiguity_fallback": True,
+                "mock_llm_responses": [
+                    {"node": "sanitize_input", "response_content": "It really depends on the day and how busy I am. I just do whatever works in the moment."},
+                    {"node": "extractor", "response_content": '{"trigger": null, "actor": null, "activity": null, "system": null, "friction": null, "location": null}'},
+                ],
+            },
+        ],
     },
     {
         "name": "Full Workflow Execution & Synthesis",
@@ -1240,11 +1337,11 @@ EXPANDED_FICTIONAL_COMPANY_SCENARIOS: List[EvalScenario] = [
                 "user_input": "I don't know the exact best process, attendance is just messy.",
                 "expected_status": "AWAITING_CLARIFICATION",
                 "expected_components": {
-                    "trigger": "UNKNOWN",
-                    "actor": "UNKNOWN",
-                    "activity": "UNKNOWN",
-                    "system": "UNKNOWN",
-                    "friction": "UNKNOWN",
+                    "trigger": None,
+                    "actor": None,
+                    "activity": None,
+                    "system": None,
+                    "friction": None,
                 },
                 "clarification_turns": None,
                 "mock_llm_responses": [

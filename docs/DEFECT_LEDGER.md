@@ -167,3 +167,33 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** The mocked Anthropic node matcher did not recognize all current intake and playback prompt phrases, so it fell through to the generic JSON fallback response.
 * **Resolution:** Expand mock prompt detection to include the current consultant intake and playback wording used by the orchestrator.
 * **Files Touched:** `apps/api/tests/evals/test_runner.py`, `docs/DEFECT_LEDGER.md`
+
+## [CHANGE-003] - Date: 2026-08-16
+* **Issue:** BuildSense needed to replace one-question intake with bounded Iterative Discovery and update E2E evals to score the new handshake, neutral-gap, multiple-choice anchor, and ambiguity-fallback behavior.
+* **Root Cause:** The prior orchestration and eval contract still allowed turn-limit behavior that filled missing workflow fields with `UNKNOWN` and did not explicitly test Golden Scenario 4's low-confidence event-planning fallback.
+* **Resolution:** Add iterative discovery metadata, a three-turn clarification cap, confidence-based synthesis routing, principle-based ambiguity fallback reports, and E2E eval assertions/fixtures that enforce the new Scenario 4 approach.
+* **Files Touched:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_interview.py`, `apps/api/tests/evals/eval_dataset.py`, `apps/api/tests/evals/test_runner.py`, `apps/api/tests/evals/judge.py`, `apps/api/evals/judge_prompts.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-023] - Date: 2026-08-16
+* **Issue:** `apps/api/tests/test_interview.py::test_architect_requires_location_for_physical_shop` failed after the Iterative Discovery change.
+* **Root Cause:** The test still expected the first physical-shop response to ask for location immediately, but the new approved conversation contract requires the first response to use the Consultative Handshake while preserving location as a required metadata field for later discovery.
+* **Resolution:** Updated the test to assert that location remains required in the architect plan and that the first assistant response follows the handshake strategy.
+* **Files Touched:** `apps/api/tests/test_interview.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-024] - Date: 2026-08-16
+* **Issue:** The E2E eval replay failed after adding Iterative Discovery because legacy fixtures still expected `UNKNOWN` component fabrication, completed fallback scenarios lacked assistant messages for text-policy assertions, and empty mocked synthesis JSON suppressed the deterministic fallback report.
+* **Root Cause:** The eval contract and synthesis fallback guard were still partially aligned to the old two-turn escape hatch and assumed any parsed report JSON was usable even when all report fields were empty.
+* **Resolution:** Update legacy eval expectations to preserve missing components as `None`, skip assistant-text checks when a completed scenario has no assistant turn, and require non-empty report fields before accepting mocked LLM synthesis output.
+* **Files Touched:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/evals/eval_dataset.py`, `apps/api/tests/evals/test_runner.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-025] - Date: 2026-08-16
+* **Issue:** Targeted orchestrator and analyst tests failed after Iterative Discovery because first-turn tests still expected immediate missing-field prompts and a synthesis mock still returned legacy `quick_insights`/`deep_dive` keys.
+* **Root Cause:** The new first-turn Handshake contract intentionally changed the first assistant question, while the synthesis parser temporarily treated legacy report keys as empty output and skipped cost accounting.
+* **Resolution:** Update first-turn analyst expectations to assert handshake strategy and keep backward compatibility for legacy `quick_insights`/`deep_dive` mock responses.
+* **Files Touched:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_analyst_behavior.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-026] - Date: 2026-08-16
+* **Issue:** Full backend pytest failed in `tests/test_ontology.py::test_orchestrator_ontology_discovery_injection`.
+* **Root Cause:** The ontology test still expected logistics intake to ask for business location on the first assistant turn, but the new Iterative Discovery contract requires a first-turn Consultative Handshake while preserving logistics location as a required architect component.
+* **Resolution:** Update the ontology test to assert logistics classification, required location metadata, and handshake strategy instead of immediate location questioning.
+* **Files Touched:** `apps/api/tests/test_ontology.py`, `docs/DEFECT_LEDGER.md`

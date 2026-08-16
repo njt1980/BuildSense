@@ -32,7 +32,11 @@ You will be evaluated on the following criteria:
 ### Criteria 3: Consultant Intake Behavior
 - Audit the HITL clarification text.
 - Verify that it sounds like an empathetic operations consultant speaking to a local business owner.
-- Verify that it uses progressive disclosure: it acknowledges what the user just said before asking the next logical question.
+- Verify that it uses the new Iterative Discovery approach:
+  - first discovery turn uses a Consultative Handshake that validates the pain and asks permission to inspect the broader workflow;
+  - later turns use Neutral Gap questions anchored in known facts with open-ended How or What phrasing;
+  - vague answers can use a Multiple Choice Anchor with 2-3 relatable options that are not asserted as facts;
+  - low-confidence turn-three synthesis uses an Ambiguity Fallback instead of asking a fourth question.
 - Verify that it asks exactly one question selected from the single highest-leverage blind spot across Market, Operations, Financials, Personnel, Technology, and Risk.
 - Verify that it does not expose internal labels such as Trigger, Actor, Activity, System, or Friction.
 - Verify that it does not expose placeholder tokens such as UNKNOWN, null, None, or Not specified.
@@ -47,6 +51,8 @@ You will be evaluated on the following criteria:
 ### Criteria 5: Factual Grounding
 - Verify the output does not invent metrics, citations, staff roles, tools, locations, customer behavior, or business facts not supplied in the scenario.
 - Verify uncertain ROI claims are framed as assumptions needing validation.
+- If the report is an ambiguity fallback, verify it includes explicit Unverified Assumptions, avoids hallucinating the missing workflow, and recommends process principles before any software.
+- Penalize specific software recommendations in ambiguity fallback reports unless the user already named that software.
 - Score: A decimal between 0.0 (unsupported claims dominate) and 1.0 (fully grounded in supplied facts).
 
 ### Criteria 6: Privacy And Safety Posture
