@@ -1,658 +1,485 @@
-# Design: Dynamic Consultant Orchestration, Six-Pillar Blind-Spot Intake, And Expanded E2E Evals
+# Design: Iterative Discovery Orchestrator And Ambiguity Fallback
 
 ## 1. Overview
 
-The implementation will keep the existing FastAPI, LangGraph, and `SessionState` architecture while changing how the backend turns structured intake state into owner-facing language. `ProcessComponents` remains an internal working model; user-facing text must be synthesized from state rather than assembled by slot interpolation.
+The implementation will keep the existing FastAPI, Pydantic `SessionState`, and LangGraph `StateGraph` structure. The change is concentrated in the backend orchestrator intake path so BuildSense can run a bounded discovery conversation before synthesis.
 
-The new backend flow is:
+The current graph already contains the right major nodes:
 
 ```text
 sanitize_input
-  -> context_architect builds six-pillar coverage and one top blind spot across all pillars
-  -> route_intent extracts or corrects internal process state
-  -> route_intent asks one LLM-synthesized blind-spot question or natural playback
-  -> user confirms
-  -> execute_tools / synthesize_report
-  -> synthesize_report incorporates six-pillar context
+  -> context_architect
+  -> route_intent
+  -> await_human or execute_tools
+  -> synthesize_report
 ```
 
-The design deliberately avoids new services or schema-breaking API changes. Metadata gains lightweight keys that are safe to persist and safe for downstream prompt construction.
+Phase 3 will refine those nodes rather than adding a parallel orchestration engine. The new flow is:
 
-The six pillars are a decision lens, not six separate intake queues. Each intake turn should evaluate all pillars and choose one top blind spot overall. The system must not ask one question per pillar.
+```text
+sanitize_input
+  -> context_architect updates discovery metadata and next-turn strategy
+  -> route_intent extracts explicit workflow facts
+  -> route_intent emits Handshake, Neutral Gap, or Multiple Choice Anchor
+  -> await_human until the user responds
+  -> repeat discovery while confidence is low and turns < 3
+  -> synthesize_report when confidence is high or turn 3 dead-ends
+```
+
+The design preserves Optimizer-only mode, budget caps, untrusted-tool wrapping, context pruning, existing report metadata keys, and the flexible `metadata` dictionary contract.
 
 ## 2. Files
 
-Primary implementation file:
+Primary executable implementation:
 
 ```text
 apps/api/app/core/orchestrator.py
 ```
 
-Primary test and eval files:
+Primary tests:
 
 ```text
 apps/api/tests/test_interview.py
-apps/api/tests/test_analyst_behavior.py
 apps/api/tests/test_orchestrator.py
+apps/api/tests/test_analyst_behavior.py
 apps/api/tests/test_resilience.py
-apps/api/tests/evals/eval_dataset.py
-apps/api/tests/evals/judge.py
-apps/api/tests/evals/test_runner.py
-apps/api/evals/golden_dataset.json
-apps/api/evals/judge_prompts.py
-apps/api/evals/test_agent_quality.py
 ```
 
-Change ledger update for Phase 3:
+Potential eval fixture updates if prompt behavior changes materially:
+
+```text
+apps/api/evals/golden_dataset.json
+apps/api/evals/test_agent_quality.py
+apps/api/evals/judge_prompts.py
+apps/api/tests/evals/eval_dataset.py
+apps/api/tests/evals/test_runner.py
+```
+
+Required change-ledger update during Phase 3:
 
 ```text
 docs/DEFECT_LEDGER.md
 ```
 
-No frontend files are expected to change.
+No frontend changes are expected.
 
-## 3. Metadata Shape
+## 3. Constants And Metadata
 
-`state.metadata` will carry the new planning data. The values are intentionally plain dictionaries so `SessionState` compatibility is preserved.
+Add or standardize these module-level constants in `orchestrator.py`:
+
+```text
+MAX_CLARIFICATION_TURNS = 3
+E2E_CONFIDENCE_THRESHOLD = 0.72
+LOW_CONFIDENCE_THRESHOLD = 0.5
+```
+
+The existing `clarification_turns` field remains the durable turn counter. Additional discovery state will live in `state.metadata["iterative_discovery"]`:
 
 ```json
 {
-  "architect_plan": {
-    "business_vertical": "GENERIC",
-    "requires_location": false,
-    "required_components": ["trigger", "actor", "activity", "system"],
-    "known_context": {
-      "company_name": null,
-      "company_industry": null,
-      "company_core_tools": null
-    },
-    "six_pillar_coverage": {
-      "market": {"status": "missing", "evidence": [], "open_question": "Who makes or influences the buying decision?"},
-      "operations": {"status": "partial", "evidence": ["orders arrive on WhatsApp"], "open_question": null},
-      "financials": {"status": "missing", "evidence": [], "open_question": "What does one delay or mistake cost?"},
-      "personnel": {"status": "partial", "evidence": ["shop staff handle orders"], "open_question": null},
-      "technology": {"status": "partial", "evidence": ["WhatsApp"], "open_question": null},
-      "risk": {"status": "missing", "evidence": [], "open_question": "What would be the worst consequence of a missed order?"}
-    },
-    "selected_blind_spot": {
-      "pillar": "market",
-      "reason": "The user described the workflow but not who decides or influences demand.",
-      "question": "Who decides what gets ordered: the customer, your staff, or someone else?"
-    },
-    "next_node": "route_intent"
-  },
-  "pending_intake_correction": "No, customers vote, not drivers"
+  "turn_index": 2,
+  "max_turns": 3,
+  "e2e_confidence_score": 0.42,
+  "confidence_reasons": [
+    "contract intake channel is known",
+    "approval ownership is not mapped",
+    "signed-versus-pending separation is inconsistent"
+  ],
+  "known_workflow_facts": [
+    "vendor contracts arrive by email",
+    "the owner flags some emails",
+    "counter-signing PDFs can be missed"
+  ],
+  "open_workflow_gaps": [
+    "no stable owner or approval state is known",
+    "no central contract register is confirmed"
+  ],
+  "latest_answer_quality": "dead_end",
+  "next_question_strategy": "ambiguity_fallback",
+  "should_synthesize_now": true,
+  "ambiguity_fallback": true
 }
 ```
 
-Allowed coverage statuses:
+Allowed `latest_answer_quality` values:
 
 ```text
-missing
-partial
-covered
+specific
+vague
+dead_end
+unknown
+confirmation
+correction
 ```
 
-The six-pillar metadata is not a required-user-input checklist. It is a consulting lens used to pick the next highest-value question and to ground final synthesis.
-
-Only one selected blind spot should be stored per turn. If multiple pillars are weak, the selector must rank them and persist the single highest-leverage item in `selected_blind_spot`.
-
-## 4. Context Architect Design
-
-`_node_context_architect` will remain a non-speaking node, but it will gain a deterministic six-pillar coverage builder.
-
-### 4.1 Pillar Definitions
-
-Add a module-level constant:
+Allowed `next_question_strategy` values:
 
 ```text
-SIX_PILLARS
+handshake
+neutral_gap
+multiple_choice_anchor
+playback
+ambiguity_fallback
 ```
 
-Each pillar includes a name, description, and keyword hints:
+This metadata is intentionally plain JSON-compatible data so `SessionState.metadata` needs no schema-breaking model change.
 
-- Market: customers, demand, competitors, channels, pricing pressure.
-- Operations: workflow steps, handoffs, throughput, delays, rework.
-- Financials: revenue model, costs, margins, payback, cash constraints.
-- Personnel: roles, ownership, staffing, training, incentives.
-- Technology: tools, data flow, integrations, automation readiness.
-- Risk: compliance, reliability, privacy, safety, fraud, dependency risks.
+## 4. Helper Functions
 
-### 4.2 Coverage Helper
+Add focused helpers in `orchestrator.py`.
 
-Add a helper:
+### 4.1 Discovery Turn Classification
 
 ```text
-build_six_pillar_coverage(user_prompt, components, company_context) -> dict[str, dict[str, Any]]
+classify_answer_quality(user_prompt: str, components: dict[str, Any]) -> str
 ```
 
-The helper will:
+Responsibilities:
 
-1. Inspect latest user text, accumulated `process_components`, company industry, and core tools.
-2. Mark each pillar as `covered`, `partial`, or `missing`.
-3. Store short evidence snippets without adding raw payloads.
-4. Produce a candidate open question for missing or partial pillars.
+1. Detect vague answers such as "we just email them," "I figure it out," or "try to remember."
+2. Detect dead-end answers such as "depends on the day" or "whatever works."
+3. Detect unknown answers already handled by the current escape-hatch keywords.
+4. Return a conservative quality label for routing and prompt strategy.
 
-This first version may be deterministic. If an LLM is available later in the turn, the question-generation prompt receives the coverage and can phrase the final question naturally.
-
-### 4.3 Blind Spot Helper
-
-Add a helper:
+### 4.2 Workflow Fact Extraction For Confidence
 
 ```text
-select_blind_spot(six_pillar_coverage, components, architect_plan) -> dict[str, str]
+build_known_workflow_facts(messages: list[Any], components: dict[str, Any]) -> list[str]
+build_open_workflow_gaps(components: dict[str, Any], answer_quality: str) -> list[str]
 ```
 
-Selection priority:
+These helpers must produce short, non-sensitive summaries from current state only. They must not store raw tool outputs or large transcripts.
 
-1. Pick a pillar whose absence can materially change the recommendation.
-2. Prefer decision-critical gaps over rigid slot order.
-3. Keep operations/process basics high enough priority to preserve current intake behavior when the workflow itself is unclear.
-4. Never select a blind spot whose question would require multiple answers.
-5. Select exactly one top blind spot across all six pillars, not one blind spot per pillar.
-
-Example priority by context:
-
-- If no workflow trigger exists, Operations can remain the selected blind spot.
-- If workflow steps are present but customers or decision-makers are absent, Market or Personnel can be selected.
-- If a process has financial constraints but no cost/volume signal, Financials can be selected.
-- If sensitive data, payments, health, safety, or compliance terms appear, Risk can be selected.
-
-### 4.4 Architect Plan Update
-
-`_node_context_architect` will continue to set:
+### 4.3 E2E Confidence Score
 
 ```text
-business_vertical
-requires_location
-required_components
-known_context
-next_node
+calculate_e2e_confidence_score(
+    components: dict[str, Any],
+    answer_quality: str,
+    architect_plan: dict[str, Any],
+) -> tuple[float, list[str]]
 ```
 
-It will additionally set:
+Scoring design:
+
+1. Award baseline confidence for known trigger, actor, activity, system, and optional location.
+2. Award confidence for stable handoff/approval signals in the conversation.
+3. Penalize vague, unknown, or dead-end latest answers.
+4. Penalize placeholder values such as `UNKNOWN`.
+5. Keep friction optional; the user's original bleeding-neck statement often already expresses it.
+
+The score is not a business-quality score. It only decides whether the as-is workflow is mapped enough to produce safe recommendations.
+
+### 4.4 Discovery Metadata Builder
 
 ```text
-six_pillar_coverage
-selected_blind_spot
+build_iterative_discovery_metadata(
+    state: AgentState,
+    components: dict[str, Any],
+    architect_plan: dict[str, Any],
+    answer_quality: str,
+) -> dict[str, Any]
 ```
 
-The existing dynamic location requirement remains unchanged.
-
-## 5. Route Intent Design
-
-`_node_route_intent` remains responsible for extraction, correction handling, confirmation gating, and user-facing intake messages.
-
-### 5.1 Sentinel Policy
-
-Internal sentinels such as `"UNKNOWN"` must never be copied directly into assistant messages.
-
-Add helpers:
+This helper calculates confidence, known facts, open gaps, and the next prompt strategy. It also sets:
 
 ```text
-is_missing_component_value(value) -> bool
-sanitize_components_for_prompt(components) -> dict[str, Optional[str]]
+should_synthesize_now = confidence >= E2E_CONFIDENCE_THRESHOLD or clarification_turns >= MAX_CLARIFICATION_TURNS
+ambiguity_fallback = clarification_turns >= MAX_CLARIFICATION_TURNS and confidence < LOW_CONFIDENCE_THRESHOLD
 ```
 
-`is_missing_component_value` treats `None`, empty strings, `"UNKNOWN"`, `"VARIABLE"`, `"null"`, and `"Not specified"` as missing for user-facing generation.
+## 5. Context Architect Design
 
-`sanitize_components_for_prompt` converts those values to `None` before sending context to prompts.
+`_node_context_architect` remains a non-speaking planning node.
 
-### 5.2 Dynamic Question Prompt
+Phase 3 changes:
 
-Replace the current "ask about one missing component" prompt with a consultant prompt that accepts both:
+1. Keep existing vertical, location, six-pillar, and selected-blind-spot metadata.
+2. Add iterative-discovery planning metadata before returning.
+3. Choose prompt strategy based on turn and answer quality:
+   - turn 0: `handshake`,
+   - later turn with vague input: `multiple_choice_anchor`,
+   - later turn with specific but incomplete input: `neutral_gap`,
+   - turn cap reached with low confidence: `ambiguity_fallback`.
+4. Keep domain mirroring hints in metadata, derived from company context and user vocabulary.
 
-```text
-selected_missing_item
-selected_blind_spot
-six_pillar_coverage
-```
-
-The prompt must instruct the LLM to:
-
-1. Acknowledge one concrete thing the owner said.
-2. Ask exactly one short question.
-3. Use the selected blind spot when it is more decision-critical than the next missing process slot.
-4. Avoid internal labels and schema terms.
-5. Avoid placeholder words.
-6. Avoid asking for bottlenecks or pain points directly.
-7. Treat structured state as grounding only, not as copy to echo.
-
-Fallback behavior:
-
-- If no LLM is available, use `selected_blind_spot.question` when present.
-- If no blind-spot question exists, use the existing missing-component fallback.
-- Wrap deterministic fallback with `build_thread_pulling_acknowledgement`, but only after removing placeholder tokens from the acknowledgement context.
-
-### 5.3 Dynamic Playback Prompt
-
-Add a new prompt constant and helper:
-
-```text
-CONSULTANT_PLAYBACK_PROMPT
-build_consultant_playback_message(...)
-```
-
-Inputs:
-
-- latest user message,
-- conversation history,
-- sanitized components,
-- company context,
-- architect plan,
-- six-pillar coverage,
-- selected blind spot,
-- pending correction context,
-- target language.
-
-Prompt rules:
-
-1. Summarize only known, concrete details.
-2. Do not mention missing fields or placeholder tokens.
-3. Do not use JSON, field labels, or schema words.
-4. If a previous assistant assumption was corrected, the newest user correction wins.
-5. Ask the user to confirm or correct the updated understanding.
-6. Do not ask a separate blind-spot question inside playback; confirmation is the single ask for that turn.
-
-Fallback behavior:
-
-- Use a helper such as `build_known_details_playback`.
-- Build a sentence from known facts only.
-- If only one known fact exists, acknowledge that fact and ask the user to confirm or correct.
-- Never render `UNKNOWN`, `None`, `null`, `Not specified`, `Trigger:`, `Actor:`, `Activity:`, `System:`, or `Friction:`.
-
-### 5.4 Escape-Hatch Behavior
-
-The existing escape hatch can keep filling missing internal values with `"UNKNOWN"` for schema compatibility if needed, but user-facing generation must always use sanitized components.
-
-Updated behavior:
-
-```text
-user says "I don't know" or clarification_turns >= 2
-  -> missing internal fields may become UNKNOWN
-  -> sanitized prompt context converts UNKNOWN to null
-  -> playback message describes known facts only
-  -> no UNKNOWN appears in assistant text
-```
-
-## 6. Correction Routing Design
-
-The confirmation classifier prompt will be expanded from a narrow confirmation/correction detector to an overwrite-aware update classifier.
-
-### 6.1 Classifier Contract
-
-The classifier still returns JSON, but the schema will include correction confidence and notes:
+Suggested metadata addition:
 
 ```json
 {
-  "is_confirmation": false,
-  "corrections": {
-    "trigger": null,
-    "actor": "customers",
-    "activity": null,
-    "system": null,
-    "friction": null,
-    "location": null
-  },
-  "unmapped_correction": null
+  "domain_mirror_terms": {
+    "business_object": "vendor contracts",
+    "failure_event": "vendor did not show up",
+    "workflow_name": "contract approval flow"
+  }
 }
 ```
 
-Prompt rule:
+The architect must not send user-facing text directly. It prepares the strategy consumed by `_node_route_intent`.
+
+## 6. Route Intent Design
+
+`_node_route_intent` remains responsible for extraction, confirmation handling, and user-facing intake messages.
+
+### 6.1 Extraction
+
+Keep the current extraction contract for:
 
 ```text
-Newer user statements override older accumulated components and assistant summaries.
+trigger
+actor
+activity
+system
+friction
+location
 ```
 
-### 6.2 Application Rules
+The extraction prompt must stay conservative:
 
-1. If `is_confirmation` is true and there are no corrections, set `playback_confirmed = True`.
-2. If any correction value is present, overwrite the matching `components` key and keep `playback_confirmed = False`.
-3. If `unmapped_correction` is present, store it in `metadata.pending_intake_correction` and keep `playback_confirmed = False`.
-4. Re-run completeness checks after applying corrections.
-5. Generate a fresh playback message from sanitized state.
+1. Extract only explicit user statements.
+2. Do not invent software, approval owners, folders, spreadsheets, or CRMs.
+3. Treat newer corrections as overriding older assumptions.
 
-### 6.3 Offline Correction Fallback
+### 6.2 Turn Cap
 
-When no LLM is available:
+Replace hardcoded `clarification_turns >= 2` escape-hatch checks with `clarification_turns >= MAX_CLARIFICATION_TURNS`.
 
-- Detect obvious negative correction starts such as `no`, `not`, `actually`, `rather`, `instead`.
-- Store the full message in `metadata.pending_intake_correction`.
-- Do not guess the target field unless a simple existing keyword match is clear.
-- Keep `playback_confirmed = False`.
+Do not fill missing fields with `UNKNOWN` solely because turn 2 was reached. Turn 3 should route to synthesis with ambiguity metadata instead of forcing fake completeness.
 
-This preserves user intent without fabricating a structured overwrite.
+### 6.3 User-Facing Discovery Prompt
+
+Replace or extend `CONSULTANT_INTAKE_PROMPT` so it accepts:
+
+```text
+next_question_strategy
+iterative_discovery_json
+domain_mirror_terms_json
+selected_blind_spot_json
+components_json
+history
+latest_user_message
+```
+
+Prompt rules by strategy:
+
+1. `handshake`: validate pain, promise to help, ask permission to inspect the broader workflow.
+2. `neutral_gap`: anchor on a known fact and ask one open-ended "How" or "What" question.
+3. `multiple_choice_anchor`: acknowledge the vague answer, then offer two or three relatable options in one question.
+4. `playback`: summarize known concrete facts and ask for confirmation or correction.
+
+Universal rules:
+
+1. Ask exactly one question.
+2. Avoid leading yes/no questions.
+3. Avoid internal schema labels.
+4. Do not assume tools or roles the user did not mention.
+5. Mirror domain vocabulary.
+6. Focus only on the immediate bleeding-neck workflow.
+
+### 6.4 Deterministic Fallback Questions
+
+Add fallback builders for the core strategies:
+
+```text
+build_handshake_fallback(user_prompt: str, domain_terms: dict[str, str]) -> str
+build_neutral_gap_fallback(components: dict[str, Any], domain_terms: dict[str, str]) -> str
+build_multiple_choice_anchor_fallback(components: dict[str, Any], domain_terms: dict[str, str]) -> str
+```
+
+For the Starlight Events path, deterministic fallback should be capable of producing safe variants of:
+
+```text
+How do you currently separate the emails with signed contracts from the ones you still need to review?
+```
+
+and:
+
+```text
+When you flag them, do you eventually move them to a specific folder, log them in a spreadsheet, or just leave them in the main inbox?
+```
+
+Fallbacks can be generic for unknown domains but must remain non-leading and must not claim an option as fact.
+
+### 6.5 Routing Out Of Intake
+
+The `_route_after_intent` conditional should gain a synthesis route or equivalent metadata path. The cleanest design is:
+
+```text
+route_intent returns status = SYNTHESIZING when should_synthesize_now is true
+_route_after_intent maps SYNTHESIZING -> synthesize_report
+```
+
+This requires extending the existing conditional mapping from:
+
+```text
+await_human
+execute_tools
+```
+
+to:
+
+```text
+await_human
+execute_tools
+synthesize_report
+```
+
+If the existing code instead proceeds through `execute_tools` for all confirmed workflows, that path should be preserved for high-confidence confirmed workflows. Low-confidence ambiguity fallback should skip tool execution and go directly to `synthesize_report` because tool research would amplify unverified assumptions.
 
 ## 7. Synthesis Design
 
-`_node_synthesize_report` will receive the six-pillar metadata and selected blind spot in its prompt.
-
-### 7.1 Live LLM Prompt Additions
-
-Add instructions:
-
-1. Evaluate recommendations against Market, Operations, Financials, Personnel, Technology, and Risk.
-2. Use the blind spot as an explicit caveat if it remains unresolved.
-3. Do not present assumptions as facts.
-4. Continue the Zero-Jargon rule, recommendation hierarchy, user constraints, benchmark warnings, company context priority, and geographic guidance.
-
-The JSON output shape remains unchanged.
-
-### 7.2 Fallback Report
-
-Replace the current slot dump fallback with a natural fallback builder:
+`_node_synthesize_report` must read:
 
 ```text
-build_natural_fallback_report(components, architect_plan, selected_blind_spot) -> dict[str, str]
+metadata["iterative_discovery"]
+metadata["architect_plan"]
+process_components
+conversation history
 ```
 
-Behavior:
+### 7.1 Normal Synthesis
 
-- `as_is_workflow`: summarize known details in prose.
-- `friction_analysis`: explain that unresolved details limit confidence and name the likely area to inspect, not placeholder values.
-- `technology_neutral_recommendations`: recommend observing one real workflow example, confirming ownership, and validating the selected blind spot.
-- `roi_economics`: say that savings need volume/time/cost inputs before calculation.
+When `ambiguity_fallback` is false:
 
-The fallback must not emit `UNKNOWN`, rigid slot labels, or placeholder phrases.
+1. Solve the immediate bleeding-neck issue first.
+2. Keep the existing backward-compatible metadata keys:
+   - `as_is_workflow`,
+   - `friction_analysis`,
+   - `technology_neutral_recommendations`,
+   - `roi_economics`.
+3. Add or include a `next_horizons` metadata key if the UI can tolerate additional metadata.
+4. If adding a new key is risky, append a `Next Horizons` paragraph to `technology_neutral_recommendations`.
 
-## 8. State Flow
+### 7.2 Ambiguity Fallback Synthesis
 
-### 8.1 Incomplete Intake
+When `ambiguity_fallback` is true:
+
+1. The prompt must state that the workflow remains highly custom, inconsistent, or reliant on personal intuition.
+2. It must include an explicit `Unverified Assumptions` block.
+3. It must list missing data from `open_workflow_gaps`.
+4. It must forbid specific software recommendations.
+5. It must recommend process principles first.
+6. It must include a Next Horizons hook that is clearly sequenced after the first process standardization step.
+
+For Starlight Events, the target report direction is:
 
 ```text
-latest user message
-  -> sanitize_input
-  -> context_architect builds coverage and blind spot
-  -> route_intent extracts components
-  -> route_intent checks dynamic required components
-  -> if incomplete, ask one blind-spot or missing-detail question
-  -> status = AWAITING_CLARIFICATION
+Unverified Assumptions:
+Because we have not mapped a standardized contract flow, this strategy assumes there is currently no central database such as a spreadsheet or CRM being used.
+
+Recommendation:
+Create one strict contract intake channel, such as contracts@starlight.com, and use it only for vendor contracts before paying for contract management software.
+
+Next Horizons:
+Once the dedicated contract inbox is stable, automate signatures with e-sign templates.
 ```
 
-### 8.2 Playback Confirmation
+### 7.3 Deterministic Fallback Report
+
+Extend `build_natural_fallback_report` or add:
 
 ```text
-required components are present or escape hatch is reached
-  -> sanitize components for prompt
-  -> generate natural playback through LLM or fallback
-  -> ask user to confirm or correct
-  -> status = AWAITING_CLARIFICATION
+build_ambiguity_fallback_report(
+    components: dict[str, Any],
+    iterative_discovery: dict[str, Any],
+    domain_terms: dict[str, str],
+) -> dict[str, str]
 ```
 
-### 8.3 Correction
+The fallback report must:
+
+1. Avoid `UNKNOWN`, `None`, `null`, `Not specified`, and schema labels in user-facing text.
+2. Include `Unverified Assumptions` in low-confidence turn-three state.
+3. Avoid software recommendations in low-confidence turn-three state.
+4. Keep the legacy report keys populated.
+
+## 8. Test Design
+
+### 8.1 Unit Tests For Helpers
+
+Add focused tests in `apps/api/tests/test_interview.py` or a new backend test module:
+
+1. `classify_answer_quality` detects vague and dead-end answers.
+2. `calculate_e2e_confidence_score` increases with mapped trigger/actor/activity/system.
+3. Low-confidence dead-end state sets `ambiguity_fallback = true` at turn 3.
+4. `MAX_CLARIFICATION_TURNS` is 3.
+
+### 8.2 Golden Scenario 4 Orchestrator Test
+
+Add a deterministic or mocked-LLM test that replays:
 
 ```text
-user correction
-  -> confirmation classifier detects correction
-  -> overwrite structured component or store pending correction
-  -> regenerate playback from newest state
-  -> playback_confirmed remains false
+User: I keep losing track of vendor contracts...
+Assistant: Handshake
+User: We just email them.
+Assistant: Neutral Gap
+User: I just flag them...
+Assistant: Multiple Choice Anchor
+User: It really depends...
+Assistant/State: routes to synthesize_report, no fourth question
 ```
 
-### 8.4 Confirmed Synthesis
+Assertions:
 
-```text
-user confirms playback
-  -> playback_confirmed = true
-  -> planning/execution continues
-  -> synthesize_report receives six-pillar metadata
-  -> completed state stores backward-compatible report fields
-```
+1. First response validates pain and asks to inspect the broader approval flow.
+2. Second response asks a "How" or "What" question about signed versus pending contracts.
+3. Third response offers two or three options without claiming any as fact.
+4. After the dead-end answer, `metadata.iterative_discovery.ambiguity_fallback` is true.
+5. No fourth clarification question is appended.
+6. Report includes `Unverified Assumptions`.
+7. Report recommends a dedicated contract inbox or equivalent communication-channel standardization.
+8. Report does not mention Zapier, CRM, contract management software as an immediate recommendation, or other specific software.
+9. Report includes `Next Horizons`.
 
-## 9. Test Design
+### 8.3 Existing Test Updates
 
-### 9.1 Update Existing Tests
+Update tests that encode the old two-turn escape hatch:
 
-`apps/api/tests/test_interview.py`:
+1. `test_escape_hatch_max_turns` should use `MAX_CLARIFICATION_TURNS` rather than `2`.
+2. Tests should expect synthesis or ambiguity fallback at turn 3, not forced `UNKNOWN` playback.
+3. Existing placeholder leakage assertions remain valuable and should stay.
 
-- Replace assertions that assistant text contains `UNKNOWN` in escape-hatch tests.
-- Assert internal components may retain `UNKNOWN` only if necessary, while assistant messages do not.
-- Add a test for `No, customers vote, not drivers` overwriting actor or storing pending correction.
-- Update synthesis prompt test to assert six-pillar rubric terms are present.
+### 8.4 Synthesis And Resilience Tests
 
-`apps/api/tests/test_analyst_behavior.py`:
+Update `apps/api/tests/test_resilience.py` so LLM failure in ambiguity fallback still produces:
 
-- Add a case where the next question comes from a blind spot, not only missing process slot order.
-- Continue asserting one natural question and no premature solution terms.
+1. backward-compatible report keys,
+2. `Unverified Assumptions`,
+3. no placeholder leakage,
+4. no immediate specific software recommendation.
 
-`apps/api/tests/test_resilience.py`:
-
-- Update fallback synthesis expectations so no placeholder slot dump appears after LLM failure.
-
-### 9.2 New Assertions
-
-Use shared forbidden terms where practical:
-
-```text
-UNKNOWN
-None
-null
-Not specified
-Trigger:
-Actor:
-Activity:
-System:
-Friction:
-```
-
-Tests should distinguish between internal state and assistant-facing messages.
-
-### 9.3 Eval Fixture Updates
-
-Update `apps/api/tests/evals/eval_dataset.py` scenarios that currently contain or expect `UNKNOWN` prose. The fixtures may keep internal mock JSON values if needed, but final playback and synthesis examples must not reward placeholder text.
-
-Update judge guidance to penalize:
-
-- placeholder leakage,
-- rigid slot playback,
-- ignoring explicit corrections,
-- asking multiple blind-spot questions.
-
-### 9.4 Expanded Eval Architecture
-
-The eval suite should have three layers so broad coverage does not make every local run slow or brittle:
-
-```text
-fast deterministic evals
-  -> mocked LLM scenario replay
-  -> optional live LLM-as-judge quality evals
-```
-
-#### 9.4.1 Fast Deterministic Evals
-
-Fast evals should run in normal targeted validation and should not require network access or live API keys. They validate:
-
-- state transitions,
-- accumulated process components,
-- `six_pillar_coverage` shape,
-- exactly one `selected_blind_spot`,
-- exactly one assistant question during intake,
-- no user-facing placeholder leakage,
-- correction overwrite behavior,
-- fallback report JSON key compatibility,
-- no retired `SUGGESTER` or `EVALUATOR` mode assumptions.
-
-These checks should live primarily in `apps/api/tests/evals/test_runner.py` and adjacent deterministic test modules.
-
-#### 9.4.2 Mocked LLM Scenario Replay
-
-Mocked scenario replay should use fictional companies and deterministic mock responses to exercise the full orchestrator path without relying on live model variance.
-
-The existing `EvalScenario` shape in `apps/api/tests/evals/eval_dataset.py` should be extended rather than replaced. Add optional fields such as:
-
-```text
-scenario_tags
-expected_blind_spot_pillar
-expected_blind_spot_reason_contains
-expected_question_count
-forbidden_assistant_terms
-expected_judge_dimensions
-privacy_sensitivity
-adversarial_input
-```
-
-The mock Anthropic node matcher in `apps/api/tests/evals/test_runner.py` must recognize the current prompt vocabulary:
-
-- sanitization,
-- process mapping,
-- intake confirmation classifier,
-- plain-spoken operational consultant,
-- consultant playback,
-- report writer.
-
-This keeps fixture failures understandable when prompt names change.
-
-#### 9.4.3 Live LLM-As-Judge Evals
-
-Live judge evals remain optional and should run only when an API key is present or when explicitly requested with the eval marker. The judge should score separate dimensions:
-
-- routing and state correctness,
-- consultant intake quality,
-- single-blind-spot discipline,
-- six-pillar reasoning,
-- zero-jargon compliance,
-- recommendation hierarchy,
-- factual grounding,
-- privacy and safety posture,
-- correction handling.
-
-The judge must penalize:
-
-- rigid field-label summaries,
-- multiple intake questions in one turn,
-- hidden reintroduction of placeholder prose,
-- unsupported metrics or invented facts,
-- ignored user corrections,
-- premature Gen AI recommendations,
-- unsafe handling of private, payment, health, employee, or customer data.
-
-### 9.5 Fictional Company Catalog
-
-Add or expand scenarios so the suite covers at least these ten SMB archetypes:
-
-1. Neighborhood clinic or healthcare practice.
-2. Kirana, grocery, retail, or local store.
-3. Repair shop or field-service business.
-4. Wholesale distributor.
-5. Small manufacturer.
-6. Restaurant, cafe, or catering operator.
-7. Logistics, dispatch, or delivery team.
-8. Professional services firm.
-9. Education or training center.
-10. Real estate, brokerage, or property operations team.
-
-Each company scenario should include enough operational texture to test real consultation behavior:
-
-- company context,
-- geography,
-- staff roles,
-- current systems,
-- recurring workflow,
-- user constraints,
-- known ambiguity,
-- privacy or compliance sensitivity when relevant,
-- expected recommendation direction.
-
-### 9.6 Scenario Pattern Matrix
-
-The fictional catalog should be tagged so coverage can be audited without reading every fixture. Required tags:
-
-```text
-vague_start
-rich_start
-multi_turn
-correction
-contradiction
-dont_know
-escape_hatch
-mixed_language
-impatient_user
-late_constraints
-privacy_sensitive
-prompt_injection
-fallback_no_key
-synthesis_success
-synthesis_failure
-tool_untrusted_output
-```
-
-Not every company needs every tag, but the whole suite must cover the full matrix.
-
-### 9.7 Legacy Eval Migration
-
-Existing evals must be audited before adding large new coverage. Migration rules:
-
-1. Keep useful scenarios, but update expected playback and judge examples to the new consultant behavior.
-2. Delete or rewrite cases whose only purpose was to reward placeholder output or rigid slot order.
-3. Keep internal `UNKNOWN` sentinel values only where they test fallback compatibility.
-4. Add assertions that internal sentinels never reach assistant messages or final reports.
-5. Update judge prompts in both eval locations so old and new runners score the same product behavior.
-6. Ensure every scenario uses `OPTIMIZER`; retired modes should fail fixture review.
-
-### 9.8 Eval Failure Reporting
-
-Eval failure messages should identify the failure class:
-
-```text
-STATE_TRANSITION
-COMPONENT_ACCUMULATION
-PILLAR_METADATA
-BLIND_SPOT_SELECTION
-ASSISTANT_TEXT_POLICY
-CORRECTION_OVERWRITE
-SYNTHESIS_SCHEMA
-JUDGE_SCORE
-MOCK_FIXTURE_DRIFT
-```
-
-This avoids the common failure mode where a semantic quality regression looks like a fixture mismatch, or a fixture drift looks like a product bug.
-
-## 10. Validation
+## 9. Validation
 
 Phase 3 targeted validation:
 
 ```powershell
 cd apps/api
-pytest tests/test_interview.py tests/test_analyst_behavior.py tests/test_orchestrator.py tests/test_resilience.py -q
-pytest tests/evals/test_runner.py -q
+pytest tests/test_interview.py tests/test_orchestrator.py tests/test_analyst_behavior.py tests/test_resilience.py -q
 ```
 
-If prompt, synthesis, or routing behavior changes materially:
+If eval fixtures or judge prompts are changed:
 
 ```powershell
 cd apps/api
+pytest tests/evals/test_runner.py -q
 pytest evals/ -v --run-evals
 ```
 
-For expanded eval work, also run the fastest deterministic subset before any source commit:
+Before any executable-source commit, follow the secure checkpoint process required by the repository. Documentation-only checkpoint commits remain eligible for `--no-verify` after verifying only documentation files are staged.
 
-```powershell
-cd apps/api
-pytest tests/evals/test_runner.py -q
-```
+## 10. Risks And Mitigations
 
-Run broader semantic judge coverage explicitly when API keys are available:
+- Risk: The scoring helper may overfit to current component fields.
+  - Mitigation: Treat the score as routing confidence only and preserve open gaps in metadata for synthesis.
 
-```powershell
-cd apps/api
-pytest evals/ tests/evals/ -v --run-evals
-```
+- Risk: Multiple Choice Anchor questions could become leading.
+  - Mitigation: The prompt and fallback builder must phrase options as possibilities, not facts.
 
-Executable-source commits must use the repository secure checkpoint path. Documentation-only changes remain eligible for `--no-verify` after confirming only documentation files are staged.
+- Risk: Routing directly to synthesis may bypass useful tool research.
+  - Mitigation: Only low-confidence ambiguity fallback skips tools; high-confidence confirmed workflows can keep the existing execution path.
 
-## 11. Risks And Mitigations
+- Risk: Tests may become brittle if they assert exact LLM wording.
+  - Mitigation: Assert strategy, question count, forbidden terms, and required concepts rather than full transcript text.
 
-- Risk: Deterministic pillar coverage is less nuanced than live LLM reasoning.
-  - Mitigation: Use deterministic coverage for stable metadata and let the LLM perform the natural phrasing when available.
-
-- Risk: Blind-spot questions could disrupt basic intake completeness.
-  - Mitigation: Keep Operations/process basics high priority when the workflow itself is not yet understandable.
-
-- Risk: Correction classification can mis-map user intent.
-  - Mitigation: Preserve unmapped corrections in metadata and ask for confirmation instead of forcing a guessed field.
-
-- Risk: Existing eval fixtures expect old placeholder output.
-  - Mitigation: Update tests and judge criteria in the same implementation phase.
-
-- Risk: Removing placeholders from fallback output can hide uncertainty.
-  - Mitigation: Express uncertainty in natural language, such as "I still need the person who owns this step before treating recommendations as final."
+- Risk: The final report shape may not have a dedicated `next_horizons` UI field.
+  - Mitigation: Store `next_horizons` in metadata when safe and also include a clearly labeled section in existing recommendation text.
