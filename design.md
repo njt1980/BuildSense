@@ -483,3 +483,202 @@ Before any executable-source commit, follow the secure checkpoint process requir
 
 - Risk: The final report shape may not have a dedicated `next_horizons` UI field.
   - Mitigation: Store `next_horizons` in metadata when safe and also include a clearly labeled section in existing recommendation text.
+
+---
+
+# Design Addendum: Evaluation Harness, Dashboard, and Quality Enhancements (Phase 4)
+
+## 1. Overview & Data Flow
+
+```text
+pytest run (E2E scenarios in test_runner.py)
+  -> Check if --live flag is set
+  -> Bypasses mock client if --live is True, executing live Claude API calls
+  -> Records scenario metrics: turns, latencies, estimated costs, and judge rubric scores
+  -> Stores details on pytest request.node.user_properties
+  -> conftest.py hook collects these properties on test teardown
+  -> pytest_sessionfinish serializes list to apps/api/evals/eval_results.json
+  -> FastAPI dev route GET /api/dev/evaluations/results serves the JSON contents
+  -> Next.js dev page /dev/evaluations fetches the results and visualizes execution metrics
+```
+
+---
+
+## 2. Updated File Map
+
+*   **`apps/api/conftest.py`**:
+    *   Registers command-line options `--live` and `--live-model`.
+    *   Exposes a helper to check if live evals are active.
+*   **`apps/api/tests/evals/conftest.py`**:
+    *   Uses `pytest_runtest_makereport` to collect test case properties.
+    *   Implements `pytest_sessionfinish` to export the accumulated traces to `apps/api/evals/eval_results.json`.
+*   **`apps/api/tests/evals/test_runner.py`**:
+    *   Updates the `test_orchestrator_scenario` test case to run un-mocked when the `--live` flag is set.
+    *   Attaches step-by-step turn details, components, latencies, cost, and LLM judge scorecards to `request.node.user_properties`.
+*   **`apps/api/tests/test_sanitization.py` / `tests/test_orchestrator.py`**:
+    *   Implements deterministic unit tests for repeated jargon analogy parenthesizing.
+    *   Implements integration tests for "Strict Data Privacy" and "No Budget" constraints checking.
+*   **`apps/api/app/telemetry/dev_routes.py`**:
+    *   Implements the `GET /api/dev/evaluations/results` FastAPI endpoint.
+*   **`apps/web/src/app/[lang]/dev/evaluations/page.tsx`**:
+    *   Implements the frontend dashboard UI for viewing the test results.
+
+---
+
+## 3. Detailed Component Designs
+
+### 3.1 Pytest CLI Integration (`apps/api/conftest.py`)
+
+Extend `pytest_addoption` in [`conftest.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/conftest.py) to parse parameters:
+```python
+def pytest_addoption(parser: pytest.Parser) -> None:
+    # Existing --run-evals flag
+    parser.addoption(
+        "--run-evals",
+        action="store_true",
+        default=False,
+        help="Execute the LLM-as-a-judge evaluations test cases",
+    )
+    # New --live flag
+    parser.addoption(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Execute E2E evaluation scenarios using the live Anthropic API",
+    )
+    # New --live-model override option
+    parser.addoption(
+        "--live-model",
+        action="store",
+        default="claude-haiku-4-5-20251001",
+        help="Model to use for orchestrator node execution during live runs",
+    )
+```
+
+We will set environment variables `LIVE_EVALS` and `LIVE_EVALS_MODEL` in `pytest_configure` to propagate settings down to test files.
+
+### 3.2 Evaluation Exporter Design (`apps/api/tests/evals/conftest.py`)
+
+Capture case execution detail inside the pytest test teardown hook and serialize it:
+```python
+import json
+import os
+
+def pytest_sessionfinish(session, exitstatus):
+    # Retrieve the run details from test items
+    results = []
+    for item in session.items:
+        run_detail = next((val for name, val in item.user_properties if name == "run_detail"), None)
+        if run_detail:
+            results.append(run_detail)
+            
+    if results:
+        # Resolve target file path
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(current_dir, "..", "..", "evals", "eval_results.json")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Calculate summary metrics
+        total_cases = len(results)
+        passed_cases = sum(1 for r in results if r["status"] == "PASSED")
+        pass_rate = round((passed_cases / total_cases * 100), 2) if total_cases > 0 else 0.0
+        
+        report_data = {
+            "timestamp": session.startat if hasattr(session, "startat") else "",
+            "pass_rate": pass_rate,
+            "total_cases": total_cases,
+            "passed_cases": passed_cases,
+            "is_live_run": any(r.get("is_live", False) for r in results),
+            "results": results
+        }
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, indent=2, ensure_ascii=False)
+```
+
+### 3.3 E2E Live Mode Integration (`apps/api/tests/evals/test_runner.py`)
+
+Modify `test_orchestrator_scenario` to check:
+```python
+is_live = request.config.getoption("--live")
+live_model = request.config.getoption("--live-model")
+```
+When `is_live` is active:
+*   Pass the real API key to `orchestrator.run_pipeline`.
+*   Connect to the live Anthropic API. To save cost, force the orchestration nodes to use `live_model` (e.g. Haiku) unless the step explicitly requests Sonnet.
+*   Record cost by checking `cache_metrics` metadata appended to the state by `logging.py`.
+*   Record step-by-step turns:
+    ```python
+    turns_data = []
+    for msg in state.messages:
+        turns_data.append({
+            "role": msg.role,
+            "content": msg.content,
+            "name": msg.name
+        })
+    ```
+*   Save the results to the node's properties:
+    ```python
+    run_detail = {
+        "name": scenario["name"],
+        "status": "PASSED" if not failed else "FAILED",
+        "latency": elapsed_time,
+        "cost_usd": cumulative_cost,
+        "is_live": is_live,
+        "turns": turns_data,
+        "components": state.process_components.model_dump(),
+        "judge_scores": grades
+    }
+    request.node.user_properties.append(("run_detail", run_detail))
+    ```
+
+### 3.4 Quality Enhancement Tests
+
+#### Jargon Repetition Analogy Assertions
+Add a unit test in [`test_orchestrator.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_orchestrator.py):
+*   Run the synthesizer node locally or mock a report containing repeat jargon terms (e.g. `ROI` and `ROI`).
+*   Assert that all occurrences are accompanied by parentheses containing an analogy.
+*   Implement this verification using a robust regular expression to identify acronyms followed by parenthesized text.
+
+#### Constraint Compliance Verification
+Add a test in [`test_orchestrator.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_orchestrator.py) to verify constraint checks:
+*   Set a project constraint to `["Strict Data Privacy"]`.
+*   Assert that recommendations avoid recommending third-party Cloud Webhooks or external Cloud SaaS platforms.
+*   Set a project constraint to `["No Budget"]`.
+*   Assert that recommendations recommend zero-cost process adjustments (Tier 1) and warn against paid subscription software.
+
+### 3.5 FastAPI Dev Routes (`apps/api/app/telemetry/dev_routes.py`)
+
+Add the following API endpoint to serve evaluation stats:
+```python
+import os
+import json
+from fastapi import APIRouter, HTTPException
+from app.core.config import settings
+
+@router.get("/api/dev/evaluations/results")
+async def get_evaluations_results():
+    if settings.environment != "local" or not settings.local_telemetry_viewer_enabled:
+        raise HTTPException(status_code=404, detail="Endpoint disabled in current environment.")
+        
+    eval_file = os.path.join(os.path.dirname(__file__), "..", "..", "evals", "eval_results.json")
+    if not os.path.exists(eval_file):
+        raise HTTPException(status_code=404, detail="No evaluation results found. Run evals to generate statistics.")
+        
+    with open(eval_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+```
+
+---
+
+## 4. Evaluations Dashboard Dashboard Design
+
+Create [`page.tsx`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/web/src/app/[lang]/dev/evaluations/page.tsx):
+*   **KPI Widgets**:
+    *   Pass Rate (rendered with an SVG Radial Gauge).
+    *   Execution Mode (renders a `Mock` or `Live` badge with corresponding amber/emerald neon indicator border accents).
+    *   Cumulative cost / average latency (rendered with small card details).
+*   **Case Interactive Accordion**:
+    *   Lists all cases, sorted by status (FAILED first).
+    *   Expanding a case renders the step-by-step chat history.
+    *   Renders a grid mapping **Expected vs. Actual extracted components**.
+    *   Renders the **Judge Scorecard** showing Zero-Jargon, Hierarchy Integrity, Tone, and Grounding scores as colored badge indicators.
