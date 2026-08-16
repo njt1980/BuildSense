@@ -200,15 +200,22 @@ def make_mock_anthropic(scenario_turn: Turn):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", GOLDEN_SCENARIOS, ids=lambda s: s["name"])
-async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
+async def test_orchestrator_scenario(scenario, mock_postgres_and_redis, request) -> None:
     """
     E2E scenario test executing turns and validating routing, state accumulation,
-    and semantic quality.
+    and semantic quality. Supports both mock simulation and live LLM runs.
     """
+    import os
+    import time
+    
     orchestrator = Orchestrator()
     assert scenario["mode"] == "OPTIMIZER", (
         f"{FAILURE_PREFIXES['mock']}: Scenario '{scenario['name']}' uses retired mode {scenario['mode']}."
     )
+    
+    is_live = os.environ.get("LIVE_EVALS") == "true"
+    live_model = os.environ.get("LIVE_EVALS_MODEL", "claude-haiku-4-5-20251001")
+    
     company_context = scenario.get("company_context", {})
     company_name = company_context.get("name")
     company_industry = company_context.get("industry")
@@ -244,150 +251,226 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis) -> None:
         },
     )
 
-    # Variables to collect outputs for semantic grading
     playback_summary = ""
     synthesized_report = ""
+    turns_data = []
+    failed = False
+    grades = {}
+    start_time = time.time()
 
-    # Execute each turn in the scenario
-    for turn in scenario["turns"]:
-        # Mock Anthropic client for this specific turn
-        mock_client = make_mock_anthropic(turn)
-        
-        # Append user input
-        state.messages.append(Message(role="user", content=turn["user_input"]))
-        
-        # Override clarification turns if specified
-        if turn.get("clarification_turns") is not None:
-            state.clarification_turns = turn["clarification_turns"]
-        
-        with patch("app.core.orchestrator.AsyncAnthropic", return_value=mock_client, create=True), \
-             patch("app.core.orchestrator.HAS_ANTHROPIC", True):
+    try:
+        # Execute each turn in the scenario
+        for turn_idx, turn in enumerate(scenario["turns"]):
+            # Bypasses mock client and connects to active Anthropic model API if live
+            mock_client = make_mock_anthropic(turn)
             
-            # Execute pipeline
-            state = await orchestrator.run_pipeline(state, user_key="eval-key")
+            # Append user input
+            state.messages.append(Message(role="user", content=turn["user_input"]))
             
-        # Assertions: state status
-        assert state.status.value == turn["expected_status"], (
-            f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' status mismatch. "
-            f"Expected {turn['expected_status']}, got {state.status.value}"
-        )
+            # Override clarification turns if specified
+            if turn.get("clarification_turns") is not None:
+                state.clarification_turns = turn["clarification_turns"]
+            
+            if not is_live:
+                with patch("app.core.orchestrator.AsyncAnthropic", return_value=mock_client, create=True), \
+                     patch("app.core.orchestrator.HAS_ANTHROPIC", True):
+                    state = await orchestrator.run_pipeline(state, user_key="eval-key")
+            else:
+                from app.core.config import settings
+                from app.telemetry.llm import traced_anthropic_messages_create
+                api_key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+                
+                original_traced_messages_create = traced_anthropic_messages_create
+                async def mock_traced_messages_create(client, model, *args, **kwargs):
+                    if model == "claude-haiku-4-5-20251001":
+                        model = live_model
+                    return await original_traced_messages_create(client, model, *args, **kwargs)
 
-        assert_current_approach_metadata(state, scenario["name"])
-
-        expected_blind_spot_pillar = scenario.get("expected_blind_spot_pillar")
-        if expected_blind_spot_pillar:
-            actual_pillar = state.metadata["architect_plan"]["selected_blind_spot"]["pillar"]
-            assert actual_pillar == expected_blind_spot_pillar, (
-                f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario['name']}' expected blind-spot pillar "
-                f"{expected_blind_spot_pillar}, got {actual_pillar}."
+                with patch("app.telemetry.llm.traced_anthropic_messages_create", side_effect=mock_traced_messages_create), \
+                     patch("app.core.orchestrator.HAS_ANTHROPIC", True):
+                    state = await orchestrator.run_pipeline(state, user_key=api_key)
+                
+            # Assertions: state status
+            assert state.status.value == turn["expected_status"], (
+                f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' status mismatch. "
+                f"Expected {turn['expected_status']}, got {state.status.value}"
             )
 
-        iterative_discovery = state.metadata.get("iterative_discovery", {})
-        expected_strategy = turn.get("expected_discovery_strategy")
-        if expected_strategy:
-            actual_strategy = iterative_discovery.get("next_question_strategy")
-            assert actual_strategy == expected_strategy, (
-                f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' expected discovery strategy "
-                f"{expected_strategy}, got {actual_strategy}."
-            )
-        if turn.get("expected_ambiguity_fallback") is not None:
-            assert iterative_discovery.get("ambiguity_fallback") is turn["expected_ambiguity_fallback"], (
-                f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' ambiguity fallback mismatch. "
-                f"Expected {turn['expected_ambiguity_fallback']}, got {iterative_discovery.get('ambiguity_fallback')}."
-            )
-        
-        # Assertions: process components accumulation
-        expected_comps = turn["expected_components"]
-        for k, v in expected_comps.items():
-            actual_val = getattr(state.process_components, k)
-            assert actual_val == v, (
-                f"{FAILURE_PREFIXES['components']}: Scenario '{scenario['name']}' component '{k}' mismatch. "
-                f"Expected '{v}', got '{actual_val}'"
-            )
+            assert_current_approach_metadata(state, scenario["name"])
 
-        assistant_text = latest_assistant_text(state)
-        forbidden_terms = scenario.get("forbidden_assistant_terms") or DEFAULT_FORBIDDEN_ASSISTANT_TERMS
-        if assistant_text:
-            assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
-        elif state.status == SessionStatus.AWAITING_CLARIFICATION:
-            assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
-
-        if state.status == SessionStatus.AWAITING_CLARIFICATION:
-            expected_question_count = scenario.get("expected_question_count")
-            if expected_question_count is not None:
-                assert count_questions(assistant_text) == expected_question_count, (
-                    f"{FAILURE_PREFIXES['assistant_text']}: Scenario '{scenario['name']}' expected "
-                    f"{expected_question_count} assistant question(s), got {count_questions(assistant_text)}: {assistant_text}"
+            expected_blind_spot_pillar = scenario.get("expected_blind_spot_pillar")
+            if expected_blind_spot_pillar:
+                actual_pillar = state.metadata["architect_plan"]["selected_blind_spot"]["pillar"]
+                assert actual_pillar == expected_blind_spot_pillar, (
+                    f"{FAILURE_PREFIXES['blind_spot']}: Scenario '{scenario['name']}' expected blind-spot pillar "
+                    f"{expected_blind_spot_pillar}, got {actual_pillar}."
                 )
-            playback_summary = assistant_text
 
-    # If the scenario finishes the full synthesis workflow, grade the output using the judge
-    if scenario["expect_synthesis"]:
-        synthesized_report = (
-            f"### Current Manual Process (As-Is)\n"
-            f"{state.metadata.get('as_is_workflow', '')}\n\n"
-            f"### Friction Analysis\n"
-            f"{state.metadata.get('friction_analysis', '')}\n\n"
-            f"### Technology Neutral Recommendations\n"
-            f"{state.metadata.get('technology_neutral_recommendations', '')}\n\n"
-            f"### ROI Economics\n"
-            f"{state.metadata.get('roi_economics', '')}"
-        )
-        for expected_text in scenario.get("expected_report_contains", []):
-            assert expected_text.lower() in synthesized_report.lower(), (
-                f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report missing expected text: {expected_text}"
+            iterative_discovery = state.metadata.get("iterative_discovery", {})
+            expected_strategy = turn.get("expected_discovery_strategy")
+            if expected_strategy:
+                actual_strategy = iterative_discovery.get("next_question_strategy")
+                assert actual_strategy == expected_strategy, (
+                    f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' expected discovery strategy "
+                    f"{expected_strategy}, got {actual_strategy}."
+                )
+            if turn.get("expected_ambiguity_fallback") is not None:
+                assert iterative_discovery.get("ambiguity_fallback") is turn["expected_ambiguity_fallback"], (
+                    f"{FAILURE_PREFIXES['state']}: Scenario '{scenario['name']}' ambiguity fallback mismatch. "
+                    f"Expected {turn['expected_ambiguity_fallback']}, got {iterative_discovery.get('ambiguity_fallback')}."
+                )
+            
+            # Assertions: process components accumulation
+            expected_comps = turn["expected_components"]
+            for k, v in expected_comps.items():
+                actual_val = getattr(state.process_components, k)
+                assert actual_val == v, (
+                    f"{FAILURE_PREFIXES['components']}: Scenario '{scenario['name']}' component '{k}' mismatch. "
+                    f"Expected '{v}', got '{actual_val}'"
+                )
+
+            assistant_text = latest_assistant_text(state)
+            forbidden_terms = scenario.get("forbidden_assistant_terms") or DEFAULT_FORBIDDEN_ASSISTANT_TERMS
+            if assistant_text:
+                assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
+            elif state.status == SessionStatus.AWAITING_CLARIFICATION:
+                assert_assistant_text_policy(assistant_text, scenario["name"], forbidden_terms)
+
+            if state.status == SessionStatus.AWAITING_CLARIFICATION:
+                expected_question_count = scenario.get("expected_question_count")
+                if expected_question_count is not None:
+                    assert count_questions(assistant_text) == expected_question_count, (
+                        f"{FAILURE_PREFIXES['assistant_text']}: Scenario '{scenario['name']}' expected "
+                        f"{expected_question_count} assistant question(s), got {count_questions(assistant_text)}: {assistant_text}"
+                    )
+                playback_summary = assistant_text
+            
+            # Record intermediate turn traces
+            components = {}
+            if state.process_components:
+                for field in ["trigger", "actor", "activity", "system", "friction", "location"]:
+                    components[field] = getattr(state.process_components, field, None)
+
+            turns_data.append({
+                "turn_index": turn_idx + 1,
+                "user_input": turn["user_input"],
+                "assistant_response": assistant_text or "Report synthesized.",
+                "components": components,
+                "confidence_score": iterative_discovery.get("e2e_confidence_score", 0.0),
+                "next_question_strategy": iterative_discovery.get("next_question_strategy") or state.metadata.get("architect_plan", {}).get("next_node")
+            })
+
+        # If the scenario finishes the full synthesis workflow, grade the output using the judge
+        if scenario["expect_synthesis"]:
+            synthesized_report = (
+                f"### Current Manual Process (As-Is)\n"
+                f"{state.metadata.get('as_is_workflow', '')}\n\n"
+                f"### Friction Analysis\n"
+                f"{state.metadata.get('friction_analysis', '')}\n\n"
+                f"### Technology Neutral Recommendations\n"
+                f"{state.metadata.get('technology_neutral_recommendations', '')}\n\n"
+                f"### ROI Economics\n"
+                f"{state.metadata.get('roi_economics', '')}"
             )
-        for forbidden_text in scenario.get("expected_report_forbidden_terms", []):
-            assert forbidden_text.lower() not in synthesized_report.lower(), (
-                f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report included forbidden fallback text: {forbidden_text}"
-            )
-        assert_assistant_text_policy(synthesized_report, scenario["name"], DEFAULT_FORBIDDEN_ASSISTANT_TERMS)
+            for expected_text in scenario.get("expected_report_contains", []):
+                assert expected_text.lower() in synthesized_report.lower(), (
+                    f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report missing expected text: {expected_text}"
+                )
+            for forbidden_text in scenario.get("expected_report_forbidden_terms", []):
+                assert forbidden_text.lower() not in synthesized_report.lower(), (
+                    f"{FAILURE_PREFIXES['synthesis']}: Scenario '{scenario['name']}' report included forbidden fallback text: {forbidden_text}"
+                )
+            assert_assistant_text_policy(synthesized_report, scenario["name"], DEFAULT_FORBIDDEN_ASSISTANT_TERMS)
+            
+            constraints_str = ", ".join(scenario["user_constraints"]) if scenario["user_constraints"] else "None"
+            
+            # Avoid live judge API calls during mock runs by clearing the settings API key
+            if not is_live:
+                from app.core.config import settings
+                with patch.object(settings, "anthropic_api_key", None), \
+                     patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}):
+                    grades = await invoke_llm_judge(
+                        playback_summary=playback_summary,
+                        synthesized_report=synthesized_report,
+                        user_constraints=constraints_str
+                    )
+            else:
+                grades = await invoke_llm_judge(
+                    playback_summary=playback_summary,
+                    synthesized_report=synthesized_report,
+                    user_constraints=constraints_str
+                )
+            
+            from app.core.config import settings
+            api_key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+            if api_key and is_live:
+                # Assert semantic criteria are scored >= 0.90 (passing threshold)
+                assert grades["zero_jargon_score"] >= 0.90, (
+                    f"{FAILURE_PREFIXES['judge']}: Zero Jargon compliance failed with score "
+                    f"{grades['zero_jargon_score']}. Justification: {grades['justification']}"
+                )
+                assert grades["hierarchy_integrity_score"] >= 0.90, (
+                    f"{FAILURE_PREFIXES['judge']}: Hierarchy integrity compliance failed with score "
+                    f"{grades['hierarchy_integrity_score']}. Justification: {grades['justification']}"
+                )
+                assert grades["consultant_intake_score"] >= 0.90, (
+                    f"{FAILURE_PREFIXES['judge']}: Consultant intake behavior failed with score "
+                    f"{grades['consultant_intake_score']}. Justification: {grades['justification']}"
+                )
+                assert grades["single_blind_spot_score"] >= 0.90, (
+                    f"{FAILURE_PREFIXES['judge']}: Single blind-spot discipline failed with score "
+                    f"{grades['single_blind_spot_score']}. Justification: {grades['justification']}"
+                )
+                assert grades["factual_grounding_score"] >= 0.90, (
+                    f"{FAILURE_PREFIXES['judge']}: Factual grounding failed with score "
+                    f"{grades['factual_grounding_score']}. Justification: {grades['justification']}"
+                )
+                assert grades["privacy_safety_score"] >= 0.90, (
+                    f"{FAILURE_PREFIXES['judge']}: Privacy and safety posture failed with score "
+                    f"{grades['privacy_safety_score']}. Justification: {grades['justification']}"
+                )
+            else:
+                # When API key is absent or not live, verify mocked fallback scores are returned
+                assert grades["zero_jargon_score"] == 1.0
+                assert grades["hierarchy_integrity_score"] == 1.0
+                assert grades["consultant_intake_score"] == 1.0
+                assert grades["single_blind_spot_score"] == 1.0
+                assert grades["factual_grounding_score"] == 1.0
+                assert grades["privacy_safety_score"] == 1.0
+
+    except Exception as e:
+        failed = True
+        raise e
+    finally:
+        elapsed_time = round(time.time() - start_time, 2)
+        cumulative_cost = round(state.budget_spent_usd, 4) if is_live else 0.0
         
-        constraints_str = ", ".join(scenario["user_constraints"]) if scenario["user_constraints"] else "None"
-        
-        # Call the LLM judge (Claude 3.5 Haiku)
-        grades = await invoke_llm_judge(
-            playback_summary=playback_summary,
-            synthesized_report=synthesized_report,
-            user_constraints=constraints_str
-        )
-        
-        from app.core.config import settings
-        api_key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if api_key:
-            # Assert semantic criteria are scored >= 0.90 (passing threshold)
-            assert grades["zero_jargon_score"] >= 0.90, (
-                f"{FAILURE_PREFIXES['judge']}: Zero Jargon compliance failed with score "
-                f"{grades['zero_jargon_score']}. Justification: {grades['justification']}"
-            )
-            assert grades["hierarchy_integrity_score"] >= 0.90, (
-                f"{FAILURE_PREFIXES['judge']}: Hierarchy integrity compliance failed with score "
-                f"{grades['hierarchy_integrity_score']}. Justification: {grades['justification']}"
-            )
-            assert grades["consultant_intake_score"] >= 0.90, (
-                f"{FAILURE_PREFIXES['judge']}: Consultant intake behavior failed with score "
-                f"{grades['consultant_intake_score']}. Justification: {grades['justification']}"
-            )
-            assert grades["single_blind_spot_score"] >= 0.90, (
-                f"{FAILURE_PREFIXES['judge']}: Single blind-spot discipline failed with score "
-                f"{grades['single_blind_spot_score']}. Justification: {grades['justification']}"
-            )
-            assert grades["factual_grounding_score"] >= 0.90, (
-                f"{FAILURE_PREFIXES['judge']}: Factual grounding failed with score "
-                f"{grades['factual_grounding_score']}. Justification: {grades['justification']}"
-            )
-            assert grades["privacy_safety_score"] >= 0.90, (
-                f"{FAILURE_PREFIXES['judge']}: Privacy and safety posture failed with score "
-                f"{grades['privacy_safety_score']}. Justification: {grades['justification']}"
-            )
-        else:
-            # When API key is absent, verify mocked fallback scores are returned
-            assert grades["zero_jargon_score"] == 1.0
-            assert grades["hierarchy_integrity_score"] == 1.0
-            assert grades["consultant_intake_score"] == 1.0
-            assert grades["single_blind_spot_score"] == 1.0
-            assert grades["factual_grounding_score"] == 1.0
-            assert grades["privacy_safety_score"] == 1.0
+        judge_scores = grades if (scenario.get("expect_synthesis") and not failed) else {
+            "zero_jargon_score": 0.0 if failed else 1.0,
+            "hierarchy_integrity_score": 0.0 if failed else 1.0,
+            "consultant_intake_score": 0.0 if failed else 1.0,
+            "single_blind_spot_score": 0.0 if failed else 1.0,
+            "factual_grounding_score": 0.0 if failed else 1.0,
+            "privacy_safety_score": 0.0 if failed else 1.0,
+            "justification": "Test case failed with runtime or assertion error." if failed else "Evals run in discovery-only mode."
+        }
+
+        run_detail = {
+            "name": scenario["name"],
+            "status": "FAILED" if failed else "PASSED",
+            "latency": elapsed_time,
+            "cost_usd": cumulative_cost,
+            "is_live": is_live,
+            "turns": turns_data,
+            "judge_scores": judge_scores,
+            "report": {
+                "as_is_workflow": state.metadata.get("as_is_workflow", ""),
+                "friction_analysis": state.metadata.get("friction_analysis", ""),
+                "technology_neutral_recommendations": state.metadata.get("technology_neutral_recommendations", ""),
+                "roi_economics": state.metadata.get("roi_economics", "")
+            } if (scenario.get("expect_synthesis") and not failed) else None
+        }
+        request.node.user_properties.append(("run_detail", run_detail))
 
 
 def test_eval_catalog_covers_required_current_approach_matrix() -> None:

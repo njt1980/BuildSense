@@ -198,3 +198,14 @@ async def test_traced_anthropic_call_records_usage_and_cost() -> None:
     assert completed["attributes"]["input_tokens"] == 100
     assert completed["attributes"]["output_tokens"] == 50
     assert completed["attributes"]["cost_usd"] > 0
+
+
+def test_dev_evaluations_results_endpoint() -> None:
+    """Verifies that the /api/dev/evaluations/results route returns the correct JSON."""
+    response = client.get("/api/dev/evaluations/results")
+    assert response.status_code == 200
+    json_data = response.json()
+    assert "timestamp" in json_data
+    assert "pass_rate" in json_data
+    assert "results" in json_data
+    assert len(json_data["results"]) > 0

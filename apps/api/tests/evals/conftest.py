@@ -110,3 +110,45 @@ def mock_postgres_and_redis():
             "save_graph": mock_save_gr,
             "redis_increment_spend": mock_redis
         }
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Hook to write E2E evaluation statistics and steps to eval_results.json at session end.
+    """
+    import json
+    import os
+    from datetime import datetime
+
+    results = []
+    for item in session.items:
+        run_detail = next((val for name, val in item.user_properties if name == "run_detail"), None)
+        if run_detail:
+            results.append(run_detail)
+
+    if results:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(current_dir, "..", "..", "evals", "eval_results.json")
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        total_cases = len(results)
+        passed_cases = sum(1 for r in results if r["status"] == "PASSED")
+        pass_rate = round((passed_cases / total_cases * 100), 2) if total_cases > 0 else 0.0
+        total_latency = sum(r.get("latency", 0.0) for r in results)
+        avg_latency = round((total_latency / total_cases), 2) if total_cases > 0 else 0.0
+        total_cost = sum(r.get("cost_usd", 0.0) for r in results)
+
+        report_data = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "pass_rate": pass_rate,
+            "total_cases": total_cases,
+            "passed_cases": passed_cases,
+            "avg_latency_seconds": avg_latency,
+            "total_latency_seconds": round(total_latency, 2),
+            "total_cost_usd": round(total_cost, 4),
+            "is_live_run": any(r.get("is_live", False) for r in results),
+            "results": results
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(report_data, f, indent=2, ensure_ascii=False)

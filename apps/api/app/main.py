@@ -22,7 +22,7 @@ from app.db.redis import redis_client
 from app.db.postgres import postgres_client
 from app.models.state import SessionState, SessionMode, SessionStatus, Message
 from app.telemetry.context import update_context
-from app.telemetry.dev_routes import router as dev_telemetry_router
+from app.telemetry.dev_routes import router as dev_telemetry_router, evals_router as dev_evals_router
 from app.telemetry.ids import generate_run_id
 from app.telemetry.logging import log_event
 from app.telemetry.middleware import telemetry_context_middleware
@@ -36,6 +36,7 @@ app = FastAPI(
 
 app.middleware("http")(telemetry_context_middleware)
 app.include_router(dev_telemetry_router)
+app.include_router(dev_evals_router)
 
 # Determine Limiter storage URI
 def get_limiter_storage_uri(url: str) -> str:

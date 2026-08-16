@@ -59,3 +59,32 @@ async def clear_events() -> Dict[str, str]:
     _ensure_enabled()
     local_telemetry_store.clear()
     return {"status": "cleared"}
+
+
+import os
+import json
+
+evals_router = APIRouter(prefix="/api/dev/evaluations", tags=["dev-evaluations"])
+
+@evals_router.get("/results")
+async def get_evaluations_results() -> Dict[str, Any]:
+    """Serve the compiled eval_results.json file for development dashboard tracking."""
+    _ensure_enabled()
+    
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    eval_file = os.path.join(current_dir, "..", "..", "evals", "eval_results.json")
+    
+    if not os.path.exists(eval_file):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No evaluation results found. Please run the evaluation test suite first."
+        )
+        
+    try:
+        with open(eval_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to parse evaluation results: {str(e)}"
+        )

@@ -10,13 +10,7 @@ import pytest
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """
-    Registers a custom --run-evals command line flag for pytest.
-
-    Arguments:
-        parser: The pytest command-line parser object.
-
-    Returns:
-        None
+    Registers custom command line flags for BuildSense pytest runs.
     """
     parser.addoption(
         "--run-evals",
@@ -24,34 +18,37 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Execute the LLM-as-a-judge evaluations test cases",
     )
+    parser.addoption(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Execute E2E evaluation scenarios using the live Anthropic API",
+    )
+    parser.addoption(
+        "--live-model",
+        action="store",
+        default="claude-haiku-4-5-20251001",
+        help="Model to use for orchestrator node execution during live runs",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     """
-    Registers the 'evals' test marker inside pytest.
-
-    Arguments:
-        config: The pytest configuration object.
-
-    Returns:
-        None
+    Registers the 'evals' test marker and populates live evaluation environment variables.
     """
     config.addinivalue_line(
         "markers",
         "evals: Mark a test as an agentic evaluation (run-evals)"
     )
+    # Propagate flags to environment variables for visibility within tests
+    import os
+    os.environ["LIVE_EVALS"] = "true" if config.getoption("--live") else "false"
+    os.environ["LIVE_EVALS_MODEL"] = str(config.getoption("--live-model"))
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
     """
     Filters test execution collection, skipping evals unless --run-evals is specified.
-
-    Arguments:
-        config: The active pytest configuration.
-        items: List of collected test items.
-
-    Returns:
-        None
     """
     if config.getoption("--run-evals"):
         # Do not skip if explicit option is supplied

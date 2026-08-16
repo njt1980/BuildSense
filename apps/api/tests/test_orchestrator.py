@@ -411,3 +411,55 @@ async def test_orchestrator_starter_chip_routing() -> None:
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         assert len(updated_state.clarification_questions) in [1, 3]
         assert mock_save.call_count >= 1
+
+
+def test_zero_jargon_analogy_parentheses_repeated() -> None:
+    """Verifies that all repeat occurrences of jargon are parenthesized with analogies."""
+    from app.core.orchestrator import ensure_jargon_analogies
+    
+    text = "We want to improve our LTV. Also, our LTV is currently low. Our CAC is $50, which increases the CAC."
+    result = ensure_jargon_analogies(text)
+    
+    # Assert LTV and CAC analogies are repeated for every occurrence
+    assert result.count("LTV (Lifetime Value: total customer value, like the total amount of milk a cow gives over its entire life)") == 2
+    assert result.count("CAC (Customer Acquisition Cost: marketing cost to get one client, like the price of bait needed to catch one fish)") == 2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_system_prompt_weaves_constraints() -> None:
+    """Checks that the synthesis node system prompt includes active user constraints."""
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-constraints",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.SYNTHESIZING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Workflow info")],
+        user_constraints=["Strict Data Privacy", "No Budget"],
+        metadata={"motivation": "EFFICIENCY", "user_persona": "Solo Founder"}
+    )
+    from app.core.config import settings
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch.object(settings, "anthropic_api_key", "mock-api-key"), \
+         patch.object(orchestrator.db, "save_session_state", AsyncMock()):
+        
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        mock_response = make_mock_response(
+            '{"as_is_workflow": "As-is", "friction_analysis": "Friction", "technology_neutral_recommendations": "Recommendations", "roi_economics": "ROI"}'
+        )
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        
+        agent_state = state.model_dump()
+        await orchestrator._node_synthesize_report(agent_state)
+        
+        assert mock_client.messages.create.called
+        called_kwargs = mock_client.messages.create.call_args.kwargs
+        system_prompt = called_kwargs.get("system", "")
+        
+        assert "Strict Data Privacy" in system_prompt
+        assert "No Budget" in system_prompt
+        assert "If a constraint like 'No Budget' or 'No/Low Budget' is present" in system_prompt
+        assert "If a constraint like 'Strict Data Privacy' is present" in system_prompt
