@@ -681,4 +681,119 @@ Create [`page.tsx`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/web/sr
     *   Lists all cases, sorted by status (FAILED first).
     *   Expanding a case renders the step-by-step chat history.
     *   Renders a grid mapping **Expected vs. Actual extracted components**.
-    *   Renders the **Judge Scorecard** showing Zero-Jargon, Hierarchy Integrity, Tone, and Grounding scores as colored badge indicators.
+*   Renders the **Judge Scorecard** showing Zero-Jargon, Hierarchy Integrity, Tone, and Grounding scores as colored badge indicators.
+
+---
+
+# Design Addendum: Behavioral Prompt Patching (Phase 5)
+
+## 1. Overview & File Scope
+
+This design addendum specifies the code-level adjustments in `apps/api/app/core/orchestrator.py` to enforce prompt constraints and routing logic for the behavioral patching.
+
+No new files or external dependencies are introduced. The modifications are isolated to:
+- `apps/api/app/core/orchestrator.py`: Modify constants, routing gate checks, `CONSULTANT_INTAKE_PROMPT`, `CONSULTANT_PLAYBACK_PROMPT`, and `_node_synthesize_report` prompts.
+- `apps/api/tests/test_interview.py`, `apps/api/tests/test_orchestrator.py`: Update test assertions and thresholds.
+- `apps/api/tests/evals/test_runner.py` / `apps/api/evals/test_agent_quality.py`: Update eval expectations for confidence score threshold and friction cap assertions.
+
+## 2. Detailed Technical Changes
+
+### 2.1 Threshold Updates in `apps/api/app/core/orchestrator.py`
+
+Update the module-level constant for confidence score threshold:
+```python
+E2E_CONFIDENCE_THRESHOLD = 0.85
+```
+
+### 2.2 Discovery vs. Confirmation Routing Gate in `_node_route_intent`
+
+Update the routing gate inside `_node_route_intent` to remain in Discovery Mode if `e2e_confidence_score < 0.85` and `clarification_turns < MAX_CLARIFICATION_TURNS`:
+
+```python
+# Old check:
+# if not all_required_present:
+
+# New check:
+e2e_confidence = iterative_discovery.get("e2e_confidence_score", 0.0)
+if not all_required_present or (e2e_confidence < 0.85 and clarification_turns < MAX_CLARIFICATION_TURNS):
+```
+
+### 2.3 Prompt Updates
+
+#### 2.3.1 `CONSULTANT_INTAKE_PROMPT` (No Metadata Leakage & Discovery Rule)
+Add explicit Fourth Wall constraints and end-of-turn constraints. The system prompt will strictly forbid printing framework labels and closed confirmation checks when in discovery:
+
+```python
+CONSULTANT_INTAKE_PROMPT = """You are BuildSense's intake consultant: a warm, plain-spoken operations consultant for local business owners.
+Think "McKinsey for the common man": careful, practical, empathetic, and allergic to jargon.
+
+Your job is to ask the next natural question in a workflow discovery conversation.
+
+THE FOURTH WALL RULE:
+- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
+- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
+- Translate all internal state logic or completeness checks into natural, conversational English.
+
+DISCOVERY VS. CONFIRMATION BOUNDARY:
+- You are in Discovery Mode. You are strictly forbidden from ending your turn with a closed confirmation query like "Is that right?", "Is this correct?", or any summary requesting final verification.
+- You MUST end the turn using the Neutral Gap rule to ask about the next highest-priority business blind spot or missing detail.
+
+Conversation discipline:
+- Follow this discovery strategy: {next_question_strategy}.
+...
+"""
+```
+
+#### 2.3.2 `CONSULTANT_PLAYBACK_PROMPT` (No Metadata Leakage in Playback)
+Update `CONSULTANT_PLAYBACK_PROMPT` to enforce the Fourth Wall Rule:
+
+```python
+CONSULTANT_PLAYBACK_PROMPT = """You are BuildSense's intake consultant.
+Write a natural playback summary of the owner's current workflow understanding and ask them to confirm or correct it.
+
+THE FOURTH WALL RULE:
+- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
+- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
+- Translate all state logic and operational fields into natural, conversational English.
+...
+"""
+```
+
+#### 2.3.3 Synthesis Prompt in `_node_synthesize_report` (Anti-Scattergun & Fourth Wall)
+Update the `system_prompt` inside `_node_synthesize_report` to cap the friction analysis and enforce the Fourth Wall Rule:
+
+```python
+system_prompt = (
+    "You are an expert business report writer and software architect. Synthesize the final report "
+    ...
+    "THE FOURTH WALL RULE:\n"
+    "- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.\n"
+    "- Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Actor', 'System', or 'Friction' (case-insensitive) in any user-facing text values.\n"
+    "- Translate all state terminology into natural, conversational English.\n\n"
+    "FRICTION OVERLOAD CONSTRAINT (THE ANTI-SCATTERGUN RULE):\n"
+    "- In the 'friction_analysis' section, you MUST limit your deduced friction points to the top 2 or 3 most critical operational bleed points directly related to the user's specific workflow.\n"
+    "- You are strictly forbidden from generating an exhaustive, 6-point matrix of hypothetical frictions across every unverified business pillar. Keep it focused and punchy.\n\n"
+    ...
+)
+```
+
+## 3. Verification Plan
+
+### 3.1 Automated Testing
+1. **Unit and Integration Tests**:
+   Run the existing interview and orchestrator tests to verify they handle the new `0.85` threshold:
+   ```powershell
+   cd apps/api
+   pytest tests/test_interview.py tests/test_orchestrator.py -v
+   ```
+2. **Quality Evaluation Harness**:
+   Run the LLM-as-a-judge quality evals to verify zero regressions on the zero jargon and hallucination metrics:
+   ```powershell
+   cd apps/api
+   pytest evals/ -v --run-evals
+   ```
+3. **Specific Assertion Verification**:
+   Write/update assertions in `apps/api/tests/test_orchestrator.py` or a dedicated quality test file to assert that:
+   - Generated questions never contain `turn_index`, `confidence_score`, `Trigger`, `Actor`, `System`, or `Friction`.
+   - Discovery responses do not end with "Is that right?".
+   - Synthesized reports contain at most 3 friction points.
