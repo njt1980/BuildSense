@@ -24,6 +24,8 @@ Execute these phases in exact order:
 4. **Context Flush Checkpoint:** Before initiating Phase 3, pause and instruct the human user to clear or compact the session context (e.g. `/clear` or `/compact`) to flush conversational history and free the context window for coding. Do not begin Phase 3 work in the same context window that carried the Phase 1/2 discussion.
 *STOP: Do not proceed to Phase 3 until this commit is successfully executed.*
 
+> **Coupling note:** the exact strings `docs: finalize specification` and `docs: finalize system design` above are read literally by `scripts/check_phase_gate.py`. If either commit message prefix changes, update that script in the same commit — otherwise the phase gate will silently stop recognizing checkpoint commits.
+
 ### PHASE 3: IMPLEMENTATION (CODE)
 1. You are now authorized to write and modify source code, one Atomic Implementation Step from `design.md` at a time.
 2. **Pre-flight requirement:** Before touching files for an atomic step, output a `<directive_check>` XML block that (a) confirms in one sentence how the step aligns with `design.md`, and (b) lists the exact source files you intend to read or modify for this step. **File Cap:** Never hold more than 4 source files in context at once for a single atomic step. If a step genuinely needs more than 4 files, halt and split it into smaller atomic steps in `design.md` before continuing.
