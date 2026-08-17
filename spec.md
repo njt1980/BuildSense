@@ -1,346 +1,104 @@
-# Specification: Iterative Discovery Orchestrator And Ambiguity Fallback
+# Specification: Dynamic Discovery and Evaluation Patches
 
-## 1. Problem
+## 1. Goal Description
 
-BuildSense currently moves too quickly from a user's first pain statement into synthesis. That behavior can produce recommendations before the system understands the end-to-end workflow behind the user's immediate "bleeding neck" problem.
+This specification outlines the backend LangGraph orchestrator and prompt changes required to implement "Iterative Discovery" using elite consulting frameworks, patch behavioral drifts caught by LLM-as-a-judge evaluations, and handle users who provide a "Blank Canvas" (industry only, no specific problem description).
 
-For complex SMB workflows, the agent must behave like a consultative operator: validate the pain, ask permission to inspect the broader flow, then iteratively discover the current process without leading the owner toward a predetermined tool. When the owner cannot describe a stable process after a bounded number of turns, the final report must avoid hallucinated workflow details and recommend foundational process principles instead of software.
+The updates cover routing logic changes, intake bifurcation, prompt constraint enforcement, fallback behavior for low-confidence turn-three runs, and synthesis output formatting rules.
 
-## 2. Goals
+---
 
-1. Upgrade the backend LangGraph orchestration flow to support iterative discovery across a maximum of three clarification turns.
-2. Add an internal `MAX_CLARIFICATION_TURNS = 3` policy for the iterative discovery loop.
-3. Add an `e2e_confidence_score` check that estimates whether the as-is workflow is sufficiently mapped for synthesis.
-4. Route incomplete low-confidence workflows back to `context_architect` while turns remain below the maximum.
-5. Route to `synthesize_report` when confidence is high enough or when the three-turn cap is reached.
-6. Update the `context_architect` prompt so the first assistant turn uses a Consultative Handshake.
-7. Update subsequent discovery turns so they use Neutral Gap questions instead of leading yes/no questions.
-8. Support a Multiple Choice Anchor when the user provides vague, low-information answers.
-9. Update report synthesis so low-confidence turn-three reports use an Ambiguity Fallback.
-10. Ensure final reports solve the immediate bleeding-neck issue first, then include a Next Horizons hook for one intentionally deferred adjacent business pillar.
+## 2. Functional Requirements
 
-## 3. Non-Goals
+### 2.1 Iterative Discovery Loop & Routing (LangGraph)
+- **MAX_CLARIFICATION_TURNS**: Define and enforce an internal limit of `MAX_CLARIFICATION_TURNS = 3`.
+- **e2e_confidence_score Check**: The graph's routing node (`route_intent`) must inspect `e2e_confidence_score` and `clarification_turns`:
+  - **Loop back to Context Architect**: If `e2e_confidence_score < 0.85` and `clarification_turns < 3`, the routing logic must loop back to `context_architect` (via the checkpointer / user-facing await-human cycle) to continue discovery.
+  - **Synthesize Report**: If `e2e_confidence_score >= 0.85` (or playback confirmed), OR if `clarification_turns >= 3`, the orchestrator must transition the graph state to `synthesize_report`.
 
-1. Do not introduce a new orchestration framework or replace LangGraph.
-2. Do not reintroduce `SUGGESTER` or `EVALUATOR` modes.
-3. Do not expand discovery into a general business audit before addressing the user's immediate issue.
-4. Do not add frontend UI changes unless an existing backend response contract would otherwise break.
-5. Do not recommend software during low-confidence ambiguity fallback reports.
-6. Do not ask more than one owner-facing clarification question in a single assistant turn.
+### 2.2 Dynamic Intake (The "Blank Canvas" Fallback)
+- **Bifurcation Trigger**: In `context_architect`, check if the user has provided any specific friction or pain points (`components.get("friction") == null` or empty).
+  - **Path A (Friction Provided)**: Proceed with the standard discovery flow: a Consultative Handshake validation followed by Neutral Gap questions.
+  - **Path B (Blank Canvas - e.g., "Family-owned restaurant")**: If no friction is provided, the agent is strictly forbidden from asking abstract automation questions (e.g., "What process do you want to automate?"). Instead, it must execute a **"Seed and Story"** conversational prompt:
+    - **The Seed**: List 2 or 3 highly specific, relatable operational pain points typical for the user's identified industry.
+    - **The Story**: Acknowledge the industry, and immediately ask the user to describe the first two hours of their day to identify where their specific friction lies.
+    - **Format**: The prompt response must consist of entirely conversational plain text with no UI chips, buttons, or suggestions.
 
-## 4. Functional Requirements
+### 2.3 Discovery vs. Confirmation Boundary
+- **Discovery Mode (`e2e_confidence_score < 0.85`)**:
+  - The agent is strictly forbidden from ending its turn with a closed summary or closed confirmation query like "Is that right?", "Is this correct?", or summarizing the entire flow for verification.
+  - The agent MUST end the turn using the **Neutral Gap** rule, which anchors on a known fact from the user's response and asks an open-ended "How" or "What" question to map the next workflow step.
+- **Confirmation Mode (`e2e_confidence_score >= 0.85`)**:
+  - The agent may summarize the end-to-end workflow details and ask the user for final confirmation (e.g. playback summary) before proceeding to synthesis.
 
-### 4.1 Iterative Discovery Loop
+### 2.4 The Fourth Wall Rule (No Metadata Leakage)
+- The assistant's output to the user MUST NEVER expose internal LangGraph state variables, framework labels, database keys, or classification tags.
+- Specifically, the output must not print words like:
+  - `turn_index` / `turn_count`
+  - `confidence_score` / `e2e_confidence_score`
+  - `Trigger` / `Actor` / `System` / `Activity`
+  - `Market Pillar` / `Pillar`
+  - `Friction`
+- Any internal state rules or completeness status must be translated into natural, conversational English.
 
-- The graph routing logic must support iterative discovery through `context_architect` up to `MAX_CLARIFICATION_TURNS = 3`.
-- Each discovery cycle must update lightweight workflow completeness metadata, including:
-  - `clarification_turns`,
-  - `e2e_confidence_score`,
-  - known workflow facts,
-  - missing or ambiguous workflow gaps,
-  - whether the latest user answer was vague or dead-ended.
-- If `e2e_confidence_score` is below the synthesis threshold and `clarification_turns < MAX_CLARIFICATION_TURNS`, route back to `context_architect`.
-- If `e2e_confidence_score` is sufficient, route to `synthesize_report`.
-- If `clarification_turns >= MAX_CLARIFICATION_TURNS`, route to `synthesize_report` even when confidence remains low, with ambiguity metadata preserved.
+### 2.5 The "Ambiguity Fallback" (Handling Turn 3 Dead-Ends)
+- If the graph reaches `clarification_turns == 3` but the `e2e_confidence_score` remains low (e.g., `< 0.85` or the user provided ambiguous/vague answers), the `synthesize_report` node must execute a graceful exit:
+  - **Unverified Assumptions**: State an explicit "Unverified Assumptions" block outlining what was missing or unconfirmed during discovery.
+  - **No Hallucination**: Do NOT invent or assume missing database tools, staff roles, tools, or process steps.
+  - **Process Principles**: Recommend zero-cost "Process Principles" (e.g., standardizing communication channels, setting up email folder labels) rather than specific software tools, automation platforms, or CRMs.
 
-### 4.2 Consultative Handshake
+### 2.6 Synthesis Constraints (Anti-Scattergun & Iceberg Delivery)
+- **Friction Overload Constraint**: The report must limit its deduced friction points to the **Top 2 or 3** most critical operational bleed points. The agent is strictly forbidden from generating an exhaustive 6-pillar matrix or scattergun list of minor hypothetical frictions.
+- **Iceberg Delivery / Next Horizons**: The final report must focus on solving the immediate, high-priority bleeding-neck problem first. At the end of the report, the agent must append a "Next Horizons" section highlighting exactly one adjacent business pillar or improvement area that was intentionally deferred.
 
-- On the first discovery turn, BuildSense must:
-  - validate the user's pain in plain language,
-  - promise to help with the immediate bleeding-neck issue,
-  - ask permission to inspect the broader workflow that produces the pain.
-- The handshake must not prematurely recommend tools, vendors, integrations, or implementation details.
-- The handshake must mirror the user's domain vocabulary, such as "vendor contracts" for event planning, "patients" for clinics, or "mats" for yoga studios.
+---
 
-### 4.3 Neutral Gap Questions
+## 3. Golden Transcripts (Behavioral Anchors)
 
-- After the handshake, BuildSense must anchor on a known fact from the user's answer and ask an open-ended "How" or "What" question.
-- Neutral Gap questions must not ask leading yes/no questions.
-- Neutral Gap questions must not assume unmentioned tools, folders, spreadsheets, CRMs, staff roles, automations, or software.
-- The question must focus on mapping the end-to-end workflow connected to the immediate bleeding-neck problem.
+### Scenario 1: The Blank Canvas (Path B)
+- **User**: "Family-owned restaurant."
+- **Agent (Seed & Story)**: "Family restaurants have a unique rhythm. Often, the biggest leaks I see are tracking supplier invoices, managing shift swaps, or the chaos of front-of-house reservations. To help me spot where your specific friction is, walk me through the first two hours of your day. From the moment you unlock the doors, what is the very first fire you usually have to put out?"
 
-### 4.4 Multiple Choice Anchor
+### Scenario 2: The Bleeding Neck (Path A)
+- **User**: "Wholesale texts at midnight."
+- **Agent (Handshake)**: Acknowledges texts, asks permission to view E2E kitchen flow.
+- **User**: "Yeah, that's fine."
+- **Agent (Neutral Gap)**: "How does info get from your phone to the bakers?" (Note: Agent does NOT ask 'Is this right?' because confidence is low).
+- **User**: "I write it on a notepad."
+- **Agent (Confirmation Turn)**: Confidence is high. Summarizes the E2E flow and asks for confirmation.
+- **Synthesis**: Top 2 frictions only. Solves intake via Google Forms. Next Horizon: Ingredient procurement.
 
-- If the user's answer is vague, low-information, or relies on phrases such as "we just email them," "I figure it out," "it depends," or "whatever works," the next discovery turn may offer two or three concrete examples.
-- The examples must lower cognitive load without treating any option as fact.
-- The assistant should still ask one question only.
-- Example shape: "When you flag them, do you move them to a folder, log them in a spreadsheet, or leave them in the main inbox?"
+---
 
-### 4.5 Ambiguity Fallback
+## 4. Acceptance Criteria
 
-- When `clarification_turns >= MAX_CLARIFICATION_TURNS` and `e2e_confidence_score` remains low, synthesis must pivot tone.
-- The report must frame the workflow as highly custom, inconsistent, or reliant on personal intuition.
-- The report must not invent missing workflow steps, owners, databases, tools, or approval rules.
-- The report must include an explicit `Unverified Assumptions` block that states what is missing from discovery.
-- Recommendations must be principle-based and process-first.
-- Specific software recommendations, including CRMs, Zapier-style automation, or contract-management platforms, are forbidden in this fallback state.
+1. **Routing Rules**: Routing loops back to `context_architect` via human clarification turns when `clarification_turns < 3` and `e2e_confidence_score < 0.85`. Synthesis is triggered when `clarification_turns >= 3` or when `e2e_confidence_score >= 0.85` (after confirmation).
+2. **Blank Canvas Logic**: Input with empty or null friction bypasses the Consultative Handshake/Neutral Gap flow and triggers the "Seed and Story" prompt.
+3. **No Metadata Leakage**: System prompts strictly block leakage of internal state variables (`turn_index`, `confidence_score`, `Trigger`, `Market Pillar`, `Friction`).
+4. **Boundary Compliance**: Discovery Mode responses do not summarize or ask "Is that right?" questions. Confirmation Mode is only active when `e2e_confidence_score >= 0.85`.
+5. **Fallback Synthesis**: Report generated on turn 3 with low confidence uses the Ambiguity Fallback: lists "Unverified Assumptions", recommends process-first principles, and contains zero software recommendations.
+6. **Synthesis Constraints**: Final report lists at most 2-3 operational frictions and includes a "Next Horizons" section highlighting one adjacent business pillar left out.
 
-### 4.6 Iceberg Delivery And Next Horizons
+---
 
-- Final reports must address the immediate bleeding-neck problem first.
-- Reports may mention adjacent business pillars only after the immediate issue has a practical first step.
-- Reports must include a `Next Horizons` section that names one adjacent improvement area intentionally left for later.
-- The Next Horizons hook must be specific to the workflow discovered, such as e-signature templates after contract inbox standardization.
+## 5. Verification Plan
 
-## 5. Golden Scenario 4 Acceptance Behavior
+### 5.1 Automated Unit & Integration Tests
+- **Routing & Loops**: Write tests verifying routing behavior when `e2e_confidence_score` is low at turn 1, 2, and 3.
+- **Blank Canvas**: Write tests verifying that a blank canvas input triggers the `seed_and_story` strategy.
+- **Metadata Filter**: Write tests asserting that the string output does not contain forbidden words.
+- **Synthesis Limits**: Write tests verifying report content length and formatting restrictions (Friction counts, Unverified Assumptions block, Next Horizons presence).
 
-Scenario: Starlight Events loses vendor contracts in email. The florist failed to show up because a PDF was not counter-signed.
-
-Expected conversation pattern:
-
-1. User says they lose vendor contracts in a chaotic inbox.
-2. BuildSense uses the Handshake: acknowledges that a missing vendor on event day is stressful, promises to organize the contract flow, and asks to inspect how a vendor gets approved from start to finish.
-3. User says, "We just email them."
-4. BuildSense uses a Neutral Gap: asks how signed contracts are separated from items still needing review.
-5. User says they flag emails or try to remember.
-6. BuildSense uses a Multiple Choice Anchor: asks whether flagged contracts move to a folder, spreadsheet, or stay in the inbox.
-7. User says it depends on the day and they do whatever works.
-8. Because the third discovery turn has dead-ended, BuildSense routes to synthesis.
-9. The report states an unverified assumption that no standardized contract flow or central database has been mapped.
-10. The report recommends standardizing the communication channel first, such as using a dedicated contracts inbox, before paying for contract management software.
-11. The report includes a Next Horizons hook about automating signatures with e-sign templates after the dedicated contract inbox is stable.
-
-## 6. Broader Golden Transcript Coverage
-
-The prompts and routing must also naturally support:
-
-1. Retail to Wholesale: midnight wholesale texts lead to discovery of notepad-to-whiteboard double entry and a Google Form to Google Sheet intake recommendation, with ingredient procurement as the Next Horizon.
-2. Field Services: paper work orders in vans lead to discovery of dispatch-to-invoice delay and a mobile parts form recommendation, with van inventory restocking as the Next Horizon.
-3. Service and Wellness: yoga no-shows lead to discovery that the owner personally manages cancellations by text, with cancellation policy and auto-waitlist configuration as the recommendation, and client retention as the Next Horizon.
-
-## 7. Acceptance Criteria
-
-1. The backend exposes or stores `MAX_CLARIFICATION_TURNS = 3` for iterative discovery.
-2. Routing loops to `context_architect` for incomplete low-confidence workflows while under the turn cap.
-3. Routing proceeds to `synthesize_report` when confidence is high or the turn cap is reached.
-4. The first discovery assistant response follows the Consultative Handshake pattern.
-5. Subsequent discovery responses follow Neutral Gap rules and avoid leading yes/no questions.
-6. Vague answers trigger a Multiple Choice Anchor with two or three relatable options.
-7. Scenario 4 reaches synthesis after the ambiguous third answer without asking a fourth discovery question.
-8. Low-confidence turn-three reports include `Unverified Assumptions`.
-9. Low-confidence turn-three reports recommend process principles and do not recommend specific software.
-10. Final reports include a bleeding-neck-first recommendation and a Next Horizons hook.
-11. Tests cover the Scenario 4 ambiguity fallback path.
-12. Existing Optimizer-only, budget cap, untrusted-tool wrapping, context pruning, and backward-compatible report-shape behavior remain intact.
-
-## 8. Validation Plan For Phase 3
-
-Targeted backend validation should include:
-
+Run backend tests using:
 ```powershell
 cd apps/api
-pytest tests/test_interview.py tests/test_orchestrator.py tests/test_analyst_behavior.py tests/test_resilience.py -q
+pytest tests/test_interview.py tests/test_orchestrator.py -v
 ```
 
-If prompt or synthesis behavior changes materially, run the eval suite:
-
+### 5.2 LLM-as-a-judge Evaluation Suite
+Run the evaluation suite with the live judge:
 ```powershell
 cd apps/api
 pytest evals/ -v --run-evals
 ```
-
-Before executable-source commits, use the repository secure checkpoint process and ensure no secrets, runtime files, caches, virtual environments, or unrelated files are staged.
-
-## 9. Risks And Constraints
-
-- LLM wording may vary, so deterministic tests should assert policy and routing behavior rather than exact full transcripts.
-- The Multiple Choice Anchor must avoid becoming a leading recommendation in disguise.
-- The ambiguity fallback must be useful without pretending the workflow was fully mapped.
-- Iterative discovery must remain bounded so impatient owners still receive a practical report quickly.
-- The existing six-pillar consultant metadata can inform Next Horizons, but the discovery loop must stay focused on the immediate bleeding-neck problem.
-
----
-
-# Specification Addendum: Evaluation Harness, Dashboard, and Quality Enhancements (Phase 4)
-
-## 1. Problem Statement
-
-While BuildSense has a comprehensive set of E2E evaluation scenarios, the verification pipeline suffers from two distinct gaps:
-1. **Mock Execution Limitation**: The 22 E2E scenarios mock the Anthropic Claude API responses during the state machine's execution turns. This means we verify state-machine transitions and metadata mapping, but we do not verify the actual quality, tone, or compliance of the active LLM prompts when running live.
-2. **Lack of Visual Observability**: Running evaluations from the command line only outputs simple pass/fail logs. It is difficult for a developer to trace step-by-step turn inputs, parsed components, confidence scores, and individual judge rubric scores without manually parsing raw terminal trace outputs.
-3. **Untested Quality Constraints**: Business rules—such as the Zero-Jargon rule requiring parenthesized analogies on *every single occurrence* of jargon (not just the first)—and strict constraint compliance (e.g., "Strict Data Privacy" or "No Budget") are not deterministically tested.
-
-## 2. Goals
-
-1. **E2E Live Execution Flag**: Add a command-line parameter `--live` to the test runner so E2E scenarios can execute live (un-mocked) Anthropic API calls for all nodes when desired.
-2. **Configurable Model Settings**: Allow developers to select model configurations (e.g. using `claude-haiku-4-5-20251001` or `claude-sonnet-5`) to control API cost vs grading accuracy during live evaluations.
-3. **Deterministic Quality Unit Tests**:
-   - Write unit tests verifying that the Zero-Jargon rule is strictly followed on repeated terms (e.g., LTV, CAC, ROI).
-   - Write integration tests verifying that constraints (e.g., "Strict Data Privacy", "No Budget") dynamically restrict or shape recommendation tiers.
-4. **Evaluation Results Exporter**: Build a custom exporter in `conftest.py` that serializes detailed evaluation traces, latencies, cost, and LLM judge scores to `apps/api/evals/eval_results.json` after running the suite.
-5. **Dev Evaluations Endpoint**: Expose `GET /api/dev/evaluations/results` in FastAPI to serve the serialized E2E execution log.
-6. **Evaluations Dashboard**: Design a developer dashboard page in Next.js at `/dev/evaluations` to visualize pass/fail rates, execution statistics, step-by-step turn dialogues, and LLM judge scorecard ratings.
-7. **Deterministic Guidelines Bootstrapping**: Rename the uppercase `AGENTS.MD` to lowercase `agents.md` so that the IDE's automated workspace rule discovery loads it into the agent context on every turn. Additionally, establish a bootstrap rule in `.agents/rules/bootstrap.md` instructing the agent to always read `agents.md` before planning or writing code.
-
-## 3. Non-Goals
-
-1. Do not replace `pytest`. All evaluations should still run via standard pytest triggers.
-2. Do not expose the evaluations dev routes or dashboard in production environments.
-3. Do not run live E2E evals by default to avoid accidental token billing; live runs must require the explicit `--live` flag.
-
-## 4. Functional Requirements
-
-### 4.1 CLI & Execution Harness
-- Extend [`conftest.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/conftest.py) to accept the `--live` flag.
-- When `--live` is specified:
-  - Bypasses the mock Anthropic client in [`test_runner.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/evals/test_runner.py) and connects to the active Anthropic model API.
-  - Allows model configuration overrides (e.g., defaulting to Claude 3.5 Haiku to minimize live evaluation run costs).
-- Capture execution metrics for every run:
-  - Turn latency (seconds) and cumulative scenario duration.
-  - Calculated input/output token usage and USD costs using standard Anthropic pricing.
-
-### 4.2 Quality Enhancement Assertions
-- **Jargon Analogy Leakage Test**: Write a unit test that verifies that any occurrence of a jargon term (LTV, CAC, ROI, MRR, SaaS, Webhook, API, DB) in synthesized reports is followed by parenthesized analogies on *all* occurrences, failing if a repeat occurrence is unparenthesized.
-- **Constraint Compliance Verification**: Write unit tests asserting that:
-  - Under `No Budget` / `Low Budget` constraints, the recommendation tier avoids paid SaaS licenses or custom cloud software.
-  - Under `Strict Data Privacy` constraints, cloud webhook integrations or SaaS platforms that process sensitive details are warned against or skipped.
-
-### 4.3 Evaluations Exporter
-- Capture the step-by-step history of each scenario:
-  - User turn input.
-  - Assistant playback, neutral gap, or clarification question.
-  - Extracted `process_components` (trigger, actor, activity, system, friction, location).
-  - Calculated `e2e_confidence_score` and chosen `next_question_strategy`.
-- Capture LLM-as-a-judge scorecards:
-  - `zero_jargon_score`, `hierarchy_integrity_score`, `consultant_intake_score`, `single_blind_spot_score`, `factual_grounding_score`, and `privacy_safety_score`.
-- Serialize results to `apps/api/evals/eval_results.json` upon completion of the test suite.
-
-### 4.4 FastAPI Dev Route
-- Expose `GET /api/dev/evaluations/results`.
-- Return the parsed contents of `eval_results.json`.
-- Gate the route to local development mode only:
-  - `settings.environment == "local"` and `settings.local_telemetry_viewer_enabled == True`.
-
-### 4.5 Next.js Evaluations Dashboard
-- Accessible at `/en/dev/evaluations` (and general `/dev/evaluations` route).
-- **Global Header Navigation**:
-  - Integrate a "Dev Tools" navigation selector or links in the global header to allow simple movement between the Client Dashboard, local Telemetry viewer, and evaluations dashboard.
-- **KPI Summary Cards**:
-  - Overall Pass Rate (%)
-  - Total Cost ($) with warning threshold indicator if any case exceeds $1.00.
-  - Average and Cumulative Latency (s).
-  - Execution Type (Mock vs. Live) with matching color-coded accents.
-- **Interactive SVG-Based Charts**:
-  - **Pass Rate Radial Gauge**: Semicircular or full circular SVG progress arc representing the overall pass rate.
-  - **Average Rubric Scores**: Horizontal SVG bar chart plotting average scores for all 6 judge metrics across scenarios.
-  - **Latency & Cost Scatter Plot / Comparison Matrix**: SVG visual plot representing each scenario node's latency (X axis) vs cost (Y axis).
-  - **Run Status Donut Chart**: Clean SVG donut chart detailing the ratio of PASSED vs FAILED cases.
-- **Scenario Timeline & Details**:
-  - Render a filterable list of all scenarios (All, Passed, Failed).
-  - Expandable case detail section showing the step-by-step conversation bubbles (matching user inputs and assistant responses).
-  - Comparative view of expected vs. actual process components.
-  - Visualization of the 6 LLM judge scorecards.
-
-### 4.6 Prompt Caching Integration
-- Configure Anthropic Claude API prompt caching (`cache_control`) to optimize token usage.
-- **Intake Phase**: Place ephemeral cache breakpoints on the user/system message blocks for the intake loop calls (`confirmation_gate`, `extract_process_components`, `generate_clarification_question`, `generate_playback_summary`) to cache instructions and grow dialog history context.
-- **Report Synthesis**: Cache the large report writer instructions and zero-jargon guidelines passed as `system` prompt block parameters in `_node_synthesize_report` using ephemeral cache controls.
-- **Cost Calculation**: Ensure that the backend telemetry (`app/telemetry/llm.py`) and cost trackers parse `cache_read_input_tokens` and `cache_creation_input_tokens` to reflect caching savings on the dashboard metrics.
-
-### 4.7 Developer Workspace Governance & Rule Discovery
-- Rename the uppercase `AGENTS.MD` to lowercase `agents.md` at the repository root to ensure automatic discovery by the Antigravity IDE's hierarchical rules system on all platforms.
-- Create a `.agents/rules/bootstrap.md` file in the workspace containing an `always_on` rule directing the agent to read `agents.md` as the absolute first action in any workspace session before generating code or planning.
-
-## 5. Acceptance Criteria
-
-1. Running `pytest tests/evals --run-evals` runs successfully in mock mode.
-2. Running `pytest tests/evals --run-evals --live` executes un-mocked runs with the live Anthropic API and LLM Judge.
-3. Tests fail if jargon repeat occurrences are unparenthesized or constraints are violated.
-4. An `eval_results.json` file is correctly written to `apps/api/evals/` containing the E2E case traces.
-5. The `GET /api/dev/evaluations/results` API returns the JSON log.
-6. The Next.js `/dev/evaluations` page renders the KPI summaries, case lists, turn traces, and judge metrics accurately.
-
----
-
-# Specification Addendum: Behavioral Prompt Patching (Phase 5)
-
-## 1. Problem Statement
-
-Our recent LLM-as-a-judge evaluation run passed structurally, but identified three behavioral regressions in the LangGraph prompt outputs:
-1. **Internal Metadata Leakage (The Fourth Wall Rule):** Exposing internal LangGraph state variables or framework labels directly to the user instead of translating state logic into natural English.
-2. **Premature Summarization (The Discovery vs. Confirmation Boundary):** Asking closed confirmation questions (e.g., "Is that right?") too early in the conversation when confidence is low, rather than continuing the discovery loop.
-3. **Friction Overload (Friction Overload Constraint / The Anti-Scattergun Rule):** Generating overwhelming lists of hypothetical operational frictions rather than focusing on the top 2-3 most critical points directly related to the user's specific workflow.
-
-## 2. Goals
-
-1. Enforce **The Fourth Wall Rule (No Metadata Leakage)** across all user-facing prompts in the `context_architect` and `synthesize_report` nodes.
-2. Enforce **The Discovery vs. Confirmation Boundary** based on the `e2e_confidence_score` threshold of `0.85` in the `context_architect` node.
-3. Enforce **Friction Overload Constraint (The Anti-Scattergun Rule)** in report synthesis to limit friction points to the top 2-3 critical operational bleed points.
-
-## 3. Non-Goals
-
-1. Do not introduce any new graph nodes or change the overall state machine topology.
-2. Do not modify the existing schema models or database structures.
-3. Do not modify the rate-limiting or Redis budget caps.
-
-## 4. Functional Requirements
-
-### 4.1 The Fourth Wall Rule (No Metadata Leakage)
-- The system prompts for the discovery/intake nodes (referred to as `context_architect` prompts, including intake and playback) and the synthesis node (`synthesize_report`) must strictly forbid exposing internal LangGraph state variables or framework labels to the user.
-- The agent MUST NEVER print words like `turn_index`, `confidence_score`, `Trigger`, `Actor`, `System`, or `Friction` (case-insensitive) in its user-facing output.
-- All internal state logic, completeness metrics, and routing choices must be translated into natural, conversational English before being presented to the user.
-
-### 4.2 The Discovery vs. Confirmation Boundary
-- Update the discovery behavior based on the `e2e_confidence_score` value:
-  - **Discovery Mode (`e2e_confidence_score < 0.85`)**: The agent is strictly forbidden from ending its turn with a closed confirmation like "Is that right?" or summarizing the workflow for confirmation. It MUST end the turn using the **Neutral Gap** rule to ask about the next highest-priority blind spot or missing detail.
-  - **Confirmation Mode (`e2e_confidence_score >= 0.85`)**: The agent may summarize the workflow and ask for final confirmation (e.g., playback summary) before routing the state machine to report synthesis.
-
-### 4.3 Friction Overload Constraint (The Anti-Scattergun Rule)
-- Update the `synthesize_report` system prompt to cap the Friction Analysis section of the final output.
-- The agent must limit its deduced friction points to the **Top 2 or 3 most critical operational bleed points** directly related to the user's specific workflow.
-- The agent is strictly forbidden from generating an exhaustive, 6-point matrix of hypothetical frictions across every unverified business pillar.
-
-## 5. Acceptance Criteria
-
-1. Live assistant responses generated by intake, playback, or synthesis nodes do not contain internal framework labels (such as `turn_index`, `confidence_score`, `Trigger`, `Actor`, `System`, or `Friction`).
-2. Discovery turns with `e2e_confidence_score < 0.85` never end with closed confirmations (e.g., "Is that right?") or playback summaries, but rather ask a Neutral Gap question.
-3. Playback summaries and confirmation questions are only displayed/sent when `e2e_confidence_score >= 0.85`.
-4. Synthesized reports contain exactly 2 or 3 critical operational bleed points in the Friction Analysis section, rather than an exhaustive 6-pillar list.
-5. All existing tests and E2E evaluations pass without regressions.
-
-
-# Specification Addendum: Telemetry Flow Viewer Styling & Cost Tracking (Phase 6)
-
-## 1. Problem Statement
-
-The development-only `/dev/telemetry` page currently displays telemetry data as plain text JSON dumps in `<pre>` blocks, making it difficult for developers to quickly trace tokens, caching events, tool executions, and accumulated costs of local run instances.
-
-## 2. Goals
-
-1. **Stunning Dev Telemetry UI**: Redesign the Telemetry Flow Viewer interface with structured visual key-value explorer cards, metrics badges, and color-coded status pills.
-2. **Dynamic Cost Accumulation**: Calculate the total dollar spend of each run and request by summing LLM API expenditures, displaying it directly on the sidebar run list.
-3. **Structured Token & Cache Badge Metrics**: Visually call out prompt caching statistics (Cache Reads vs. Cache Creations vs. Base Input) on LLM call event cards.
-4. **Structured Tool/HTTP Detail Cards**: Render HTTP route requests and tool calls (e.g. arguments and results) as clean tables or structured blocks instead of raw JSON.
-
-## 3. Non-Goals
-
-1. Do not affect production application code or logging middleware functionality.
-2. Do not change the database schema or external telemetry tables.
-
-## 4. Functional Requirements
-
-### 4.1 FastAPI Backend Run Summary Cost Tracking
-- Modify the local telemetry memory store `list_runs` endpoint to dynamically compute the total run cost:
-  - Aggregate the `cost_usd` parameter from the attributes of all `llm_call_completed` events belonging to each `run_id`.
-  - Expose `total_cost_usd` inside the `RunSummary` response payload.
-
-### 4.2 Front-End Telemetry Page Visual Enhancements
-- **Runs Sidebar List**:
-  - Show the aggregated run cost (e.g. `$0.0125`) as a prominent green tag.
-  - Apply clean status badges for run completion levels (`completed`, `failed`, `paused`, `unknown`).
-- **Event Timeline Viewer**:
-  - Re-design individual event cards into structured containers.
-  - **LLM Call Event Highlights**: When an event name is `llm_call_completed`, display an inline metrics box showing:
-    - **Total Cost**: Styled badge (e.g., green theme).
-    - **Duration**: Latency badge.
-    - **Cache Stats**: Structured indicators for Cached Read tokens (blue/cyan), Cached Created tokens (indigo), and Base Input/Output tokens.
-  - **HTTP/Tool Event Highlights**: Render arguments, routes, methods, and status codes as organized tables or collapsible key-value lists.
-  - **Collapsed Attributes Explorer**: For any other arbitrary attributes, render a clean list of fields rather than raw JSON, with a toggle button to view the raw JSON dump when needed.
-
-## 5. Acceptance Criteria
-
-1. The `/dev/telemetry` sidebar run buttons display the correct aggregated run cost of the transaction.
-2. LLM call timeline cards display cost, duration, and prompt cache metrics as styled horizontal badge bars.
-3. Arbitrary attributes are readable without raw JSON blocks by default, and a "View Raw JSON" toggle is fully operational.
-
-
+Verify the zero-jargon, hallucination, and consultant intake scores remain > 90% and there are no behavioral regressions.
