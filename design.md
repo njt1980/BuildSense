@@ -670,18 +670,77 @@ async def get_evaluations_results():
 
 ---
 
-## 4. Evaluations Dashboard Dashboard Design
+### 4. Evaluations Dashboard Dashboard Design
 
-Create [`page.tsx`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/web/src/app/[lang]/dev/evaluations/page.tsx):
+Create/modify [`page.tsx`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/web/src/app/[lang]/dev/evaluations/page.tsx):
 *   **KPI Widgets**:
-    *   Pass Rate (rendered with an SVG Radial Gauge).
+    *   Pass Rate (rendered with an SVG Radial Gauge): Custom `<svg>` circle utilizing `strokeDasharray` and dynamic `strokeDashoffset` representing current passing percentage. Neon accents (emerald for >=90%, rose for <90%).
     *   Execution Mode (renders a `Mock` or `Live` badge with corresponding amber/emerald neon indicator border accents).
-    *   Cumulative cost / average latency (rendered with small card details).
+    *   Cumulative run cost and average latency (rendered with detailed styled metrics cards). Shows cost warning highlight if any single case spend > $0.15 or total run > $1.00.
+*   **Interactive Visual Analytics**:
+    *   **Donut Chart**: Rendered using a dual-stroke circular progress track for visual proportion of Passed vs Failed runs.
+    *   **Judge Rubric Averages Chart**: Bar chart representing averages across the 6 LLM judge scorecards. Uses mapped `<rect>` values, responsive spacing, and score-based gradient coloring.
+    *   **Latency vs. Cost Matrix**: Plots latency (X-axis, mapped 0 to max latency) against API cost (Y-axis, mapped 0 to max cost). Scenarios are circles on the grid, colored by status (emerald for passed, rose for failed), triggering case accordion expansion upon click.
+*   **Developer Space Entry Links**:
+    *   Modify [`global-header.tsx`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/web/src/components/global-header.tsx) to render a dropdown or inline action links: `Dashboard`, `Telemetry`, and `Evaluations` when running in a local environment.
 *   **Case Interactive Accordion**:
     *   Lists all cases, sorted by status (FAILED first).
     *   Expanding a case renders the step-by-step chat history.
     *   Renders a grid mapping **Expected vs. Actual extracted components**.
-*   Renders the **Judge Scorecard** showing Zero-Jargon, Hierarchy Integrity, Tone, and Grounding scores as colored badge indicators.
+    *   Renders the **Judge Scorecard** showing Zero-Jargon, Hierarchy Integrity, Tone, and Grounding scores as colored badge indicators.
+
+---
+
+### 5. Prompt Caching Design
+
+*   **Intake Node Caching (`apps/api/app/core/orchestrator.py`)**:
+    *   For the four `claude-haiku-4-5-20251001` calls in `_node_route_intent` (`confirmation_gate`, `extractor`, `generate_clarification_question`, `generate_playback_summary`), the `messages` parameter will be restructured:
+        ```python
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt_content,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+            }
+        ]
+        ```
+    *   This forces Claude 3.5 Haiku to cache the structured intake templates and turn histories once the context length exceeds the 2048-token caching threshold.
+*   **Report Synthesis Caching (`apps/api/app/core/orchestrator.py`)**:
+    *   Modify the `_node_synthesize_report` Claude call to pass `system` as a list of dicts with caching control:
+        ```python
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+        ```
+    *   This caches the full 1500+ token operational report writing guidelines.
+*   **Telemetry Integration (`apps/api/app/telemetry/llm.py`)**:
+    *   The `_estimate_cost` function will capture `cache_read_input_tokens` and `cache_creation_input_tokens` and calculate pricing using Anthropic's discounted cached token rates:
+        - Haiku base input: $0.25/M, cache read: $0.03/M, cache write: $0.30/M.
+        - Sonnet base input: $3.00/M, cache read: $0.30/M, cache write: $3.75/M.
+
+---
+
+### 6. Developer Workspace Governance & Rule Discovery Design
+
+*   **File Renaming**:
+    *   Rename `AGENTS.MD` to lowercase `agents.md` in the workspace root.
+*   **Workspace Rule Creation**:
+    *   Create file [bootstrap.md](file:///c:/Users/nimel.thomas/Desktop/BuildSense/.agents/rules/bootstrap.md):
+        ```markdown
+        # ALWAYS READ agents.md FIRST
+        trigger: always_on
+
+        You must always start every new session context by calling `view_file` on `agents.md` at the repository root before making any code modifications or proposing implementation plans.
+        ```
 
 ---
 
