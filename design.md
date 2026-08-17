@@ -1,127 +1,139 @@
-# System Design: Dynamic Discovery and Evaluation Patches
+# System Design: Repository-Level Workflow Enforcement
 
 ## 1. Architecture & Data Flow
 
-The backend orchestrator utilizes LangGraph `StateGraph` for multi-agent routing. The flow is structured around the following sequence:
+Everything runs locally, at commit time, before the existing (slow, ~10 min) `pytest apps/api/tests/` step — so a rejection fails fast instead of after a long test run:
 
 ```text
-User Input -> [sanitize_input] -> [context_architect] -> [route_intent] -> [await_human] or [synthesize_report]
+git commit
+  -> .githooks/pre-commit
+       1. python scripts/check_phase_gate.py   (fast: git plumbing only, <1s)
+            - reject on mixed doc+source staging (Scenario B)
+            - reject on missing/stale spec+design checkpoint (Scenario A)
+            - flag on lowered eval threshold without ledger entry (Scenario C)
+       2. python scripts/sync_agent_rules.py --check   (fast: file hash compare)
+            - reject if AGENTS.md changed but CLAUDE.md/.cursorrules weren't regenerated
+       3. pytest apps/api/tests/ -q   (existing, slow, unchanged)
+            - existing DEFECT_LEDGER.md-staged bypass on failure, unchanged
 ```
 
-To support Iterative Discovery, dynamic intake (Blank Canvas), strict boundaries, and evals patches, we will update three key nodes:
-1. `context_architect`: Analyzes the user inputs, classifies the strategy (including "Seed & Story"), determines if friction is present, and computes the dynamic intake plan.
-2. `route_intent`: Executes the stateful intake step. Performs extraction of workflow components, determines the E2E confidence score, handles user playback/corrections, and builds the next question using prompt strategies.
-3. `synthesize_report`: Generates the final analysis. If the discovery loop ended with low confidence, it executes the Ambiguity Fallback.
+Two new standalone scripts live at repo root under `scripts/`, independent of the `apps/api` FastAPI codebase (this is repo governance tooling, not application logic, and must not depend on `apps/api`'s virtualenv/config to run):
+
+- `scripts/check_phase_gate.py` — Requirements 2.1, 2.2, 2.4.
+- `scripts/sync_agent_rules.py` — Requirement 2.3 (alongside the one-time `agents.md` -> `AGENTS.md` rename, which does most of 2.3's work on its own).
+
+Both are pure-stdlib Python (subprocess calls to `git`), no new dependencies.
 
 ---
 
 ## 2. Component Design & Changes
 
-### 2.1 Iterative Discovery Routing Logic
-- **State Fields**: We will track `clarification_turns` and `playback_confirmed` in the Pydantic `SessionState`.
-- **MAX_CLARIFICATION_TURNS**: Define a global constant `MAX_CLARIFICATION_TURNS = 3` in `orchestrator.py`.
-- **Routing Decision**:
-  - In `_node_route_intent`, if `playback_confirmed` is `False`:
-    - Calculate `e2e_confidence_score` and update `iterative_discovery` metadata.
-    - If `e2e_confidence_score < 0.85` and `clarification_turns < 3`:
-      - Increment `clarification_turns` by 1.
-      - Set status to `SessionStatus.AWAITING_CLARIFICATION`.
-      - Generate the next discovery question based on the selected strategy.
-      - Transition to `await_human` (wait for next user response).
-    - If `clarification_turns >= 3` or `e2e_confidence_score >= 0.85` (which prompts the playback summary, leading to `playback_confirmed = True` on confirmation):
-      - If `clarification_turns >= 3` and confidence remains low, bypass further confirmation and route directly to `synthesize_report` with `ambiguity_fallback = True`.
-      - If `playback_confirmed` is `True` (user accepted playback or it is bypassed), set status to `SessionStatus.SYNTHESIZING` and route to `synthesize_report`.
+### 2.1 `scripts/check_phase_gate.py`
 
-### 2.2 Dynamic Intake ("Blank Canvas" Fallback)
-- **Friction Detection**: In `context_architect`, check the value of `components.get("friction")`. If the value is `None`, empty, or matches sentinels, classify the session as a **Blank Canvas** case.
-- **Strategy Bifurcation**:
-  - **Path A (Friction Provided)**: Use standard discovery. On turn 0, strategy = `handshake`. On subsequent turns, strategy = `neutral_gap` or `multiple_choice_anchor`.
-  - **Path B (Blank Canvas)**: If `friction` is null, set `next_question_strategy = "seed_and_story"`.
-- **Prompt Execution (Seed & Story)**:
-  - When the strategy is `seed_and_story`, the model will be instructed to generate a conversational prompt containing:
-    - **The Seed**: List 2-3 specific, relatable, operational friction points typical for that industry vertical (e.g., tracking supplier invoices, managing shift swaps, or table booking chaos for restaurants).
-    - **The Story**: Ask the user to describe the first two hours of their day ("walk me through the first two hours of your day. From the moment you unlock the doors, what is the very first fire you usually have to put out?").
-  - Constraint: Ensure the text returned is entirely conversational (no markdown buttons, chips, or interactive choices).
+**Inputs:** current git index/HEAD state via `git` subprocess calls. No arguments needed for normal hook use; a `--staged-files` override exists for the test harness (5.1) to inject a synthetic file list without needing a real staged commit.
 
-### 2.3 Discovery vs. Confirmation Boundary
-- **Boundary Enforcement**:
-  - **Discovery Mode (`e2e_confidence_score < 0.85`)**:
-    - The `CONSULTANT_INTAKE_PROMPT` instructs the LLM that it is in Discovery Mode.
-    - The LLM is strictly forbidden from summarizing the workflow or ending with closed confirmation queries (e.g., "Is that right?", "Is this correct?").
-    - The LLM must end with a **Neutral Gap** question: an open-ended "How" or "What" question anchored on a known fact.
-  - **Confirmation Mode (`e2e_confidence_score >= 0.85`)**:
-    - The orchestrator triggers the playback node (`CONSULTANT_PLAYBACK_PROMPT`), which summarizes the accumulated workflow details and explicitly asks the user for confirmation or correction.
+**File classification:**
+```python
+SOURCE_PATTERNS = [r"^apps/api/.*\.py$", r"^apps/web/.*\.(ts|tsx)$"]
+DOC_CHECKPOINT_FILES = {"spec.md", "design.md"}
+```
 
-### 2.4 The Fourth Wall Rule (No Metadata Leakage)
-- Update `CONSULTANT_INTAKE_PROMPT`, `CONSULTANT_PLAYBACK_PROMPT`, and the synthesizer prompts to include strict instructions:
-  - "You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output."
-  - "Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Market Pillar', or 'Friction' (case-insensitive) in your user-facing output under any circumstances."
-  - "Translate all internal status rules, completeness variables, or structural components into natural, friendly English."
+**Step A — Mixed staging check (Scenario B):**
+- Get staged files: `git diff --cached --name-only --diff-filter=ACM`.
+- If the staged set intersects both `SOURCE_PATTERNS` and `DOC_CHECKPOINT_FILES`: exit 1 with:
+  ```
+  PHASE GATE: This commit stages both a doc checkpoint (spec.md/design.md)
+  and source/test files. These must be separate commits.
+    Doc files staged:    spec.md
+    Source files staged: apps/api/app/core/orchestrator.py
+  Unstage one group (git restore --staged <file>) and commit them separately.
+  ```
 
-### 2.5 The Ambiguity Fallback
-- In `_node_synthesize_report`, check if `iterative_discovery.get("ambiguity_fallback")` is `True` (which is set when turns hit 3 with confidence `< 0.85`).
-- If `True`, the synthesis engine changes its output style:
-  - **Unverified Assumptions**: Prepend an explicit markdown section:
-    ```markdown
-    ### Unverified Assumptions
-    [Conversational paragraph detailing what facts remain unconfirmed and what the analysis is assuming based on the missing discovery details.]
-    ```
-  - **No Hallucination**: Do not assume specific software names, tools, databases, or roles.
-  - **Process-First Principles**: Recommend zero-cost process changes (e.g., standardizing communication channels, setting manual inbox rules) rather than paid software or custom automations.
+**Step B — Checkpoint recency check (Scenario A):**
+- Only runs if the staged set contains a source/test file (and Step A already passed, so no doc-checkpoint file is mixed in).
+- Get full commit history oldest-first: `git log --format=%H --reverse` -> list `history`.
+- `last_code_commit` = last entry in `git log --format=%H -- <SOURCE_PATTERNS as pathspecs>` (most recent historical commit touching a source/test file), or `None`.
+- `spec_commit` = most recent commit whose message matches `^docs: finalize specification` (via `git log --grep` with `--format=%H`, first result), or `None`.
+- `design_commit` = same for `^docs: finalize system design`.
+- Reject with a specific, named reason if:
+  - `spec_commit` is `None` -> `"missing spec.md checkpoint commit ('docs: finalize specification')"`.
+  - `design_commit` is `None` -> `"missing design.md checkpoint commit ('docs: finalize system design')"`.
+  - `last_code_commit` is not `None` and `history.index(spec_commit) < history.index(last_code_commit)` -> `"spec.md checkpoint is older than the last code change; redo Phase 1 for this unit of work"`.
+  - Same check for `design_commit` vs `last_code_commit`.
+- Using list position (topological order from `git log --reverse`) instead of commit timestamps avoids any reliance on potentially-unreliable commit dates.
 
-### 2.6 Synthesis Constraints
-- **Friction Overload Constraint**:
-  - The `system_prompt` in `_node_synthesize_report` will be updated to instruct the LLM:
-    - Limit deduced friction points to the **Top 2 or 3** most critical operational bleed points.
-    - Exhaustive 6-pillar matrices of hypothetical frictions are strictly forbidden.
-- **Iceberg Delivery (Next Horizons)**:
-  - The report must solve the immediate problem first.
-  - Add a **Next Horizons** section at the end of the report body, highlighting exactly one adjacent business pillar or improvement area intentionally left out.
-  - Example: "Next Horizons: Once the dedicated email inbox is stable, explore automated e-signature templates."
+**Step C — Eval-threshold regression guard (Scenario C, best-effort):**
+- For each staged file matching `apps/api/**/tests/**` or `apps/api/**/evals/**` ending in `.py`:
+  - Old content: `git show HEAD:<path>` (empty string if file is new).
+  - New content: `git show :<path>` (the staged/index blob).
+  - Extract all `>= <float>` and `> <float>` literals appearing within 40 characters of the word `score` or `threshold` (case-insensitive) in each version, via one regex pass.
+  - If any such literal's value is present in the old version but the **minimum** value found in the new version is lower than the **minimum** found in the old version: flag (not hard-reject — see below) unless `docs/DEFECT_LEDGER.md` is also in the staged set.
+- This is intentionally a blunt heuristic (spec 2.4 accepts false negatives). It **warns and requires confirmation** rather than hard-blocking, because a legitimate reason to lower a threshold does exist (e.g. recalibrating an overly strict bar) — the point is forcing a ledger entry to exist, not forbidding the change outright. Implementation: print the warning and the specific file/line, then check for `docs/DEFECT_LEDGER.md` in staged files; if absent, exit 1; if present, exit 0 (the ledger entry stands as the human-reviewable justification).
+
+**Exit codes:** `0` = pass, `1` = reject (message on stderr, always human-readable, names the specific missing/violated thing — never a raw traceback).
+
+### 2.2 Filename fix: `agents.md` -> `AGENTS.md`
+
+Codex CLI, Google Antigravity, and GitHub Copilot's coding agent all natively auto-load a repo-root file named `AGENTS.md` (uppercase, plural) — no configuration needed on their end (Copilot added this in Aug 2025; it also reads `CLAUDE.md` directly as a bonus). This repo's file is currently tracked in git as lowercase `agents.md` (confirmed via `git ls-files`). On Windows this happens to still resolve because the filesystem is case-insensitive, but `git`'s index is case-sensitive by convention: a clone on a case-sensitive filesystem (Linux CI, WSL, Docker, some macOS/APFS configs) would simply not have a file named `AGENTS.md` and these tools would silently fall back to no project instructions at all. This is a real, not hypothetical, gap.
+
+**Fix:** `git mv agents.md AGENTS.md`, committed as its own docs-only commit (not bundled with the phase-gate script commit). Every reference to `agents.md` in this design, in `scripts/`, and in the hook must use the new casing. Because source filesystems here are case-insensitive, a plain `git mv` between two names differing only in case can silently no-op; use the standard two-step workaround (`git mv agents.md agents.md.tmp && git mv agents.md.tmp AGENTS.md`) and verify with `git ls-files` afterward.
+
+This one rename gives Codex, Antigravity, and Copilot full native support with **zero ongoing tooling** — no generated copy, no staleness check, nothing that can drift.
+
+### 2.3 `scripts/sync_agent_rules.py` (Claude Code and Cursor only)
+
+Codex and Antigravity are fully solved by 2.2 alone. Two more tools remain, both for reasons this design should not just assume away:
+- **Claude Code** reads `CLAUDE.md` as its primary convention. Public sources describe emerging cross-tool `AGENTS.md` support in the broader ecosystem, but this session has no confirmed evidence Claude Code auto-loads `AGENTS.md` in this environment (this session's own system context lists no such auto-load), so relying on that would be unverified.
+- **Cursor** traditionally reads `.cursorrules`; adoption of `AGENTS.md` as a drop-in replacement is reported but not something this design should take on faith either.
+
+For these two, keep a small generated-mirror-with-staleness-check as defense-in-depth — cheap insurance if the native-support assumption above turns out wrong for a given tool version:
+- `AGENTS.md` (post-rename) is the single source of truth.
+- `CLAUDE.md` and `.cursorrules` are generated files: a short banner + the full verbatim content of `AGENTS.md`, plus a trailing `<!-- AGENTS.md sha256: <hash> -->` marker.
+- `--write` mode: regenerates both files from the current `AGENTS.md`.
+- `--check` mode (used by the hook): recomputes `AGENTS.md`'s hash and compares it to the marker stored in each generated file; exits 1 if either is missing or stale, with:
+  ```
+  PHASE GATE: AGENTS.md changed but CLAUDE.md/.cursorrules were not
+  regenerated. Run: python scripts/sync_agent_rules.py --write
+  ```
+- Rationale for copy-with-hash instead of a real symlink: Windows symlinks need developer mode or admin rights and inconsistent `core.symlinks` git behavior across contributors' machines; a generated-file-plus-staleness-check is portable and testable everywhere, at the cost of needing the sync step.
+
+### 2.4 `.githooks/pre-commit` changes
+
+Two new lines inserted before the existing `pytest apps/api/tests/ -q` call:
+```sh
+python scripts/check_phase_gate.py || exit 1
+python scripts/sync_agent_rules.py --check || exit 1
+```
+Everything after this point in the existing hook (pytest run, DEFECT_LEDGER.md bypass-on-failure) is unchanged.
+
+### 2.5 Initial `CLAUDE.md` / `.cursorrules`
+
+Generated once via `scripts/sync_agent_rules.py --write` as part of this implementation, then committed normally (they are themselves plain docs files, not source/test, so they don't trip the phase gate).
 
 ---
 
-## 3. Prompt Mapping & Templates
+## 3. Explicitly Deferred (per spec.md Section 5.3 / 2.5)
 
-### 3.1 `CONSULTANT_INTAKE_PROMPT` Updates
-```python
-CONSULTANT_INTAKE_PROMPT = """You are BuildSense's intake consultant: a warm, plain-spoken operations consultant for local business owners.
-Think "McKinsey for the common man": careful, practical, empathetic, and allergic to jargon.
-
-Your job is to ask the next natural question in a workflow discovery conversation.
-
-THE FOURTH WALL RULE (NO METADATA LEAKAGE):
-- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
-- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Market Pillar", or "Friction" (case-insensitive) under any circumstances.
-- Translate all internal state logic, completeness rules, or internal structures into natural, conversational English.
-
-DISCOVERY VS. CONFIRMATION BOUNDARY:
-- If strategy is "seed_and_story", you are in Discovery Mode. List 2-3 specific, relatable pain points typical for this industry (The Seed). Then immediately ask the user to describe the first two hours of their day (The Story). Output MUST be entirely conversational plain text.
-- If strategy is "neutral_gap", you are in Discovery Mode. You are strictly forbidden from ending your turn with a closed confirmation query like "Is that right?", "Is this correct?", or any summary requesting final verification. You MUST end the turn using the Neutral Gap rule: anchor on a known fact and ask one open-ended "How" or "What" question.
-- If strategy is "multiple_choice_anchor", you are in Discovery Mode. Acknowledge the vague answer and offer 2-3 relatable options in one question to lower cognitive load.
-- If strategy is "handshake", validate the pain, promise to help with the immediate issue, and ask permission to look at the broader workflow.
-- Do not use placeholder words like UNKNOWN, null, None, or Not specified.
-- Do not invent, assume, or hallucinate systems, software, people, steps, locations, or workflows.
-
-[Grounding Context & Message History Variables...]
-"""
-```
+- CI-backed hard gate (spec 2.5): not built in this pass. Needs a decision on whether this repo has/wants a GitHub remote + branch protection before it's worth the design effort — raised as an open question rather than assumed.
+- 4-file cap / micro-commit enforcement: no git-observable signal distinguishes one atomic step from several; remains agent-behavior-only in `AGENTS.md`.
+- Context Flush Checkpoint: concerns the LLM session, not git state; unobservable by a hook.
+- Full native-`AGENTS.md`-support verification for Claude Code/Cursor: if a future session confirms both tools reliably auto-load `AGENTS.md` directly, `scripts/sync_agent_rules.py` and its two generated files can be deleted entirely, leaving only the 2.2 rename. Not assumed now; revisit later.
 
 ---
 
 ## 4. Verification & Testing Design
 
-### 4.1 Unit & Mock Tests (`apps/api/tests/test_interview.py` & `test_orchestrator.py`)
-1. **Routing tests**: Mock the LLM responses to simulate:
-   - Low confidence -> loop back to intake up to turn 3.
-   - High confidence (>=0.85) -> confirmation summary prompt.
-   - Turn 3 low confidence -> direct route to synthesis.
-2. **Blank Canvas test**: Mock intake with `friction == None` and assert that the prompt strategy maps to `seed_and_story`.
-3. **No Metadata Leakage / Fourth Wall check**: Run assertions on generated assistant messages to ensure forbidden strings are not present.
+### 4.1 `scripts/tests/test_check_phase_gate.py`
+- Spins up a disposable scratch git repo per test via `tempfile.TemporaryDirectory()` + `git init`, so tests never touch the real BuildSense repo.
+- Scenario A: commit a source file with no prior checkpoint commits -> assert exit code 1, assert stderr names the missing checkpoint.
+- Scenario B: stage an `AGENTS.md`-analog doc file + a source file together -> assert exit code 1, assert stderr names both groups.
+- Scenario C: stage a test file whose diff lowers a `>= 0.90` literal to `>= 0.20` without staging a ledger file -> assert exit 1; re-run with the ledger file also staged -> assert exit 0.
+- Positive case: full spec+design checkpoint history present and newer than the last code commit -> assert exit 0.
+- Run via `pytest scripts/tests/ -q` — deliberately **not** wired into `apps/api/pyproject.toml`'s config, since this tooling is independent of the FastAPI app.
 
-### 4.2 LLM-as-a-judge Evals
-- Execute LLM grading suite using:
-  ```powershell
-  pytest evals/ -v --run-evals
-  ```
-- Assert that judge rubrics pass with >=90% compliance on Zero-Jargon and Hallucination metrics.
+### 4.2 `scripts/tests/test_sync_agent_rules.py`
+- `--write` then `--check` on a fresh scratch dir -> exit 0.
+- Mutate `AGENTS.md` without re-running `--write` -> `--check` exits 1.
+
+### 4.3 Manual Dry Run (spec 5.2)
+- On a disposable branch off current `master`, reproduce Scenario A and Scenario B against this real repo and confirm rejection, before this design is considered verified.
