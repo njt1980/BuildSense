@@ -479,9 +479,17 @@ async def test_clarification_does_not_ask_about_bottlenecks() -> None:
             messages = kwargs.get("messages", [])
             prompt = ""
             if messages:
-                prompt = messages[0].get("content", "")
+                content = messages[0].get("content", "")
+                if isinstance(content, list):
+                    prompt = "".join(b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text")
+                else:
+                    prompt = content
             else:
-                prompt = kwargs.get("system", "")
+                system_arg = kwargs.get("system", "")
+                if isinstance(system_arg, list):
+                    prompt = "".join(b["text"] for b in system_arg if isinstance(b, dict) and b.get("type") == "text")
+                else:
+                    prompt = system_arg
                 
             if "McKinsey for the common man" in prompt:
                 called = True
@@ -533,10 +541,21 @@ async def test_clarification_prompt_receives_one_high_priority_missing_item() ->
 
         updated_state = await Orchestrator().run_pipeline(state, user_key="mock-key")
 
-    prompts = [
-        call[1].get("messages", [{}])[0].get("content", "")
-        for call in mock_client.messages.create.call_args_list
-    ]
+    prompts = []
+    for call in mock_client.messages.create.call_args_list:
+        messages = call[1].get("messages", [])
+        if messages:
+            content = messages[0].get("content", "")
+            if isinstance(content, list):
+                prompts.append("".join(b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text"))
+            else:
+                prompts.append(content)
+        else:
+            system_arg = call[1].get("system", "")
+            if isinstance(system_arg, list):
+                prompts.append("".join(b["text"] for b in system_arg if isinstance(b, dict) and b.get("type") == "text"))
+            else:
+                prompts.append(system_arg)
     intake_prompt = next(prompt for prompt in prompts if "McKinsey for the common man" in prompt)
 
     assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
@@ -593,7 +612,11 @@ async def test_agentic_bottleneck_deduction_in_synthesis() -> None:
         called = False
         for call in mock_messages_create.call_args_list:
             kwargs = call[1]
-            system_prompt = kwargs.get("system", "")
+            system_arg = kwargs.get("system", "")
+            if isinstance(system_arg, list):
+                system_prompt = "".join(b["text"] for b in system_arg if isinstance(b, dict) and b.get("type") == "text")
+            else:
+                system_prompt = system_arg
             if system_prompt:
                 called = True
                 assert "Agentic Bottleneck Deduction Instruction" in system_prompt

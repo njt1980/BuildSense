@@ -457,7 +457,11 @@ async def test_orchestrator_system_prompt_weaves_constraints() -> None:
         
         assert mock_client.messages.create.called
         called_kwargs = mock_client.messages.create.call_args.kwargs
-        system_prompt = called_kwargs.get("system", "")
+        system_arg = called_kwargs.get("system", "")
+        if isinstance(system_arg, list):
+            system_prompt = "".join(b["text"] for b in system_arg if isinstance(b, dict) and b.get("type") == "text")
+        else:
+            system_prompt = system_arg
         
         assert "Strict Data Privacy" in system_prompt
         assert "No Budget" in system_prompt
