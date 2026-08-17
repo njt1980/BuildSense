@@ -43,6 +43,7 @@ interface RunSummary {
   is_eval?: boolean;
   eval_suite?: string;
   eval_case_id?: string;
+  total_cost_usd?: number;
 }
 
 const apiBaseUrl = getApiBaseUrl();
@@ -59,6 +60,7 @@ export default function LocalTelemetryPage(): React.JSX.Element {
   const [runFilter, setRunFilter] = React.useState<"all" | "manual" | "eval">("all");
   const [errorText, setErrorText] = React.useState<string>("");
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
+  const [showRawJson, setShowRawJson] = React.useState<Record<string, boolean>>({});
 
   const visibleRuns = React.useMemo(() => {
     if (runFilter === "eval") return runs.filter((run) => run.is_eval);
@@ -264,15 +266,27 @@ export default function LocalTelemetryPage(): React.JSX.Element {
                     >
                       <div className="flex items-center justify-between gap-3">
                         <span className="truncate font-mono text-xs text-slate-200">{run.run_id}</span>
-                        <span className="rounded border border-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-400">
-                          {run.status}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          {run.total_cost_usd !== undefined && run.total_cost_usd > 0 && (
+                            <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded px-1 py-0.5 text-[9px] font-mono font-bold">
+                              ${run.total_cost_usd.toFixed(4)}
+                            </span>
+                          )}
+                          <span className={`rounded border px-1.5 py-0.5 text-[9px] uppercase font-bold ${
+                            run.status === "completed" ? "border-emerald-900/50 text-emerald-400 bg-emerald-950/25" :
+                            run.status === "failed" ? "border-rose-900/50 text-rose-400 bg-rose-950/25" :
+                            run.status === "paused" ? "border-amber-900/50 text-amber-400 bg-amber-950/25" :
+                            "border-slate-800 text-slate-400 bg-slate-900/20"
+                          }`}>
+                            {run.status}
+                          </span>
+                        </div>
                       </div>
                       <p className="mt-2 truncate font-mono text-[11px] text-slate-500">{run.session_id || "no session"}</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                      <div className="mt-2 flex flex-wrap items-center justify-between text-[11px] text-slate-500">
                         <span>{run.event_count} events</span>
-                        <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase ${
-                          run.is_eval ? "border-sky-800 text-sky-300" : "border-slate-800 text-slate-400"
+                        <span className={`rounded border px-1.5 py-0.5 text-[10px] uppercase font-semibold ${
+                          run.is_eval ? "border-sky-800/40 text-sky-400 bg-sky-950/15" : "border-slate-800 text-slate-400"
                         }`}>
                           {run.is_eval ? "Eval" : "Manual"}
                         </span>
@@ -329,10 +343,135 @@ export default function LocalTelemetryPage(): React.JSX.Element {
                         </div>
                       )}
 
+                      {event.event === "llm_call_completed" && event.attributes && (
+                        <div className="mt-3 bg-[#03060d]/80 border border-slate-900 rounded-lg p-3 space-y-3">
+                          <div className="flex flex-wrap gap-2 text-[10px] font-bold">
+                            {event.attributes.cost_usd !== undefined && (
+                              <span className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded px-2 py-0.5 font-mono">
+                                💰 Cost: ${Number(event.attributes.cost_usd).toFixed(5)}
+                              </span>
+                            )}
+                            {event.attributes.duration_ms !== undefined && (
+                              <span className="bg-sky-500/10 border border-sky-500/20 text-sky-400 rounded px-2 py-0.5 font-mono">
+                                🕒 Duration: {(Number(event.attributes.duration_ms) / 1000).toFixed(2)}s
+                              </span>
+                            )}
+                            {event.attributes.llm_model && (
+                              <span className="bg-slate-900 border border-slate-850 text-slate-350 rounded px-2 py-0.5 font-mono">
+                                🤖 {String(event.attributes.llm_model)} ({String(event.attributes.llm_purpose || "LLM")})
+                              </span>
+                            )}
+                          </div>
+                          
+                          {Number(event.attributes.input_tokens || 0) > 0 && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between text-[9px] font-extrabold text-slate-500 uppercase tracking-wider">
+                                <span>Cache & Token breakdown</span>
+                                <span className="font-mono">Total: {Number(event.attributes.input_tokens || 0) + Number(event.attributes.output_tokens || 0)} tokens</span>
+                              </div>
+                              
+                              {/* Caching Horizontal Bar Stack */}
+                              {(() => {
+                                const inT = Number(event.attributes.input_tokens || 0);
+                                const outT = Number(event.attributes.output_tokens || 0);
+                                const cRead = Number(event.attributes.cache_read_tokens || 0);
+                                const cCreate = Number(event.attributes.cache_creation_tokens || 0);
+                                const baseIn = Math.max(0, inT - cRead - cCreate);
+                                const total = inT + outT;
+                                
+                                return (
+                                  <>
+                                    <div className="h-3.5 bg-slate-950 rounded border border-slate-900 overflow-hidden flex text-[8px] font-bold font-mono">
+                                      {cRead > 0 && (
+                                        <div 
+                                          className="bg-cyan-500 text-cyan-950 flex items-center justify-center transition-all h-full"
+                                          style={{ width: `${(cRead / total) * 100}%` }}
+                                          title={`Cached Read: ${cRead} tokens`}
+                                        >
+                                          {((cRead / total) * 100) > 12 && "Read"}
+                                        </div>
+                                      )}
+                                      {cCreate > 0 && (
+                                        <div 
+                                          className="bg-indigo-500 text-indigo-100 flex items-center justify-center transition-all h-full"
+                                          style={{ width: `${(cCreate / total) * 100}%` }}
+                                          title={`Cache Write: ${cCreate} tokens`}
+                                        >
+                                          {((cCreate / total) * 100) > 12 && "Write"}
+                                        </div>
+                                      )}
+                                      {baseIn > 0 && (
+                                        <div 
+                                          className="bg-slate-700 text-slate-205 flex items-center justify-center transition-all h-full"
+                                          style={{ width: `${(baseIn / total) * 100}%` }}
+                                          title={`Base Input: ${baseIn} tokens`}
+                                        >
+                                          {((baseIn / total) * 100) > 12 && "Input"}
+                                        </div>
+                                      )}
+                                      {outT > 0 && (
+                                        <div 
+                                          className="bg-emerald-500 text-emerald-950 flex items-center justify-center transition-all h-full"
+                                          style={{ width: `${(outT / total) * 100}%` }}
+                                          title={`Output: ${outT} tokens`}
+                                        >
+                                          {((outT / total) * 100) > 12 && "Output"}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[9px] text-slate-500 font-mono pt-1">
+                                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-sm bg-cyan-500 inline-block"></span> Cache Read: {cRead}</span>
+                                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-sm bg-indigo-500 inline-block"></span> Cache Write: {cCreate}</span>
+                                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-sm bg-slate-700 inline-block"></span> Base Input: {baseIn}</span>
+                                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-sm bg-emerald-500 inline-block"></span> Output: {outT}</span>
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       {event.attributes && Object.keys(event.attributes).length > 0 && (
-                        <pre className="mt-3 max-h-48 overflow-auto rounded border border-slate-900 bg-[#03060d] p-3 text-[11px] leading-relaxed text-slate-300">
-                          {JSON.stringify(event.attributes, null, 2)}
-                        </pre>
+                        <div className="mt-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Properties</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const key = `${event.timestamp}-${event.event}-${index}`;
+                                setShowRawJson(prev => ({ ...prev, [key]: !prev[key] }));
+                              }}
+                              className="text-[9px] font-bold uppercase text-amber-500 hover:text-amber-400 bg-slate-900 border border-slate-800 rounded px-2 py-1 transition-all"
+                            >
+                              {showRawJson[`${event.timestamp}-${event.event}-${index}`] ? "Hide Raw" : "View Raw JSON"}
+                            </button>
+                          </div>
+
+                          {!showRawJson[`${event.timestamp}-${event.event}-${index}`] ? (
+                            <div className="border border-slate-900/60 rounded-md overflow-hidden bg-slate-950/20 text-[11px]">
+                              <table className="w-full text-left border-collapse">
+                                <tbody>
+                                  {Object.entries(event.attributes)
+                                    .filter(([k]) => !["cost_usd", "duration_ms", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "llm_model", "llm_purpose"].includes(k))
+                                    .map(([k, val]) => (
+                                      <tr key={k} className="border-b border-slate-900/40 last:border-0 hover:bg-slate-900/10">
+                                        <td className="px-3 py-2 font-semibold text-slate-400 capitalize w-1/3 truncate" title={k}>{k.replace(/_/g, " ")}</td>
+                                        <td className="px-3 py-2 font-mono text-slate-300 break-all select-all whitespace-pre-wrap">
+                                          {val !== null && typeof val === "object" ? JSON.stringify(val, null, 2) : String(val)}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <pre className="max-h-60 overflow-auto rounded border border-slate-900 bg-[#03060d] p-3 text-[11px] leading-relaxed text-slate-350 font-mono">
+                              {JSON.stringify(event.attributes, null, 2)}
+                            </pre>
+                          )}
+                        </div>
                       )}
                     </article>
                   ))}

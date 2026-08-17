@@ -85,6 +85,7 @@ class LocalTelemetryStore:
                     "is_eval": event.get("is_eval", False),
                     "eval_suite": event.get("eval_suite"),
                     "eval_case_id": event.get("eval_case_id"),
+                    "total_cost_usd": 0.0,
                 },
             )
             summary["last_event_at"] = event.get("timestamp")
@@ -92,6 +93,12 @@ class LocalTelemetryStore:
             summary["is_eval"] = bool(summary.get("is_eval") or event.get("is_eval", False))
             summary["eval_suite"] = summary.get("eval_suite") or event.get("eval_suite")
             summary["eval_case_id"] = summary.get("eval_case_id") or event.get("eval_case_id")
+            
+            attrs = event.get("attributes") or {}
+            cost_val = attrs.get("cost_usd", 0.0)
+            if cost_val:
+                summary["total_cost_usd"] += float(cost_val)
+
             if event.get("event") in {"orchestration_completed", "orchestration_failed", "orchestration_paused"}:
                 summary["status"] = str(event.get("event")).replace("orchestration_", "")
 
