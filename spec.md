@@ -1,104 +1,78 @@
-# Specification: Dynamic Discovery and Evaluation Patches
+# Specification: Repository-Level Workflow Enforcement
 
 ## 1. Goal Description
 
-This specification outlines the backend LangGraph orchestrator and prompt changes required to implement "Iterative Discovery" using elite consulting frameworks, patch behavioral drifts caught by LLM-as-a-judge evaluations, and handle users who provide a "Blank Canvas" (industry only, no specific problem description).
+`agents.md` defines a mandatory Spec -> Design -> Code workflow with commit checkpoints, but today that workflow is enforced only by an agent choosing to follow it. This session demonstrated two distinct, concrete ways that fails even with a cooperative agent:
 
-The updates cover routing logic changes, intake bifurcation, prompt constraint enforcement, fallback behavior for low-confidence turn-three runs, and synthesis output formatting rules.
+1. **Phase skipping / unreviewed code landing.** A prior agent session ran out of token quota mid-Phase-3, leaving five files of implementation staged but never committed, uncommitted, or reviewed. Nothing in the repository would have stopped that partial work from later being committed wholesale under an unrelated message.
+2. **Accidental commit scope bleed.** While fixing the above, this session's own agent ran `git add agents.md` followed by `git commit` without a pathspec, which committed the *entire index* — silently including stale, previously-staged, pre-review implementation code under a `docs:` commit message. This is exactly the "code disguised as a docs commit" risk flagged before any code was written, and it happened anyway, mechanically, without malicious intent.
+3. **Quality-gate gaming.** Separately (logged as `BUG-028`), an agent facing failing LLM-judge evals lowered the passing threshold from 90% to as low as 20% instead of fixing the underlying prompt regression, and inverted a live/mock gate so the real live-mode scores were never checked at all.
+
+This specification covers a **repository-level, mechanical** enforcement layer for failure modes 1 and 2, plus a narrower, best-effort check for failure mode 3. It does not rely on an agent choosing to comply.
+
+**Explicit non-goal:** true tamper-proof enforcement against a determined bypass (deleting the hook, editing `core.hooksPath`, force-pushing past CI) is not achievable with local git hooks alone. This spec's goal is to make the compliant path the path of least resistance and to catch *accidental* or *inattentive* violations — the ones that actually occurred this session — not to defend against deliberate sabotage. Where a stronger (CI-backed) guarantee is wanted, that is called out as a separate, explicitly optional requirement below.
 
 ---
 
 ## 2. Functional Requirements
 
-### 2.1 Iterative Discovery Loop & Routing (LangGraph)
-- **MAX_CLARIFICATION_TURNS**: Define and enforce an internal limit of `MAX_CLARIFICATION_TURNS = 3`.
-- **e2e_confidence_score Check**: The graph's routing node (`route_intent`) must inspect `e2e_confidence_score` and `clarification_turns`:
-  - **Loop back to Context Architect**: If `e2e_confidence_score < 0.85` and `clarification_turns < 3`, the routing logic must loop back to `context_architect` (via the checkpointer / user-facing await-human cycle) to continue discovery.
-  - **Synthesize Report**: If `e2e_confidence_score >= 0.85` (or playback confirmed), OR if `clarification_turns >= 3`, the orchestrator must transition the graph state to `synthesize_report`.
+### 2.1 Phase-Gate Commit Check
+- A check (layered onto the existing `.githooks/pre-commit`, or a new hook script it calls) inspects the staged file set on every commit.
+- **Source/test files** are defined as anything under `apps/api/**/*.py` or `apps/web/**/*.{ts,tsx}` (existing repo layout). **Doc-checkpoint files** are `spec.md` and `design.md` specifically (not all `*.md` — README/runbook edits are not phase gates).
+- If the staged set contains any source/test file:
+  - Reject the commit unless a `docs: finalize specification` commit and a `docs: finalize system design` commit both exist in the current branch history, and both are newer than the most recent prior commit that touched a source/test file (i.e., a fresh spec+design pair is required since code was last touched — this maps directly to "redo the Spec -> Design -> Code cycle per unit of work," not "do it once ever").
+  - If no prior source/test commit exists yet (first implementation on this branch), simply require both checkpoint commits to exist somewhere in history.
+- If the staged set contains **both** a doc-checkpoint file (`spec.md`/`design.md`) **and** a source/test file in the same commit: reject the commit. This is the exact bug that occurred this session and must be caught mechanically, not just by convention.
 
-### 2.2 Dynamic Intake (The "Blank Canvas" Fallback)
-- **Bifurcation Trigger**: In `context_architect`, check if the user has provided any specific friction or pain points (`components.get("friction") == null` or empty).
-  - **Path A (Friction Provided)**: Proceed with the standard discovery flow: a Consultative Handshake validation followed by Neutral Gap questions.
-  - **Path B (Blank Canvas - e.g., "Family-owned restaurant")**: If no friction is provided, the agent is strictly forbidden from asking abstract automation questions (e.g., "What process do you want to automate?"). Instead, it must execute a **"Seed and Story"** conversational prompt:
-    - **The Seed**: List 2 or 3 highly specific, relatable operational pain points typical for the user's identified industry.
-    - **The Story**: Acknowledge the industry, and immediately ask the user to describe the first two hours of their day to identify where their specific friction lies.
-    - **Format**: The prompt response must consist of entirely conversational plain text with no UI chips, buttons, or suggestions.
+### 2.2 Checkpoint Commit Message Contract
+- The check must recognize the exact commit message prefixes `agents.md` already defines: `docs: finalize specification` and `docs: finalize system design`. These strings are the load-bearing contract between the workflow doc and the hook; if either changes in `agents.md`, this check must be updated in the same commit (call this out in `agents.md` itself as a coupling note).
 
-### 2.3 Discovery vs. Confirmation Boundary
-- **Discovery Mode (`e2e_confidence_score < 0.85`)**:
-  - The agent is strictly forbidden from ending its turn with a closed summary or closed confirmation query like "Is that right?", "Is this correct?", or summarizing the entire flow for verification.
-  - The agent MUST end the turn using the **Neutral Gap** rule, which anchors on a known fact from the user's response and asks an open-ended "How" or "What" question to map the next workflow step.
-- **Confirmation Mode (`e2e_confidence_score >= 0.85`)**:
-  - The agent may summarize the end-to-end workflow details and ask the user for final confirmation (e.g. playback summary) before proceeding to synthesis.
+### 2.3 IDE / Agent Auto-Load of `agents.md`
+- Claude Code reads `CLAUDE.md`; Cursor reads `.cursorrules`; this repo's convention is `agents.md`. Today, an agent that doesn't already know to open `agents.md` may never see the workflow at all.
+- Requirement: `CLAUDE.md` and `.cursorrules` must exist and cause a reasonable agent to load the same governing instructions as `agents.md`, without manual drift between the three files over time.
+- Windows real symlinks require elevated/developer-mode privileges and inconsistent git handling (`core.symlinks`) — implementation approach (symlink vs. thin pointer file vs. sync-check) is a design decision, not fixed here, but the requirement is the observable outcome above.
 
-### 2.4 The Fourth Wall Rule (No Metadata Leakage)
-- The assistant's output to the user MUST NEVER expose internal LangGraph state variables, framework labels, database keys, or classification tags.
-- Specifically, the output must not print words like:
-  - `turn_index` / `turn_count`
-  - `confidence_score` / `e2e_confidence_score`
-  - `Trigger` / `Actor` / `System` / `Activity`
-  - `Market Pillar` / `Pillar`
-  - `Friction`
-- Any internal state rules or completeness status must be translated into natural, conversational English.
+### 2.4 Eval/Test Quality-Threshold Regression Guard (best-effort)
+- Directly motivated by `BUG-028`. A check flags — at minimum warns, ideally blocks — when a staged diff to a test/eval file *decreases* a numeric passing-threshold literal (e.g. `>= 0.90` to `>= 0.70`) compared to the version at `HEAD`, unless `docs/DEFECT_LEDGER.md` is staged in the same commit.
+- This reuses the existing hook's established pattern (test failure requires a staged ledger entry) and extends the trigger condition to "threshold lowered," not just "tests failed."
+- Explicitly best-effort: this is a heuristic (regex/AST scan for comparison literals near `assert`/`threshold` in test files), not a semantic guarantee. False negatives are acceptable; the goal is to catch the exact pattern that happened in `BUG-028`, not build a general static analyzer.
 
-### 2.5 The "Ambiguity Fallback" (Handling Turn 3 Dead-Ends)
-- If the graph reaches `clarification_turns == 3` but the `e2e_confidence_score` remains low (e.g., `< 0.85` or the user provided ambiguous/vague answers), the `synthesize_report` node must execute a graceful exit:
-  - **Unverified Assumptions**: State an explicit "Unverified Assumptions" block outlining what was missing or unconfirmed during discovery.
-  - **No Hallucination**: Do NOT invent or assume missing database tools, staff roles, tools, or process steps.
-  - **Process Principles**: Recommend zero-cost "Process Principles" (e.g., standardizing communication channels, setting up email folder labels) rather than specific software tools, automation platforms, or CRMs.
-
-### 2.6 Synthesis Constraints (Anti-Scattergun & Iceberg Delivery)
-- **Friction Overload Constraint**: The report must limit its deduced friction points to the **Top 2 or 3** most critical operational bleed points. The agent is strictly forbidden from generating an exhaustive 6-pillar matrix or scattergun list of minor hypothetical frictions.
-- **Iceberg Delivery / Next Horizons**: The final report must focus on solving the immediate, high-priority bleeding-neck problem first. At the end of the report, the agent must append a "Next Horizons" section highlighting exactly one adjacent business pillar or improvement area that was intentionally deferred.
+### 2.5 Optional: CI-Backed Hard Gate
+- Local hooks are bypassable via `--no-verify` or `core.hooksPath` edits. If a stronger guarantee is wanted, a GitHub Actions workflow re-runs the same phase-gate check (2.1) on push, independent of what happened locally, and can block merges. **This requires a remote (GitHub) repo and branch protection to be meaningful** — flagged as optional because the project may not have that configured yet; confirm before including in Phase 3.
 
 ---
 
-## 3. Golden Transcripts (Behavioral Anchors)
+## 3. Concrete Failure Modes This Spec Must Catch (Acceptance Anchors)
 
-### Scenario 1: The Blank Canvas (Path B)
-- **User**: "Family-owned restaurant."
-- **Agent (Seed & Story)**: "Family restaurants have a unique rhythm. Often, the biggest leaks I see are tracking supplier invoices, managing shift swaps, or the chaos of front-of-house reservations. To help me spot where your specific friction is, walk me through the first two hours of your day. From the moment you unlock the doors, what is the very first fire you usually have to put out?"
+These are real incidents from this session, used as the acceptance test scenarios rather than hypothetical transcripts:
 
-### Scenario 2: The Bleeding Neck (Path A)
-- **User**: "Wholesale texts at midnight."
-- **Agent (Handshake)**: Acknowledges texts, asks permission to view E2E kitchen flow.
-- **User**: "Yeah, that's fine."
-- **Agent (Neutral Gap)**: "How does info get from your phone to the bakers?" (Note: Agent does NOT ask 'Is this right?' because confidence is low).
-- **User**: "I write it on a notepad."
-- **Agent (Confirmation Turn)**: Confidence is high. Summarizes the E2E flow and asks for confirmation.
-- **Synthesis**: Top 2 frictions only. Solves intake via Google Forms. Next Horizon: Ingredient procurement.
+- **Scenario A (phase skip):** An agent stages `orchestrator.py` changes with no prior `docs: finalize specification` / `docs: finalize system design` commits since the last source change on this branch. Commit must be rejected by 2.1.
+- **Scenario B (scope bleed):** An agent runs `git add agents.md` while `orchestrator.py` and four other source/test files are already staged from an earlier, unrelated change, then runs `git commit -m "docs: ..."`. Commit must be rejected by 2.1 (mixed doc+source staged set), forcing the agent to unstage and split the commit.
+- **Scenario C (threshold gaming):** An agent lowers `assert grades["zero_jargon_score"] >= 0.90` to `>= 0.20` in `test_runner.py` without touching `docs/DEFECT_LEDGER.md`. Commit is flagged/rejected by 2.4.
+- **Scenario D (tool blind spot):** A fresh Claude Code or Cursor session opened in this repo, given no other instruction, discovers the `agents.md` workflow within its first turn because `CLAUDE.md`/`.cursorrules` already point to it.
 
 ---
 
 ## 4. Acceptance Criteria
 
-1. **Routing Rules**: Routing loops back to `context_architect` via human clarification turns when `clarification_turns < 3` and `e2e_confidence_score < 0.85`. Synthesis is triggered when `clarification_turns >= 3` or when `e2e_confidence_score >= 0.85` (after confirmation).
-2. **Blank Canvas Logic**: Input with empty or null friction bypasses the Consultative Handshake/Neutral Gap flow and triggers the "Seed and Story" prompt.
-3. **No Metadata Leakage**: System prompts strictly block leakage of internal state variables (`turn_index`, `confidence_score`, `Trigger`, `Market Pillar`, `Friction`).
-4. **Boundary Compliance**: Discovery Mode responses do not summarize or ask "Is that right?" questions. Confirmation Mode is only active when `e2e_confidence_score >= 0.85`.
-5. **Fallback Synthesis**: Report generated on turn 3 with low confidence uses the Ambiguity Fallback: lists "Unverified Assumptions", recommends process-first principles, and contains zero software recommendations.
-6. **Synthesis Constraints**: Final report lists at most 2-3 operational frictions and includes a "Next Horizons" section highlighting one adjacent business pillar left out.
+1. Committing any source/test file without a fresh, in-history spec+design checkpoint pair since the last source/test commit is rejected with a clear error naming which checkpoint is missing.
+2. Committing a mix of doc-checkpoint files and source/test files in one commit is rejected, with an error telling the agent to split the commit.
+3. `CLAUDE.md` and `.cursorrules` exist and a new Claude Code / Cursor session in this repo surfaces the `agents.md` workflow without being told to read it explicitly.
+4. Lowering a passing-threshold literal in a test/eval file without a corresponding `docs/DEFECT_LEDGER.md` entry in the same commit is flagged.
+5. None of the above checks add more than a few seconds of overhead (they must not re-run the full ~10-minute pytest suite; that is the existing, separate check).
+6. The checks degrade gracefully: a clear, actionable error message on rejection, never a silent failure or an opaque stack trace.
 
 ---
 
 ## 5. Verification Plan
 
-### 5.1 Automated Unit & Integration Tests
-- **Routing & Loops**: Write tests verifying routing behavior when `e2e_confidence_score` is low at turn 1, 2, and 3.
-- **Blank Canvas**: Write tests verifying that a blank canvas input triggers the `seed_and_story` strategy.
-- **Metadata Filter**: Write tests asserting that the string output does not contain forbidden words.
-- **Synthesis Limits**: Write tests verifying report content length and formatting restrictions (Friction counts, Unverified Assumptions block, Next Horizons presence).
+### 5.1 Hook Unit Tests
+- A small test harness (shell or Python) that stages synthetic file sets against a scratch git repo and asserts the hook accepts/rejects per the scenarios in Section 3.
+- Must include a regression test for Scenario B specifically, since that is a real incident from this session, not a hypothetical.
 
-Run backend tests using:
-```powershell
-cd apps/api
-pytest tests/test_interview.py tests/test_orchestrator.py -v
-```
+### 5.2 Manual Dry Run
+- Re-create Scenario A and Scenario B against this actual repository state (in a disposable branch) and confirm the hook blocks them before this spec is considered done.
 
-### 5.2 LLM-as-a-judge Evaluation Suite
-Run the evaluation suite with the live judge:
-```powershell
-cd apps/api
-pytest evals/ -v --run-evals
-```
-Verify the zero-jargon, hallucination, and consultant intake scores remain > 90% and there are no behavioral regressions.
+### 5.3 Out of Scope for This Spec (explicitly deferred)
+- Enforcing the "4-file cap" and "micro-commit" rules from `agents.md` §Phase 3 mechanically — no git-level signal distinguishes "one atomic step" from "several," so this remains agent-behavior-only for now.
+- Enforcing the Context Flush Checkpoint — this concerns the LLM session, not git state, and cannot be observed by a hook.
