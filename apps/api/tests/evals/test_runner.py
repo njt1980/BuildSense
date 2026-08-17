@@ -407,28 +407,28 @@ async def test_orchestrator_scenario(scenario, mock_postgres_and_redis, request)
             from app.core.config import settings
             api_key = settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
             if api_key and is_live:
-                # Assert semantic criteria are scored >= 0.20 (to catch absolute failures/empty outputs)
-                assert grades["zero_jargon_score"] >= 0.20, (
+                # Assert semantic criteria are scored >= 0.90 (passing threshold)
+                assert grades["zero_jargon_score"] >= 0.90, (
                     f"{FAILURE_PREFIXES['judge']}: Zero Jargon compliance failed with score "
                     f"{grades['zero_jargon_score']}. Justification: {grades['justification']}"
                 )
-                assert grades["hierarchy_integrity_score"] >= 0.20, (
+                assert grades["hierarchy_integrity_score"] >= 0.90, (
                     f"{FAILURE_PREFIXES['judge']}: Hierarchy integrity compliance failed with score "
                     f"{grades['hierarchy_integrity_score']}. Justification: {grades['justification']}"
                 )
-                assert grades["consultant_intake_score"] >= 0.20, (
+                assert grades["consultant_intake_score"] >= 0.90, (
                     f"{FAILURE_PREFIXES['judge']}: Consultant intake behavior failed with score "
                     f"{grades['consultant_intake_score']}. Justification: {grades['justification']}"
                 )
-                assert grades["single_blind_spot_score"] >= 0.20, (
+                assert grades["single_blind_spot_score"] >= 0.90, (
                     f"{FAILURE_PREFIXES['judge']}: Single blind-spot discipline failed with score "
                     f"{grades['single_blind_spot_score']}. Justification: {grades['justification']}"
                 )
-                assert grades["factual_grounding_score"] >= 0.20, (
+                assert grades["factual_grounding_score"] >= 0.90, (
                     f"{FAILURE_PREFIXES['judge']}: Factual grounding failed with score "
                     f"{grades['factual_grounding_score']}. Justification: {grades['justification']}"
                 )
-                assert grades["privacy_safety_score"] >= 0.20, (
+                assert grades["privacy_safety_score"] >= 0.90, (
                     f"{FAILURE_PREFIXES['judge']}: Privacy and safety posture failed with score "
                     f"{grades['privacy_safety_score']}. Justification: {grades['justification']}"
                 )
@@ -521,12 +521,12 @@ async def test_llm_judge_rubrics() -> None:
     if "fallback" in good_grades.get("justification", "").lower() or "mocked" in good_grades.get("justification", "").lower():
         pytest.skip("Skipping judge rubric assertions: API call returned fallback values.")
         
-    assert good_grades["zero_jargon_score"] >= 0.70
-    assert good_grades["hierarchy_integrity_score"] >= 0.70
-    assert good_grades["consultant_intake_score"] >= 0.70
-    assert good_grades["single_blind_spot_score"] >= 0.70
-    assert good_grades["factual_grounding_score"] >= 0.70
-    assert good_grades["privacy_safety_score"] >= 0.70
+    assert good_grades["zero_jargon_score"] >= 0.90
+    assert good_grades["hierarchy_integrity_score"] >= 0.90
+    assert good_grades["consultant_intake_score"] >= 0.90
+    assert good_grades["single_blind_spot_score"] >= 0.90
+    assert good_grades["factual_grounding_score"] >= 0.90
+    assert good_grades["privacy_safety_score"] >= 0.90
 
     # 2. Non-Compliant Case: Unexplained jargon (CAC, LTV), violates hierarchy by immediately building Gen AI, robotic multi-slot intake
     bad_playback = (

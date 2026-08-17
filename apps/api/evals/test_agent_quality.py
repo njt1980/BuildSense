@@ -171,21 +171,21 @@ async def test_agent_eval_golden_dataset() -> None:
                     f"Case '{test_case['name']}': Routing accuracy is low. Justification: {grades.get('justification')}"
                 )
                 
-                threshold = 0.50 if is_live else 0.70
-                if not is_live:
-                    if grades["zero_jargon_score"] < threshold or grades["factuality_score"] < threshold:
+                real_api_key = os.environ.get("ANTHROPIC_API_KEY") or (settings.anthropic_api_key if is_live else None)
+                if real_api_key and is_live:
+                    if grades["zero_jargon_score"] < 0.90 or grades["factuality_score"] < 0.90:
                         print(f"--- FAILURE DETAILS FOR {test_case['name']} ---")
                         print(f"Grades: {json.dumps(grades, indent=2)}")
                         print(f"Metadata Dump: {json.dumps(metadata_dump, indent=2)}")
-                    assert grades["zero_jargon_score"] >= threshold, (
-                        f"Case '{test_case['name']}': Zero-jargon score {grades['zero_jargon_score']} is below {int(threshold*100)}% limit. Justification: {grades.get('justification')}"
+                    assert grades["zero_jargon_score"] >= 0.90, (
+                        f"Case '{test_case['name']}': Zero-jargon score {grades['zero_jargon_score']} is below 90% limit. Justification: {grades.get('justification')}"
                     )
-                    assert grades["factuality_score"] >= threshold, (
-                        f"Case '{test_case['name']}': Factuality score {grades['factuality_score']} is below {int(threshold*100)}% limit. Justification: {grades.get('justification')}"
+                    assert grades["factuality_score"] >= 0.90, (
+                        f"Case '{test_case['name']}': Factuality score {grades['factuality_score']} is below 90% limit. Justification: {grades.get('justification')}"
                     )
-                    assert grades["current_consultant_score"] >= threshold, (
-                        f"Case '{test_case['name']}': Current consultant score {grades['current_consultant_score']} is below {int(threshold*100)}% limit. Justification: {grades.get('justification')}"
+                    assert grades["current_consultant_score"] >= 0.90, (
+                        f"Case '{test_case['name']}': Current consultant score {grades['current_consultant_score']} is below 90% limit. Justification: {grades.get('justification')}"
                     )
-                    assert grades["privacy_safety_score"] >= threshold, (
-                        f"Case '{test_case['name']}': Privacy safety score {grades['privacy_safety_score']} is below {int(threshold*100)}% limit. Justification: {grades.get('justification')}"
+                    assert grades["privacy_safety_score"] >= 0.90, (
+                        f"Case '{test_case['name']}': Privacy safety score {grades['privacy_safety_score']} is below 90% limit. Justification: {grades.get('justification')}"
                     )

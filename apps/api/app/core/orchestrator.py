@@ -163,6 +163,17 @@ def infer_process_components_without_llm(
     if not trigger and any(keyword in prompt_lower for keyword in ["order", "orders"]):
         trigger = "Customer order received"
 
+    friction_keywords = [
+        "stuck", "delay", "backlog", "bottleneck", "upset", "frustrat",
+        "waste", "wasting", "problem", "issue", "mistake", "error",
+        "duplicate", "double entry", "difficult", "chasing", "lose track",
+        "losing track", "chaotic", "chaos", "annoying", "manual", "complain",
+        "angry", "unhappy", "falling behind", "piling up", "buried in",
+        "drowning in", "backed up",
+    ]
+    if any(keyword in prompt_lower for keyword in friction_keywords):
+        friction = user_prompt.strip()
+
     return {
         "trigger": trigger,
         "actor": actor,
@@ -678,7 +689,13 @@ def build_iterative_discovery_metadata(
     should_synthesize = confidence >= E2E_CONFIDENCE_THRESHOLD or current_turns >= MAX_CLARIFICATION_TURNS
     ambiguity_fallback = current_turns >= MAX_CLARIFICATION_TURNS and confidence < LOW_CONFIDENCE_THRESHOLD
 
-    is_blank_canvas = is_missing_component_value(components.get("friction"))
+    is_blank_canvas = (
+        current_turns == 0
+        and is_missing_component_value(components.get("trigger"))
+        and is_missing_component_value(components.get("actor"))
+        and is_missing_component_value(components.get("activity"))
+        and is_missing_component_value(components.get("friction"))
+    )
 
     if ambiguity_fallback:
         strategy = "ambiguity_fallback"
@@ -2366,7 +2383,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     f"for the user. You MUST output all the markdown text inside the JSON values in the user's selected language: {language_name}.\n"
                     "Do NOT translate the JSON keys. Keep JSON keys strictly as English: 'as_is_workflow', 'friction_analysis', 'technology_neutral_recommendations', 'roi_economics'.\n"
                     "IMPORTANT FOR CONCISENESS: Keep your thinking/reasoning extremely brief and short. Do NOT write a long chain of thought. Avoid verbose filler or repetitive sentences. Proceed to outputting the JSON as quickly as possible to prevent response truncation.\n"
-                    "You must adhere to the Zero-Jargon rule: any business, technical, or financial acronym or industry term (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP) must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout the entire report, even if the term has already been defined earlier. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances.\n"
+                    "You must adhere to the Zero-Jargon rule: any term a non-technical small-business owner would not use in casual conversation must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout the entire report, even if the term has already been defined earlier. This covers acronyms (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP, API, OCR), named tools/platforms/product categories (e.g. SaaS, Zapier, CRM, POS system), and abstract business or technical phrases (e.g. approval hierarchy, deterministic automation, unit economics). If you cite a named external benchmark, index, or analyst study, add a short parenthetical the first time it appears explaining in plain English what it measures. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances, no matter how long the report is.\n"
                     "THE FOURTH WALL RULE (NO METADATA LEAKAGE):\n"
                     "- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.\n"
                     "- Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Market Pillar', 'Actor', 'System', or 'Friction' (case-insensitive) in any user-facing text values.\n"
@@ -2855,7 +2872,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "Ensure you calculate estimated manual hours wasted in the current manual process "
                     "vs. the implementation costs of the recommended automation solutions. Ground these calculations in evidence.\n\n"
                     "Zero-Jargon Rule:\n"
-                    "You must adhere to the Zero-Jargon rule: any business, technical, or financial acronym or industry term (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP) must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout your entire output, even if the term has already been defined earlier. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances."
+                    "You must adhere to the Zero-Jargon rule: any term a non-technical small-business owner would not use in casual conversation must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout your entire output, even if the term has already been defined earlier. This covers acronyms (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP, API, OCR), named tools/platforms/product categories (e.g. SaaS, Zapier, CRM, POS system), and abstract business or technical phrases (e.g. approval hierarchy, deterministic automation, unit economics). If you cite a named external benchmark, index, or analyst study, add a short parenthetical the first time it appears explaining in plain English what it measures. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances, no matter how long the report is."
             },
             {
                 "type": "text",

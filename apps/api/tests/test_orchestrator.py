@@ -486,16 +486,17 @@ async def test_blank_canvas_seed_and_story() -> None:
     with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
          patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
          patch.object(settings, "anthropic_api_key", "mock-api-key"), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
          patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
-        
+
         mock_client = AsyncMock()
         mock_anthropic.return_value = mock_client
         mock_response = make_mock_response("Conversational seed and story question text here.")
         mock_client.messages.create = AsyncMock(return_value=mock_response)
-        
+
         orchestrator = Orchestrator()
         updated_state = await orchestrator.run_pipeline(state)
-        
+
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         assert mock_client.messages.create.called
         called_kwargs = mock_client.messages.create.call_args.kwargs
