@@ -1,5 +1,9 @@
 #!/bin/sh
-echo "Running pre-commit ledger & tests check..."
+echo "Running pre-commit phase-gate & tests check..."
+
+# Phase-gate checks (fast: git plumbing / file hashes only, <1s)
+python scripts/check_phase_gate.py || exit 1
+python scripts/sync_agent_rules.py --check || exit 1
 
 # Run backend tests (fast path)
 pytest apps/api/tests/ -q
