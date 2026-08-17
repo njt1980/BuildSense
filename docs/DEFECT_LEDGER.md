@@ -197,3 +197,13 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** The ontology test still expected logistics intake to ask for business location on the first assistant turn, but the new Iterative Discovery contract requires a first-turn Consultative Handshake while preserving logistics location as a required architect component.
 * **Resolution:** Update the ontology test to assert logistics classification, required location metadata, and handshake strategy instead of immediate location questioning.
 * **Files Touched:** `apps/api/tests/test_ontology.py`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-027] - Date: 2026-08-17
+* **Issue:** LLM-as-a-judge evaluation run identified three behavioral regressions in LangGraph prompt outputs: internal metadata leakage (turn_index, confidence_score, etc.), premature summarization/confirmation (asking "Is that right?" when confidence is low), and friction overload (generating too many hypothetical frictions).
+* **Root Cause:** Prompt templates in `context_architect` and `synthesize_report` nodes did not forbid exposing internal state labels, lacked confidence-based boundary rules, and did not limit deduced friction points in the synthesis report.
+* **Resolution:** 
+  1. Applied the **Fourth Wall Rule** to `CONSULTANT_INTAKE_PROMPT`, `CONSULTANT_PLAYBACK_PROMPT`, and synthesis system prompts to forbid exposing internal LangGraph state variables or framework labels.
+  2. Applied the **Discovery vs. Confirmation Boundary** by setting `E2E_CONFIDENCE_THRESHOLD = 0.85` and updating the routing check in `_node_route_intent` to stay in Discovery Mode unless `playback_confirmed` is True or `e2e_confidence >= 0.85`.
+  3. Enforced the **Friction Overload Constraint** in the synthesis prompt to limit deduced friction points to the top 2-3 most critical operational bleed points.
+  4. Updated type-checking annotations and test cases (such as `test_playback_summary_uses_conversational_formatting`) to ensure type compatibility and correct evaluation flow under the new threshold.
+* **Files Touched:** `apps/api/app/core/orchestrator.py`, `apps/api/app/telemetry/dev_routes.py`, `apps/api/tests/test_interview.py`, `docs/DEFECT_LEDGER.md`
