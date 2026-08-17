@@ -856,3 +856,43 @@ system_prompt = (
    - Generated questions never contain `turn_index`, `confidence_score`, `Trigger`, `Actor`, `System`, or `Friction`.
    - Discovery responses do not end with "Is that right?".
    - Synthesized reports contain at most 3 friction points.
+
+
+# Design Addendum: Telemetry Flow Viewer Styling & Cost Tracking (Phase 6)
+
+## 1. FastAPI Telemetry Run Aggregator Design
+
+Modify `list_runs` in `apps/api/app/telemetry/dev_store.py` to support run-wide cost aggregation:
+- Iterate through each log event in the buffer.
+- Map the event to its corresponding `run_id`.
+- Extract the `cost_usd` property from the event's `attributes` dictionary.
+- If present, parse and accumulate it into `total_cost_usd` for that `run_id`.
+- Return the summary object containing `total_cost_usd`.
+
+```python
+# Aggregate run cost
+attrs = event.get("attributes") or {}
+cost_val = attrs.get("cost_usd")
+if cost_val:
+    summary["total_cost_usd"] = summary.get("total_cost_usd", 0.0) + float(cost_val)
+```
+
+## 2. Next.js Telemetry Frontend Interface Design
+
+### 2.1 Run List Sidebar Buttons
+Update `apps/web/src/app/[lang]/dev/telemetry/page.tsx` sidebar runs iterator:
+- Add a green styled currency badge to show `run.total_cost_usd` (e.g. `run.total_cost_usd > 0 ? \`$\${run.total_cost_usd.toFixed(4)}\` : 'Free'`).
+- Apply color-coded borders and indicators to reflect execution status (`completed`, `failed`, `paused`).
+
+### 2.2 Event Card Widgets & Metrics Layout
+Update individual event timeline renderer in `page.tsx`:
+- Render LLM calls (`llm_call_completed`) with specialized metrics bars:
+  - **Run-Time KPI Badge**: Cost in green and duration in sky blue.
+  - **Prompt Caching Tokens Bar**: Horizontal bar graph detailing:
+    - Cached Read tokens (Cyan bar, with percentage).
+    - Cached Created tokens (Purple bar).
+    - Base Input tokens (Slate bar).
+    - Output tokens (Emerald bar).
+- **Tool calls / HTTP middleware**: Render arguments, routes, methods, and status codes as organized tables or collapsible key-value lists.
+- ** Collapsible Attributes Explorer**: Render arbitrary attributes as styled table rows with a copy button next to values. Include a collapsible toggle to inspect the raw JSON dump.
+
