@@ -170,6 +170,7 @@ While BuildSense has a comprehensive set of E2E evaluation scenarios, the verifi
 4. **Evaluation Results Exporter**: Build a custom exporter in `conftest.py` that serializes detailed evaluation traces, latencies, cost, and LLM judge scores to `apps/api/evals/eval_results.json` after running the suite.
 5. **Dev Evaluations Endpoint**: Expose `GET /api/dev/evaluations/results` in FastAPI to serve the serialized E2E execution log.
 6. **Evaluations Dashboard**: Design a developer dashboard page in Next.js at `/dev/evaluations` to visualize pass/fail rates, execution statistics, step-by-step turn dialogues, and LLM judge scorecard ratings.
+7. **Deterministic Guidelines Bootstrapping**: Rename the uppercase `AGENTS.MD` to lowercase `agents.md` so that the IDE's automated workspace rule discovery loads it into the agent context on every turn. Additionally, establish a bootstrap rule in `.agents/rules/bootstrap.md` instructing the agent to always read `agents.md` before planning or writing code.
 
 ## 3. Non-Goals
 
@@ -212,16 +213,33 @@ While BuildSense has a comprehensive set of E2E evaluation scenarios, the verifi
 
 ### 4.5 Next.js Evaluations Dashboard
 - Accessible at `/en/dev/evaluations` (and general `/dev/evaluations` route).
+- **Global Header Navigation**:
+  - Integrate a "Dev Tools" navigation selector or links in the global header to allow simple movement between the Client Dashboard, local Telemetry viewer, and evaluations dashboard.
 - **KPI Summary Cards**:
   - Overall Pass Rate (%)
-  - Total Cost ($)
-  - Average Latency (s)
-  - Execution Type (Mock vs. Live)
+  - Total Cost ($) with warning threshold indicator if any case exceeds $1.00.
+  - Average and Cumulative Latency (s).
+  - Execution Type (Mock vs. Live) with matching color-coded accents.
+- **Interactive SVG-Based Charts**:
+  - **Pass Rate Radial Gauge**: Semicircular or full circular SVG progress arc representing the overall pass rate.
+  - **Average Rubric Scores**: Horizontal SVG bar chart plotting average scores for all 6 judge metrics across scenarios.
+  - **Latency & Cost Scatter Plot / Comparison Matrix**: SVG visual plot representing each scenario node's latency (X axis) vs cost (Y axis).
+  - **Run Status Donut Chart**: Clean SVG donut chart detailing the ratio of PASSED vs FAILED cases.
 - **Scenario Timeline & Details**:
   - Render a filterable list of all scenarios (All, Passed, Failed).
   - Expandable case detail section showing the step-by-step conversation bubbles (matching user inputs and assistant responses).
   - Comparative view of expected vs. actual process components.
   - Visualization of the 6 LLM judge scorecards.
+
+### 4.6 Prompt Caching Integration
+- Configure Anthropic Claude API prompt caching (`cache_control`) to optimize token usage.
+- **Intake Phase**: Place ephemeral cache breakpoints on the user/system message blocks for the intake loop calls (`confirmation_gate`, `extract_process_components`, `generate_clarification_question`, `generate_playback_summary`) to cache instructions and grow dialog history context.
+- **Report Synthesis**: Cache the large report writer instructions and zero-jargon guidelines passed as `system` prompt block parameters in `_node_synthesize_report` using ephemeral cache controls.
+- **Cost Calculation**: Ensure that the backend telemetry (`app/telemetry/llm.py`) and cost trackers parse `cache_read_input_tokens` and `cache_creation_input_tokens` to reflect caching savings on the dashboard metrics.
+
+### 4.7 Developer Workspace Governance & Rule Discovery
+- Rename the uppercase `AGENTS.MD` to lowercase `agents.md` at the repository root to ensure automatic discovery by the Antigravity IDE's hierarchical rules system on all platforms.
+- Create a `.agents/rules/bootstrap.md` file in the workspace containing an `always_on` rule directing the agent to read `agents.md` as the absolute first action in any workspace session before generating code or planning.
 
 ## 5. Acceptance Criteria
 
