@@ -467,3 +467,131 @@ async def test_orchestrator_system_prompt_weaves_constraints() -> None:
         assert "No Budget" in system_prompt
         assert "If a constraint like 'No Budget' or 'No/Low Budget' is present" in system_prompt
         assert "If a constraint like 'Strict Data Privacy' is present" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_blank_canvas_seed_and_story() -> None:
+    """Verifies that a blank canvas uses the seed_and_story strategy."""
+    session_id = "test-blank-canvas"
+    state = SessionState(
+        session_id=session_id,
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Family-owned restaurant")],
+        playback_confirmed=False
+    )
+    from app.core.config import settings
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch.object(settings, "anthropic_api_key", "mock-api-key"), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+        
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        mock_response = make_mock_response("Conversational seed and story question text here.")
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        
+        orchestrator = Orchestrator()
+        updated_state = await orchestrator.run_pipeline(state)
+        
+        assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
+        assert mock_client.messages.create.called
+        called_kwargs = mock_client.messages.create.call_args.kwargs
+        prompt_question = called_kwargs.get("messages", [])[0]["content"][0]["text"]
+        assert "Follow this discovery strategy: seed_and_story." in prompt_question
+
+
+def test_fourth_wall_metadata_leakage_checks() -> None:
+    """Asserts that system prompts strictly forbid leakage of state variables."""
+    from app.core.orchestrator import CONSULTANT_INTAKE_PROMPT, CONSULTANT_PLAYBACK_PROMPT
+    assert "Market Pillar" in CONSULTANT_INTAKE_PROMPT
+    assert "Market Pillar" in CONSULTANT_PLAYBACK_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_turn_3_ambiguity_fallback() -> None:
+    """Verifies that at turn 3 with low confidence, we trigger synthesis with fallback."""
+    session_id = "test-turn-3-fallback"
+    state = SessionState(
+        session_id=session_id,
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[
+            Message(role="user", content="Family restaurant"),
+            Message(role="assistant", content="Seed & story..."),
+            Message(role="user", content="I run it"),
+            Message(role="assistant", content="How do you handle orders?"),
+            Message(role="user", content="It depends"),
+        ],
+        clarification_turns=3,
+        process_components={
+            "trigger": None,
+            "actor": None,
+            "activity": "running the restaurant",
+            "system": None,
+            "friction": None
+        },
+        playback_confirmed=False
+    )
+    from app.core.config import settings
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch.object(settings, "anthropic_api_key", "mock-api-key"), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+        
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        mock_response = make_mock_response(
+            '{"as_is_workflow": "Unverified assumptions", "friction_analysis": "Top 2 frictions", "technology_neutral_recommendations": "Unverified assumptions: recommendations", "roi_economics": "ROI"}'
+        )
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        
+        orchestrator = Orchestrator()
+        updated_state = await orchestrator.run_pipeline(state)
+        
+        assert updated_state.status == SessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_synthesis_constraints_friction_and_next_horizons() -> None:
+    """Verifies that synthesis prompts contain strict friction constraints and Next Horizons instructions."""
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-synthesis-constraints",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.SYNTHESIZING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Workflow info")],
+        playback_confirmed=True
+    )
+    from app.core.config import settings
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch.object(settings, "anthropic_api_key", "mock-api-key"), \
+         patch.object(orchestrator.db, "save_session_state", AsyncMock()):
+        
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        mock_response = make_mock_response(
+            '{"as_is_workflow": "As-is", "friction_analysis": "Friction", "technology_neutral_recommendations": "Recommendations", "roi_economics": "ROI"}'
+        )
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        
+        agent_state = state.model_dump()
+        await orchestrator._node_synthesize_report(agent_state)
+        
+        assert mock_client.messages.create.called
+        called_kwargs = mock_client.messages.create.call_args.kwargs
+        system_prompt = called_kwargs.get("system", "")
+        if isinstance(system_prompt, list):
+            system_prompt = "".join(b["text"] for b in system_prompt if isinstance(b, dict) and b.get("type") == "text")
+        
+        assert "limit your deduced friction points to the top 2 or 3" in system_prompt
+        assert "Next Horizons" in system_prompt
+        assert "adjacent business pillar" in system_prompt
+

@@ -18,15 +18,17 @@ Execute these phases in exact order:
 *STOP: Do not proceed to Phase 2 until this commit is successfully executed.*
 
 ### PHASE 2: SYSTEM DESIGN
-1. Draft or update `design.md` outlining the architecture, data flow, and file structures required to satisfy `spec.md`.
+1. Draft or update `design.md` outlining the architecture, data flow, and file structures required to satisfy `spec.md`. `design.md` must break the Phase 3 work into a numbered list of **Atomic Implementation Steps**; each step must explicitly list the exact file paths it will read and the exact file paths it will modify, and must be scoped narrowly enough to finish inside a single context window.
 2. Pause and wait for user approval.
 3. Once approved, execute: `git add design.md` followed by `git commit --no-verify -m "docs: finalize system design"` because this is a documentation-only phase checkpoint.
+4. **Context Flush Checkpoint:** Before initiating Phase 3, pause and instruct the human user to clear or compact the session context (e.g. `/clear` or `/compact`) to flush conversational history and free the context window for coding. Do not begin Phase 3 work in the same context window that carried the Phase 1/2 discussion.
 *STOP: Do not proceed to Phase 3 until this commit is successfully executed.*
 
 ### PHASE 3: IMPLEMENTATION (CODE)
-1. You are now authorized to write and modify source code. 
-2. **Pre-flight requirement:** Before executing any file creation or modification command, you must output a `<directive_check>` XML block containing exactly one sentence confirming how the code you are about to write aligns with `design.md`.
-3. Generate the code, run necessary tests, and commit the final working code logically.
+1. You are now authorized to write and modify source code, one Atomic Implementation Step from `design.md` at a time.
+2. **Pre-flight requirement:** Before touching files for an atomic step, output a `<directive_check>` XML block that (a) confirms in one sentence how the step aligns with `design.md`, and (b) lists the exact source files you intend to read or modify for this step. **File Cap:** Never hold more than 4 source files in context at once for a single atomic step. If a step genuinely needs more than 4 files, halt and split it into smaller atomic steps in `design.md` before continuing.
+3. Generate the code and run the targeted tests for that atomic step only.
+4. **Micro-Commit Rule:** Immediately after an atomic step's code passes its targeted tests, commit it (`git add <changed files>` + `git commit`) before starting the next atomic step. This checkpoints progress so a token-quota crash mid-implementation loses at most one atomic step's work, not the whole phase.
 </MANDATORY_WORKFLOW>
 
 ### Commit And Validation Scope

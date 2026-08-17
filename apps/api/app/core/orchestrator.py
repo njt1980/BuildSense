@@ -342,15 +342,16 @@ Your job is to ask the next natural question in a workflow discovery conversatio
 
 THE FOURTH WALL RULE (NO METADATA LEAKAGE):
 - You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
-- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
+- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Market Pillar", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
 - Translate all internal state logic, completeness rules, or internal structures into natural, conversational English.
 
 DISCOVERY VS. CONFIRMATION BOUNDARY:
 - You are in Discovery Mode. You are strictly forbidden from ending your turn with a closed confirmation query like "Is that right?", "Is this correct?", or any summary requesting final verification.
-- You MUST end the turn using the Neutral Gap rule to ask about the next highest-priority business blind spot or missing detail.
+- You MUST end the turn using the Neutral Gap rule (asking an open-ended "How/What" question anchored on a known fact) to ask about the next highest-priority business blind spot or missing detail.
 
 Conversation discipline:
 - Follow this discovery strategy: {next_question_strategy}.
+- If strategy is seed_and_story, do NOT ask abstract questions like "What process do you want to automate?". Instead, conversationally list 2-3 highly specific, relatable operational pain points for the user's industry (The Seed), and immediately ask the user to describe the first two hours of their day (The Story) to identify where their specific friction lies. The output must be entirely conversational plain text with no UI chips, buttons, or suggestions.
 - If strategy is handshake, validate the pain, promise to help with the immediate issue, and ask permission to look at the broader workflow.
 - If strategy is neutral_gap, anchor on a known fact and ask one open-ended How or What question.
 - If strategy is multiple_choice_anchor, acknowledge the vague answer and offer 2-3 relatable options in one question to lower cognitive load.
@@ -402,13 +403,13 @@ Write a natural playback summary of the owner's current workflow understanding a
 
 THE FOURTH WALL RULE (NO METADATA LEAKAGE):
 - You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
-- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
+- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Market Pillar", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
 - Translate all state logic, internal fields, and operational classifications into natural, conversational English.
 
 Rules:
 - Use only known concrete details from the structured context.
 - Treat UNKNOWN, null, None, empty strings, and Not specified as absent details. Do not mention them.
-- Do not use field labels, JSON, schema words, Trigger, Actor, Activity, System, or Friction.
+- Do not use field labels, JSON, schema words, Trigger, Market Pillar, Actor, Activity, System, or Friction.
 - If there is correction context, the newest user correction overrides earlier assistant summaries and extracted values.
 - Ask only for confirmation or correction in this turn. Do not ask a separate blind-spot question.
 - Speak in the user's target language: {lang_code}.
@@ -677,8 +678,12 @@ def build_iterative_discovery_metadata(
     should_synthesize = confidence >= E2E_CONFIDENCE_THRESHOLD or current_turns >= MAX_CLARIFICATION_TURNS
     ambiguity_fallback = current_turns >= MAX_CLARIFICATION_TURNS and confidence < LOW_CONFIDENCE_THRESHOLD
 
+    is_blank_canvas = is_missing_component_value(components.get("friction"))
+
     if ambiguity_fallback:
         strategy = "ambiguity_fallback"
+    elif is_blank_canvas:
+        strategy = "seed_and_story"
     elif current_turns == 0:
         strategy = "handshake"
     elif current_turns == 1:
@@ -953,6 +958,33 @@ def build_known_details_playback(
     return f"{sentence}\n\nIf that sounds right, reply with 'Yes' to confirm, or correct any part."
 
 
+def build_seed_and_story_fallback(user_prompt: str, domain_terms: Dict[str, str]) -> str:
+    """
+    Builds deterministic seed & story prompt copy when the LLM is unavailable.
+
+    Args:
+        user_prompt: Latest owner message.
+        domain_terms: Domain vocabulary inferred by the context architect.
+
+    Returns:
+        A conversational seed and story question.
+    """
+    text = user_prompt.lower()
+    if any(term in text for term in ["restaurant", "food", "cafe", "bakery", "dining", "kitchen"]):
+        return (
+            "Family restaurants have a unique rhythm. Often, the biggest leaks I see are "
+            "tracking supplier invoices, managing shift swaps, or the chaos of front-of-house reservations. "
+            "To help me spot where your specific friction is, walk me through the first two hours of your day. "
+            "From the moment you unlock the doors, what is the very first fire you usually have to put out?"
+        )
+    return (
+        "Every small business has a unique rhythm. Often, the biggest leaks I see are "
+        "tracking invoices, coordinating schedules, or managing customer bookings. "
+        "To help me spot where your specific friction is, walk me through the first two hours of your day. "
+        "From the moment you start work, what is the very first fire you usually have to put out?"
+    )
+
+
 def build_handshake_fallback(user_prompt: str, domain_terms: Dict[str, str]) -> str:
     """
     Builds deterministic consultative handshake copy when the LLM is unavailable.
@@ -1043,6 +1075,8 @@ def build_discovery_fallback_question(
     Returns:
         One owner-facing question.
     """
+    if strategy == "seed_and_story":
+        return build_seed_and_story_fallback(user_prompt, domain_terms)
     if strategy == "handshake":
         return build_handshake_fallback(user_prompt, domain_terms)
     if strategy == "multiple_choice_anchor":
@@ -2335,7 +2369,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "You must adhere to the Zero-Jargon rule: any business, technical, or financial acronym or industry term (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP) must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout the entire report, even if the term has already been defined earlier. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances.\n"
                     "THE FOURTH WALL RULE (NO METADATA LEAKAGE):\n"
                     "- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.\n"
-                    "- Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Actor', 'System', or 'Friction' (case-insensitive) in any user-facing text values.\n"
+                    "- Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Market Pillar', 'Actor', 'System', or 'Friction' (case-insensitive) in any user-facing text values.\n"
                     "- Translate all state terminology and internal categories into natural, conversational English.\n\n"
                     "IMPORTANT: You must prioritize the Active Company Context (specifically the company's industry vertical and existing core tools/technology stack) "
                     "over the general target persona guidelines when determining recommendations and analyzing workflows. The persona should only guide the tone of presentation.\n"
@@ -2355,12 +2389,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     f"Iterative Discovery Metadata: {json.dumps(iterative_discovery, indent=2)}\n"
                     "If the selected blind spot remains unresolved, state it as a caveat instead of treating it as a fact.\n\n"
                     "Iceberg Delivery Rule:\n"
-                    "Solve the user's immediate bleeding-neck issue first, then include a clearly labeled Next Horizons section for one adjacent improvement intentionally left for later.\n\n"
+                    "Solve the user's immediate bleeding-neck issue first, then append a 'Next Horizons' section highlighting one adjacent business pillar intentionally left out (Operations, Market, Financials, Personnel, Technology, or Risk) at the end of the report (e.g., at the end of technology_neutral_recommendations).\n\n"
                     "Ambiguity Fallback Rule:\n"
-                    "If Iterative Discovery Metadata has ambiguity_fallback=true, frame the workflow as highly custom and reliant on personal intuition. "
-                    "Do not hallucinate missing workflow steps. Include an explicit 'Unverified Assumptions' block naming the missing data. "
-                    "In that fallback state, do not recommend specific software, CRMs, Zapier-style automations, or contract-management platforms as the immediate fix. "
-                    "Recommend foundational process principles first.\n\n"
+                    "If Iterative Discovery Metadata has ambiguity_fallback=true, the report must execute a graceful exit: frame the workflow as highly custom and reliant on personal intuition. You MUST NOT hallucinate missing data or workflow steps. You MUST include an explicit, prominent 'Unverified Assumptions' block detailing the missing or unconfirmed details. In this fallback state, you are strictly forbidden from recommending specific software tools, CRM platforms, Zapier-style automations, or contract-management systems as the immediate fix. You MUST instead recommend zero-cost 'Process Principles' (e.g., standardizing communication channels, setting manual folder rules) to align the operations.\n\n"
                     + ("Geographic Enrichment Guidance:\nIf the session state contains `geographic_context` (or `metadata.geographic_context`), weave the neighborhood intelligence into your analysis: mention nearby wholesale sectors, major transit arteries, and local delivery constraints, and recommend localized operational mitigations (for example: avoid specific morning arterial windows, use curbside pickup rules, leverage nearby B2B distribution nodes).\n\n" if state.get("geographic_context") or state.get("metadata", {}).get("geographic_context") else "")
                     + "Recommendation Hierarchy Rule & Constraint Compliance Rule:\n"
                     "Evaluate solutions in this exact order to prevent over-engineering:\n"

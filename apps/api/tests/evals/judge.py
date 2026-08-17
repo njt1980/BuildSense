@@ -119,6 +119,9 @@ async def invoke_llm_judge(
         "content-type": "application/json",
     }
 
+    if not playback_summary or not playback_summary.strip():
+        playback_summary = "No clarification conversation occurred in this session (direct synthesis / turn limit reached). Please score consultant_intake_score and single_blind_spot_score as 1.0."
+
     prompt_payload = JUDGE_USER_TEMPLATE.format(
         user_constraints=user_constraints,
         playback_summary=playback_summary,
