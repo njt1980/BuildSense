@@ -27,9 +27,17 @@ This specification covers a **repository-level, mechanical** enforcement layer f
 ### 2.2 Checkpoint Commit Message Contract
 - The check must recognize the exact commit message prefixes `agents.md` already defines: `docs: finalize specification` and `docs: finalize system design`. These strings are the load-bearing contract between the workflow doc and the hook; if either changes in `agents.md`, this check must be updated in the same commit (call this out in `agents.md` itself as a coupling note).
 
-### 2.3 IDE / Agent Auto-Load of `agents.md`
-- Claude Code reads `CLAUDE.md`; Cursor reads `.cursorrules`; this repo's convention is `agents.md`. Today, an agent that doesn't already know to open `agents.md` may never see the workflow at all.
-- Requirement: `CLAUDE.md` and `.cursorrules` must exist and cause a reasonable agent to load the same governing instructions as `agents.md`, without manual drift between the three files over time.
+### 2.3 IDE / Agent Auto-Load of the Workflow File
+- Target tools: Claude Code, Cursor, GitHub Copilot (all three named in the original task), plus Codex CLI and Google Antigravity (both named explicitly for this repo's actual use — this repo's `agents.md` is itself written in Antigravity's voice and references `.antigravity/skills/`).
+- Verified conventions per tool (checked, not assumed):
+  - **Codex CLI** and **Google Antigravity** both natively auto-load a repo-root `AGENTS.md` (uppercase, plural) with zero configuration.
+  - **GitHub Copilot**'s coding agent also natively supports `AGENTS.md` directly (added Aug 2025), and additionally reads `CLAUDE.md` directly.
+  - **Claude Code**'s primary convention is `CLAUDE.md`; broader `AGENTS.md` adoption is reported industry-wide but not confirmed for this environment.
+  - **Cursor**'s traditional convention is `.cursorrules`; `AGENTS.md` adoption as an open standard is reported but not confirmed.
+- **Casing bug discovered:** this repo's file is currently tracked in git as lowercase `agents.md`, not the canonical uppercase `AGENTS.md`. This works today only because the local filesystem is case-insensitive (Windows); on a case-sensitive clone (Linux CI, WSL, Docker, some macOS configs) Codex/Antigravity/Copilot would find no such file and silently run with zero project instructions. This is a real, not hypothetical, defect for exactly the tools this repo is used with.
+- Requirement:
+  1. Rename `agents.md` -> `AGENTS.md` (fixes Codex, Antigravity, and Copilot natively — no ongoing tooling needed for those three per the verified conventions above).
+  2. `CLAUDE.md` and `.cursorrules` must exist and stay in sync with `AGENTS.md` as defense-in-depth for the two tools without confirmed native `AGENTS.md` support, without manual drift over time.
 - Windows real symlinks require elevated/developer-mode privileges and inconsistent git handling (`core.symlinks`) — implementation approach (symlink vs. thin pointer file vs. sync-check) is a design decision, not fixed here, but the requirement is the observable outcome above.
 
 ### 2.4 Eval/Test Quality-Threshold Regression Guard (best-effort)
@@ -49,7 +57,7 @@ These are real incidents from this session, used as the acceptance test scenario
 - **Scenario A (phase skip):** An agent stages `orchestrator.py` changes with no prior `docs: finalize specification` / `docs: finalize system design` commits since the last source change on this branch. Commit must be rejected by 2.1.
 - **Scenario B (scope bleed):** An agent runs `git add agents.md` while `orchestrator.py` and four other source/test files are already staged from an earlier, unrelated change, then runs `git commit -m "docs: ..."`. Commit must be rejected by 2.1 (mixed doc+source staged set), forcing the agent to unstage and split the commit.
 - **Scenario C (threshold gaming):** An agent lowers `assert grades["zero_jargon_score"] >= 0.90` to `>= 0.20` in `test_runner.py` without touching `docs/DEFECT_LEDGER.md`. Commit is flagged/rejected by 2.4.
-- **Scenario D (tool blind spot):** A fresh Claude Code or Cursor session opened in this repo, given no other instruction, discovers the `agents.md` workflow within its first turn because `CLAUDE.md`/`.cursorrules` already point to it.
+- **Scenario D (tool blind spot):** A fresh Codex CLI, Antigravity, or Copilot coding-agent session opened in this repo, given no other instruction, discovers the workflow natively because the file is named `AGENTS.md`. A fresh Claude Code or Cursor session discovers it via `CLAUDE.md`/`.cursorrules`.
 
 ---
 
@@ -57,7 +65,7 @@ These are real incidents from this session, used as the acceptance test scenario
 
 1. Committing any source/test file without a fresh, in-history spec+design checkpoint pair since the last source/test commit is rejected with a clear error naming which checkpoint is missing.
 2. Committing a mix of doc-checkpoint files and source/test files in one commit is rejected, with an error telling the agent to split the commit.
-3. `CLAUDE.md` and `.cursorrules` exist and a new Claude Code / Cursor session in this repo surfaces the `agents.md` workflow without being told to read it explicitly.
+3. The workflow file is tracked as `AGENTS.md` (correct casing, verified via `git ls-files`), and `CLAUDE.md`/`.cursorrules` exist and stay in sync with it, so a new session in any of Claude Code, Cursor, Codex CLI, Antigravity, or Copilot surfaces the workflow without being told to read it explicitly.
 4. Lowering a passing-threshold literal in a test/eval file without a corresponding `docs/DEFECT_LEDGER.md` entry in the same commit is flagged.
 5. None of the above checks add more than a few seconds of overhead (they must not re-run the full ~10-minute pytest suite; that is the existing, separate check).
 6. The checks degrade gracefully: a clear, actionable error message on rejection, never a silent failure or an opaque stack trace.
@@ -74,5 +82,5 @@ These are real incidents from this session, used as the acceptance test scenario
 - Re-create Scenario A and Scenario B against this actual repository state (in a disposable branch) and confirm the hook blocks them before this spec is considered done.
 
 ### 5.3 Out of Scope for This Spec (explicitly deferred)
-- Enforcing the "4-file cap" and "micro-commit" rules from `agents.md` §Phase 3 mechanically — no git-level signal distinguishes "one atomic step" from "several," so this remains agent-behavior-only for now.
+- Enforcing the "4-file cap" and "micro-commit" rules from `AGENTS.md` §Phase 3 mechanically — no git-level signal distinguishes "one atomic step" from "several," so this remains agent-behavior-only for now.
 - Enforcing the Context Flush Checkpoint — this concerns the LLM session, not git state, and cannot be observed by a hook.
