@@ -333,6 +333,15 @@ Think "McKinsey for the common man": careful, practical, empathetic, and allergi
 
 Your job is to ask the next natural question in a workflow discovery conversation.
 
+THE FOURTH WALL RULE (NO METADATA LEAKAGE):
+- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
+- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
+- Translate all internal state logic, completeness rules, or internal structures into natural, conversational English.
+
+DISCOVERY VS. CONFIRMATION BOUNDARY:
+- You are in Discovery Mode. You are strictly forbidden from ending your turn with a closed confirmation query like "Is that right?", "Is this correct?", or any summary requesting final verification.
+- You MUST end the turn using the Neutral Gap rule to ask about the next highest-priority business blind spot or missing detail.
+
 Conversation discipline:
 - Follow this discovery strategy: {next_question_strategy}.
 - If strategy is handshake, validate the pain, promise to help with the immediate issue, and ask permission to look at the broader workflow.
@@ -383,6 +392,11 @@ MISSING_COMPONENT_QUESTION_FALLBACKS = {
 
 CONSULTANT_PLAYBACK_PROMPT = """You are BuildSense's intake consultant.
 Write a natural playback summary of the owner's current workflow understanding and ask them to confirm or correct it.
+
+THE FOURTH WALL RULE (NO METADATA LEAKAGE):
+- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
+- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
+- Translate all state logic, internal fields, and operational classifications into natural, conversational English.
 
 Rules:
 - Use only known concrete details from the structured context.
@@ -452,7 +466,7 @@ SIX_PILLARS: Dict[str, Dict[str, Any]] = {
 
 PLACEHOLDER_VALUES = {"", "unknown", "variable", "none", "null", "not specified"}
 MAX_CLARIFICATION_TURNS = 3
-E2E_CONFIDENCE_THRESHOLD = 0.72
+E2E_CONFIDENCE_THRESHOLD = 0.85
 LOW_CONFIDENCE_THRESHOLD = 0.5
 
 
@@ -1962,7 +1976,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     return updates
 
                 # 5. Determine conversational next action
-                if not all_required_present:
+                e2e_confidence = iterative_discovery.get("e2e_confidence_score", 0.0)
+                if not playback_confirmed and (not all_required_present or (e2e_confidence < 0.85 and clarification_turns < MAX_CLARIFICATION_TURNS)):
                     question = ""
                     clarification_questions = []
                     selected_missing_item = select_next_missing_component(required_keys, components)
@@ -2254,15 +2269,20 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "Do NOT translate the JSON keys. Keep JSON keys strictly as English: 'as_is_workflow', 'friction_analysis', 'technology_neutral_recommendations', 'roi_economics'.\n"
                     "IMPORTANT FOR CONCISENESS: Keep your thinking/reasoning extremely brief and short. Do NOT write a long chain of thought. Avoid verbose filler or repetitive sentences. Proceed to outputting the JSON as quickly as possible to prevent response truncation.\n"
                     "You must adhere to the Zero-Jargon rule: any business, technical, or financial acronym or industry term (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP) must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout the entire report, even if the term has already been defined earlier. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances.\n"
+                    "THE FOURTH WALL RULE (NO METADATA LEAKAGE):\n"
+                    "- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.\n"
+                    "- Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Actor', 'System', or 'Friction' (case-insensitive) in any user-facing text values.\n"
+                    "- Translate all state terminology and internal categories into natural, conversational English.\n\n"
                     "IMPORTANT: You must prioritize the Active Company Context (specifically the company's industry vertical and existing core tools/technology stack) "
                     "over the general target persona guidelines when determining recommendations and analyzing workflows. The persona should only guide the tone of presentation.\n"
                     f"Target Persona Guidelines: {persona_rule}\n\n"
                     f"{company_context_str}"
                     f"{components_context}"
-                    "Agentic Bottleneck Deduction Instruction:\n"
+                    "Agentic Bottleneck Deduction Instruction (Anti-Scattergun / Friction Overload Cap):\n"
                     "The user might not have specified any friction or bottleneck. You must independently analyze the gathered workflow "
                     "and deduce the hidden friction, double-work, transcription errors, communication gaps, or bottlenecks on behalf of the user. "
-                    "Write a comprehensive friction analysis that uncovers these inefficiencies, even if the user did not report them.\n\n"
+                    "In the 'friction_analysis' section, you MUST limit your deduced friction points to the top 2 or 3 most critical operational bleed points directly related to the user's specific workflow. "
+                    "You are strictly forbidden from generating an exhaustive, 6-point matrix of hypothetical frictions across every unverified business pillar. Keep it focused and punchy.\n\n"
                     "Six-Pillar Consultant Rubric:\n"
                     "Evaluate Market, Operations, Financials, Personnel, Technology, and Risk before recommending any action. "
                     "Use this rubric to think laterally about the business, not as a checklist the user must complete.\n"

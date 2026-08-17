@@ -290,7 +290,7 @@ async def test_playback_summary_uses_conversational_formatting() -> None:
         status=SessionStatus.ROUTING,
         max_budget_usd=1.25,
         max_steps=15,
-        messages=[Message(role="user", content="Low stock alert...")],
+        messages=[Message(role="user", content="The warehouse manager triggers inventory replenishment manually using Excel.")],
         process_components=components,
         playback_confirmed=False
     )
