@@ -298,3 +298,49 @@ Our recent LLM-as-a-judge evaluation run passed structurally, but identified thr
 4. Synthesized reports contain exactly 2 or 3 critical operational bleed points in the Friction Analysis section, rather than an exhaustive 6-pillar list.
 5. All existing tests and E2E evaluations pass without regressions.
 
+
+# Specification Addendum: Telemetry Flow Viewer Styling & Cost Tracking (Phase 6)
+
+## 1. Problem Statement
+
+The development-only `/dev/telemetry` page currently displays telemetry data as plain text JSON dumps in `<pre>` blocks, making it difficult for developers to quickly trace tokens, caching events, tool executions, and accumulated costs of local run instances.
+
+## 2. Goals
+
+1. **Stunning Dev Telemetry UI**: Redesign the Telemetry Flow Viewer interface with structured visual key-value explorer cards, metrics badges, and color-coded status pills.
+2. **Dynamic Cost Accumulation**: Calculate the total dollar spend of each run and request by summing LLM API expenditures, displaying it directly on the sidebar run list.
+3. **Structured Token & Cache Badge Metrics**: Visually call out prompt caching statistics (Cache Reads vs. Cache Creations vs. Base Input) on LLM call event cards.
+4. **Structured Tool/HTTP Detail Cards**: Render HTTP route requests and tool calls (e.g. arguments and results) as clean tables or structured blocks instead of raw JSON.
+
+## 3. Non-Goals
+
+1. Do not affect production application code or logging middleware functionality.
+2. Do not change the database schema or external telemetry tables.
+
+## 4. Functional Requirements
+
+### 4.1 FastAPI Backend Run Summary Cost Tracking
+- Modify the local telemetry memory store `list_runs` endpoint to dynamically compute the total run cost:
+  - Aggregate the `cost_usd` parameter from the attributes of all `llm_call_completed` events belonging to each `run_id`.
+  - Expose `total_cost_usd` inside the `RunSummary` response payload.
+
+### 4.2 Front-End Telemetry Page Visual Enhancements
+- **Runs Sidebar List**:
+  - Show the aggregated run cost (e.g. `$0.0125`) as a prominent green tag.
+  - Apply clean status badges for run completion levels (`completed`, `failed`, `paused`, `unknown`).
+- **Event Timeline Viewer**:
+  - Re-design individual event cards into structured containers.
+  - **LLM Call Event Highlights**: When an event name is `llm_call_completed`, display an inline metrics box showing:
+    - **Total Cost**: Styled badge (e.g., green theme).
+    - **Duration**: Latency badge.
+    - **Cache Stats**: Structured indicators for Cached Read tokens (blue/cyan), Cached Created tokens (indigo), and Base Input/Output tokens.
+  - **HTTP/Tool Event Highlights**: Render arguments, routes, methods, and status codes as organized tables or collapsible key-value lists.
+  - **Collapsed Attributes Explorer**: For any other arbitrary attributes, render a clean list of fields rather than raw JSON, with a toggle button to view the raw JSON dump when needed.
+
+## 5. Acceptance Criteria
+
+1. The `/dev/telemetry` sidebar run buttons display the correct aggregated run cost of the transaction.
+2. LLM call timeline cards display cost, duration, and prompt cache metrics as styled horizontal badge bars.
+3. Arbitrary attributes are readable without raw JSON blocks by default, and a "View Raw JSON" toggle is fully operational.
+
+
