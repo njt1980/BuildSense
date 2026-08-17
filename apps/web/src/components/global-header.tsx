@@ -13,6 +13,7 @@ export function GlobalHeader({ lang }: { lang: string }) {
   const { user, signOut } = useAuth();
   const { companies, activeCompany, setActiveCompany } = useCompany();
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [devDropdownOpen, setDevDropdownOpen] = useState(false);
   const dict = getDictionary(lang);
 
   // Do not render the header on login page
@@ -89,6 +90,53 @@ export function GlobalHeader({ lang }: { lang: string }) {
       <div className="flex flex-wrap items-center justify-center md:justify-end gap-3">
         {/* Unified Language Switcher */}
         <LanguageSwitcher currentLang={lang} />
+
+        {/* Developer Space Dropdown */}
+        <div className="relative">
+          <button
+            onClick={() => setDevDropdownOpen(!devDropdownOpen)}
+            className="flex items-center gap-1.5 bg-[#0b0f19]/60 hover:bg-[#121827] border border-slate-800 hover:border-slate-700 text-slate-200 text-xs font-semibold rounded-lg px-3 py-2 transition-all shadow-md focus:outline-none"
+          >
+            <span>🛠️</span>
+            <span>Dev Tools</span>
+            <span className="text-[8px] text-slate-500">▼</span>
+          </button>
+
+          {devDropdownOpen && (
+            <div className="absolute right-0 mt-1.5 w-44 bg-[#0b0f19] border border-slate-800 rounded-xl shadow-2xl z-50 overflow-hidden py-1.5 animate-fade-in backdrop-blur-xl">
+              <div className="px-3 py-1.5 border-b border-slate-850 text-[9px] uppercase font-bold text-slate-500 tracking-wider">
+                Developer Space
+              </div>
+              <button
+                onClick={() => {
+                  router.push(`/${lang}`);
+                  setDevDropdownOpen(false);
+                }}
+                className="w-full text-left px-3.5 py-2.5 text-xs text-slate-400 hover:bg-slate-900/50 hover:text-slate-200 transition-all"
+              >
+                🏠 Workspace Home
+              </button>
+              <button
+                onClick={() => {
+                  router.push(`/${lang}/dev/telemetry`);
+                  setDevDropdownOpen(false);
+                }}
+                className="w-full text-left px-3.5 py-2.5 text-xs text-slate-400 hover:bg-slate-900/50 hover:text-slate-200 transition-all"
+              >
+                📊 Telemetry Flow
+              </button>
+              <button
+                onClick={() => {
+                  router.push(`/${lang}/dev/evaluations`);
+                  setDevDropdownOpen(false);
+                }}
+                className="w-full text-left px-3.5 py-2.5 text-xs text-slate-400 hover:bg-slate-900/50 hover:text-slate-200 transition-all"
+              >
+                🔬 Evaluation Metrics
+              </button>
+            </div>
+          )}
+        </div>
 
         {user && (
           <div className="flex items-center gap-2 bg-[#0b0f19]/45 border border-slate-900/60 rounded-lg px-3 py-1.5 text-slate-300 font-mono text-xs">

@@ -1,17 +1,17 @@
 {
-  "timestamp": "2026-08-16T08:05:52.576945Z",
+  "timestamp": "2026-08-17T01:19:41.864540Z",
   "pass_rate": 100.0,
   "total_cases": 22,
   "passed_cases": 22,
-  "avg_latency_seconds": 0.08,
-  "total_latency_seconds": 1.81,
+  "avg_latency_seconds": 0.05,
+  "total_latency_seconds": 1.11,
   "total_cost_usd": 0.0,
   "is_live_run": false,
   "results": [
     {
       "name": "Short Starter Chip Clarification",
       "status": "PASSED",
-      "latency": 0.05,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -45,7 +45,7 @@
     {
       "name": "Messy Multi-Turn Intake Accumulation",
       "status": "PASSED",
-      "latency": 0.14,
+      "latency": 0.06,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -109,7 +109,7 @@
     {
       "name": "The Escape Hatch Fallback (User states Don't Know)",
       "status": "PASSED",
-      "latency": 0.03,
+      "latency": 0.02,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -143,7 +143,7 @@
     {
       "name": "The Escape Hatch Fallback (Clarification Turn limit reached)",
       "status": "PASSED",
-      "latency": 0.04,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -182,7 +182,7 @@
     {
       "name": "Correction Handling & Re-Playback",
       "status": "PASSED",
-      "latency": 0.1,
+      "latency": 0.06,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -204,7 +204,7 @@
         {
           "turn_index": 2,
           "user_input": "No, we use Tally, not Excel",
-          "assistant_response": "That matches what I have so far. Is that right, or would you correct anything?",
+          "assistant_response": "That helps. What usually starts this work?",
           "components": {
             "trigger": "Incoming box",
             "actor": "Receiver",
@@ -231,7 +231,7 @@
     {
       "name": "Golden Scenario 4 Ambiguity Fallback Event Planning",
       "status": "PASSED",
-      "latency": 0.13,
+      "latency": 0.09,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -315,7 +315,7 @@
     {
       "name": "Full Workflow Execution & Synthesis",
       "status": "PASSED",
-      "latency": 0.12,
+      "latency": 0.06,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -369,7 +369,7 @@
     {
       "name": "India-Specific B2C Kirana Store (WhatsApp & UPI)",
       "status": "PASSED",
-      "latency": 0.14,
+      "latency": 0.08,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -438,7 +438,7 @@
     {
       "name": "Ambiguous Rambling & The 'Don't Know' Fallback",
       "status": "PASSED",
-      "latency": 0.18,
+      "latency": 0.13,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -522,7 +522,7 @@
     {
       "name": "Backstory Clinic Appointment Follow-Up",
       "status": "PASSED",
-      "latency": 0.18,
+      "latency": 0.09,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -591,7 +591,7 @@
     {
       "name": "Backstory Repair Shop Status Calls",
       "status": "PASSED",
-      "latency": 0.13,
+      "latency": 0.09,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -660,7 +660,7 @@
     {
       "name": "Backstory Wholesale Distributor Billing Delay",
       "status": "PASSED",
-      "latency": 0.18,
+      "latency": 0.09,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -729,7 +729,7 @@
     {
       "name": "Catalog Clinic Patient Privacy",
       "status": "PASSED",
-      "latency": 0.03,
+      "latency": 0.02,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -763,7 +763,7 @@
     {
       "name": "Catalog Kirana WhatsApp UPI",
       "status": "PASSED",
-      "latency": 0.04,
+      "latency": 0.02,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -831,7 +831,7 @@
     {
       "name": "Catalog Wholesale Dispatch Wait",
       "status": "PASSED",
-      "latency": 0.06,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -865,7 +865,7 @@
     {
       "name": "Catalog Small Manufacturer Rework",
       "status": "PASSED",
-      "latency": 0.04,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -899,7 +899,7 @@
     {
       "name": "Catalog Catering Ingredient Planning",
       "status": "PASSED",
-      "latency": 0.04,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -933,7 +933,7 @@
     {
       "name": "Catalog Delivery Route Rush",
       "status": "PASSED",
-      "latency": 0.04,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [
@@ -1035,7 +1035,7 @@
     {
       "name": "Catalog Property Maintenance Injection",
       "status": "PASSED",
-      "latency": 0.05,
+      "latency": 0.03,
       "cost_usd": 0.0,
       "is_live": false,
       "turns": [

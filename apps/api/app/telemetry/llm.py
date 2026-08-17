@@ -13,18 +13,20 @@ from app.telemetry.privacy import stable_hash
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0, cache_creation_tokens: int = 0) -> float:
     """Estimate Anthropic call cost using BuildSense's current model rates."""
     if "haiku" in model:
-        input_rate = 0.25 / 1_000_000
-        output_rate = 1.25 / 1_000_000
-        cache_write_rate = 0.30 / 1_000_000
-        cache_read_rate = 0.03 / 1_000_000
+        input_rate = 0.80 / 1_000_000
+        output_rate = 4.00 / 1_000_000
+        cache_write_rate = 1.00 / 1_000_000
+        cache_read_rate = 0.08 / 1_000_000
     else:
         input_rate = 3.00 / 1_000_000
         output_rate = 15.00 / 1_000_000
         cache_write_rate = 3.75 / 1_000_000
         cache_read_rate = 0.30 / 1_000_000
 
+    # Subtract cached tokens from base input token calculation
+    base_input_tokens = max(0, input_tokens - cache_read_tokens - cache_creation_tokens)
     return (
-        (input_tokens * input_rate)
+        (base_input_tokens * input_rate)
         + (output_tokens * output_rate)
         + (cache_creation_tokens * cache_write_rate)
         + (cache_read_tokens * cache_read_rate)

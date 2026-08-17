@@ -111,6 +111,48 @@ export default function DevEvaluationsPage(): React.JSX.Element {
     });
   }, [data, searchQuery, statusFilter]);
 
+  // Averages for the rubrics
+  const rubricAverages = useMemo(() => {
+    if (!data || data.results.length === 0) return [];
+    const rubrics = [
+      { key: "zero_jargon_score", label: "Zero Jargon" },
+      { key: "hierarchy_integrity_score", label: "Hierarchy Integrity" },
+      { key: "consultant_intake_score", label: "Intake Tone" },
+      { key: "single_blind_spot_score", label: "Blind Spot Discipline" },
+      { key: "factual_grounding_score", label: "Factual Grounding" },
+      { key: "privacy_safety_score", label: "Privacy & Safety" },
+    ];
+    
+    return rubrics.map((r) => {
+      const sum = data.results.reduce((acc, res) => acc + ((res.judge_scores[r.key as keyof JudgeScores] as number) || 0), 0);
+      return {
+        label: r.label,
+        avg: sum / data.results.length,
+      };
+    });
+  }, [data]);
+
+  // Scatter plot data mapping
+  const scatterPoints = useMemo(() => {
+    if (!data || data.results.length === 0) return [];
+    
+    const maxLat = Math.max(...data.results.map(r => r.latency), 1);
+    const maxCost = Math.max(...data.results.map(r => r.cost_usd), 0.0001);
+    
+    return data.results.map((res) => {
+      const x = 30 + ((res.latency / maxLat) * 230); // scale within [30, 260]
+      const y = 140 - ((res.cost_usd / maxCost) * 100); // scale within [40, 140]
+      return {
+        name: res.name,
+        latency: res.latency,
+        cost: res.cost_usd,
+        status: res.status,
+        x,
+        y,
+      };
+    });
+  }, [data]);
+
   const toggleExpand = (caseName: string) => {
     setExpandedCase(expandedCase === caseName ? null : caseName);
   };
@@ -167,36 +209,134 @@ export default function DevEvaluationsPage(): React.JSX.Element {
         <div className="w-full max-w-6xl flex flex-col gap-6 relative z-10">
           {/* KPI Grid */}
           <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-[#0b0f19]/35 border border-slate-900 p-4 rounded-xl flex flex-col gap-1 shadow-md">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Pass Rate</span>
-              <span className={`text-xl font-extrabold ${data.pass_rate >= 90 ? "text-emerald-400" : "text-rose-400"}`}>
-                {data.pass_rate}%
-              </span>
-              <span className="text-[9px] text-slate-500 mt-1">
-                Passed: {data.passed_cases} / {data.total_cases}
-              </span>
+            <div className="bg-[#0b0f19]/35 border border-slate-900 p-4 rounded-xl flex items-center gap-4 shadow-md">
+              <div className="relative flex items-center justify-center">
+                <svg className="w-12 h-12 transform -rotate-90">
+                  <circle cx="24" cy="24" r="20" className="stroke-slate-950" strokeWidth="4" fill="transparent" />
+                  <circle cx="24" cy="24" r="20" className={`transition-all duration-500 fill-transparent ${data.pass_rate >= 90 ? "stroke-emerald-500" : "stroke-rose-500"}`} strokeWidth="4" strokeDasharray={125.6} strokeDashoffset={125.6 - (125.6 * data.pass_rate) / 100} strokeLinecap="round" />
+                </svg>
+                <span className="absolute text-[10px] font-black font-mono text-slate-200">{data.pass_rate}%</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[9px] uppercase font-bold text-slate-500 tracking-wider">Pass Rate</span>
+                <span className="text-[10px] text-slate-400 font-medium">Passed: {data.passed_cases} / {data.total_cases}</span>
+              </div>
             </div>
 
             <div className="bg-[#0b0f19]/35 border border-slate-900 p-4 rounded-xl flex flex-col gap-1 shadow-md">
               <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Avg Latency</span>
-              <span className="text-xl font-extrabold text-sky-400">{data.avg_latency_seconds}s</span>
-              <span className="text-[9px] text-slate-500 mt-1">Total: {data.total_latency_seconds}s</span>
+              <span className="text-sm font-extrabold text-sky-400">{data.avg_latency_seconds}s</span>
+              <span className="text-[9px] text-slate-500">Total: {data.total_latency_seconds}s</span>
             </div>
 
-            <div className="bg-[#0b0f19]/35 border border-slate-900 p-4 rounded-xl flex flex-col gap-1 shadow-md">
-              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Run Cost</span>
-              <span className="text-xl font-extrabold text-emerald-400">${data.total_cost_usd}</span>
-              <span className="text-[9px] text-slate-500 mt-1">Calculated API spend</span>
+            <div className={`border p-4 rounded-xl flex flex-col gap-1 shadow-md transition-colors ${
+              data.total_cost_usd > 1.0 || data.results.some(r => r.cost_usd > 0.15)
+                ? "bg-rose-500/5 border-rose-500/20 text-rose-300"
+                : "bg-[#0b0f19]/35 border-slate-900 text-slate-300"
+            }`}>
+              <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider flex items-center gap-1.5">
+                Run Cost { (data.total_cost_usd > 1.0 || data.results.some(r => r.cost_usd > 0.15)) && <span title="Cost threshold exceeded">⚠️</span> }
+              </span>
+              <span className={`text-sm font-extrabold ${data.total_cost_usd > 1.0 ? "text-rose-450 animate-pulse" : "text-emerald-400"}`}>
+                ${data.total_cost_usd.toFixed(4)}
+              </span>
+              <span className="text-[9px] text-slate-500">
+                {data.total_cost_usd > 0 ? "Calculated API Spend" : "No live API charges"}
+              </span>
             </div>
 
-            <div className="bg-[#0b0f19]/35 border border-slate-900 p-4 rounded-xl flex flex-col gap-1 shadow-md">
+            <div className={`bg-[#0b0f19]/35 border p-4 rounded-xl flex flex-col gap-1 shadow-md ${
+              data.is_live_run ? "border-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.02)]" : "border-slate-900"
+            }`}>
               <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Execution Mode</span>
-              <span className={`text-xl font-extrabold uppercase ${data.is_live_run ? "text-amber-400" : "text-slate-400"}`}>
+              <span className={`text-sm font-extrabold uppercase ${data.is_live_run ? "text-emerald-400" : "text-slate-400"}`}>
                 {data.is_live_run ? "⚡ Live Run" : "🛠️ Mocked"}
               </span>
-              <span className="text-[9px] text-slate-500 mt-1">
-                {new Date(data.timestamp).toLocaleString()}
+              <span className="text-[9px] text-slate-500 truncate" title={new Date(data.timestamp).toLocaleString()}>
+                {new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({new Date(data.timestamp).toLocaleDateString()})
               </span>
+            </div>
+          </section>
+
+          {/* Graphical Analytics Charts */}
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Left: Judge Rubric Averages */}
+            <div className="bg-[#0b0f19]/35 border border-slate-900 p-5 rounded-xl flex flex-col gap-4 shadow-md w-full">
+              <h3 className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Judge Rubric Averages</h3>
+              <div className="space-y-3.5">
+                {rubricAverages.map((rubric, idx) => (
+                  <div key={idx} className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-semibold text-slate-400">{rubric.label}</span>
+                      <span className={`font-mono font-bold ${rubric.avg >= 0.85 ? "text-emerald-400" : rubric.avg >= 0.70 ? "text-amber-400" : "text-rose-450"}`}>
+                        {(rubric.avg * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-slate-950 rounded-full overflow-hidden border border-slate-900">
+                      <div 
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          rubric.avg >= 0.85 ? "bg-gradient-to-r from-emerald-500 to-teal-400" :
+                          rubric.avg >= 0.70 ? "bg-gradient-to-r from-amber-500 to-orange-400" :
+                          "bg-gradient-to-r from-rose-500 to-red-400"
+                        }`}
+                        style={{ width: `${rubric.avg * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Right: Latency vs Cost Scatter/Grid */}
+            <div className="bg-[#0b0f19]/35 border border-slate-900 p-5 rounded-xl flex flex-col gap-4 shadow-md w-full justify-between">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider">Latency vs Cost Distribution</h3>
+                <span className="text-[8px] text-slate-500 font-bold uppercase tracking-widest">Click point to inspect</span>
+              </div>
+              
+              <div className="relative border border-slate-950 bg-slate-950/40 rounded-lg p-2 overflow-hidden my-1">
+                <svg viewBox="0 0 300 180" className="w-full h-auto">
+                  {/* Grid lines */}
+                  <line x1="30" y1="30" x2="270" y2="30" className="stroke-slate-900/40" strokeDasharray="2" />
+                  <line x1="30" y1="90" x2="270" y2="90" className="stroke-slate-900/40" strokeDasharray="2" />
+                  <line x1="30" y1="150" x2="270" y2="150" className="stroke-slate-900/80" />
+                  
+                  <line x1="30" y1="30" x2="30" y2="150" className="stroke-slate-900/80" />
+                  <line x1="150" y1="30" x2="150" y2="150" className="stroke-slate-900/40" strokeDasharray="2" />
+                  <line x1="270" y1="30" x2="270" y2="150" className="stroke-slate-900/40" strokeDasharray="2" />
+                  
+                  {/* Axis labels */}
+                  <text x="270" y="162" className="fill-slate-500 text-[7px] font-bold uppercase tracking-wider animate-in fade-in" textAnchor="end">Latency (s)</text>
+                  <text x="36" y="25" className="fill-slate-500 text-[7px] font-bold uppercase tracking-wider animate-in fade-in" textAnchor="start">Cost ($)</text>
+                  
+                  {/* Nodes */}
+                  {scatterPoints.map((pt, idx) => (
+                    <g 
+                      key={idx} 
+                      onClick={() => toggleExpand(pt.name)} 
+                      className="cursor-pointer group/node"
+                    >
+                      <circle 
+                        cx={pt.x} 
+                        cy={pt.y} 
+                        r="5" 
+                        className={`${
+                          pt.status === "PASSED" 
+                            ? "fill-emerald-500/80 stroke-emerald-400/20 group-hover/node:fill-emerald-400 group-hover/node:r-6" 
+                            : "fill-rose-500/80 stroke-rose-400/20 group-hover/node:fill-rose-400 group-hover/node:r-6"
+                        } stroke-2 transition-all duration-200`} 
+                      />
+                      <title>{pt.name}&#10;Latency: {pt.latency}s&#10;Cost: ${pt.cost.toFixed(4)}</title>
+                    </g>
+                  ))}
+                </svg>
+              </div>
+              
+              <div className="flex justify-between items-center text-[8px] text-slate-500 font-bold uppercase tracking-wide border-t border-slate-950 pt-2 mt-1">
+                <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Passed</span>
+                <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span> Failed</span>
+                <span>Max Latency: {Math.max(...data.results.map(r => r.latency), 0).toFixed(1)}s</span>
+              </div>
             </div>
           </section>
 
@@ -306,18 +446,25 @@ export default function DevEvaluationsPage(): React.JSX.Element {
                                   return (
                                     <div
                                       key={key}
-                                      className="flex flex-col items-center justify-center p-2 bg-[#03060d]/50 rounded-md border border-slate-900"
+                                      className="flex flex-col items-between justify-between p-2 bg-[#03060d]/50 rounded-md border border-slate-900/60"
                                     >
                                       <span className="text-[8px] font-bold text-slate-500 uppercase text-center leading-tight">
                                         {label}
                                       </span>
-                                      <span
-                                        className={`text-xs font-black mt-1 ${
-                                          score >= 0.90 ? "text-emerald-400" : "text-amber-400"
-                                        }`}
-                                      >
-                                        {score.toFixed(2)}
-                                      </span>
+                                      <div className="flex flex-col items-center w-full mt-1.5 gap-1">
+                                        <span
+                                          className={`text-[10px] font-black ${
+                                            score >= 0.90 ? "text-emerald-400" : score >= 0.70 ? "text-amber-400" : "text-rose-400"
+                                          }`}
+                                        >
+                                          {score.toFixed(2)}
+                                        </span>
+                                        <div className="w-full h-1 bg-slate-950 rounded-full overflow-hidden border border-slate-900">
+                                          <div className={`h-full rounded-full transition-all duration-300 ${
+                                            score >= 0.90 ? "bg-emerald-500" : score >= 0.70 ? "bg-amber-500" : "bg-rose-500"
+                                          }`} style={{ width: `${score * 100}%` }} />
+                                        </div>
+                                      </div>
                                     </div>
                                   );
                                 })}

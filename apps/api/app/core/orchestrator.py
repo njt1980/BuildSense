@@ -274,8 +274,15 @@ def calculate_cost(
         return 0.015
 
     if "haiku" in model:
-        # Haiku pricing: $0.80 / MTok input, $4.00 / MTok output
-        return (input_tokens * 0.8 + output_tokens * 4.0) / 1_000_000
+        # Haiku pricing: $0.80 / MTok input ($0.08 cached read, $1.00 cached creation), $4.00 / MTok output
+        base_input_tokens = max(0, input_tokens - cache_read - cache_creation)
+        cost = (
+            base_input_tokens * 0.8 +
+            cache_read * 0.08 +
+            cache_creation * 1.00 +
+            output_tokens * 4.0
+        ) / 1_000_000
+        return cost
     else:
         # Sonnet pricing: $3.00 / MTok input ($0.30 cached read, $3.75 cached creation), $15.00 / MTok output
         base_input_tokens = max(0, input_tokens - cache_read - cache_creation)
@@ -1494,7 +1501,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 # Accumulate dynamic cost
                 input_tokens = response.usage.input_tokens
                 output_tokens = response.usage.output_tokens
-                step_cost = calculate_cost("claude-haiku-4-5-20251001", input_tokens, output_tokens)
+                cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                step_cost = calculate_cost("claude-haiku-4-5-20251001", input_tokens, output_tokens, cache_read, cache_creation)
                 
                 # Save cache metrics in metadata for turn verification
                 state_metadata = dict(state.get("metadata", {}))
@@ -1505,6 +1514,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "model": "claude-haiku-4-5-20251001",
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
+                    "cache_read_tokens": cache_read,
+                    "cache_creation_tokens": cache_creation,
                     "cost_usd": step_cost
                 })
                 state["metadata"] = state_metadata
@@ -1777,7 +1788,18 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 is_byok=bool(self.user_key),
                                 max_tokens=1000,
                                 temperature=0.0,
-                                messages=[{"role": "user", "content": prompt_confirm}]
+                                messages=[
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": prompt_confirm,
+                                                "cache_control": {"type": "ephemeral"}
+                                            }
+                                        ]
+                                    }
+                                ]
                             )
                             result = _parse_json_clean(_extract_text_content(response))
                             is_confirmation = result.get("is_confirmation", False)
@@ -1787,7 +1809,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             # Cost Tracking
                             input_tokens = response.usage.input_tokens
                             output_tokens = response.usage.output_tokens
-                            step_cost = calculate_cost("claude-haiku-4-5-20251001", input_tokens, output_tokens)
+                            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                            cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                            step_cost = calculate_cost("claude-haiku-4-5-20251001", input_tokens, output_tokens, cache_read, cache_creation)
                             state_metadata = dict(state.get("metadata", {}))
                             if "cache_metrics" not in state_metadata:
                                 state_metadata["cache_metrics"] = []
@@ -1796,6 +1820,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 "model": "claude-haiku-4-5-20251001",
                                 "input_tokens": input_tokens,
                                 "output_tokens": output_tokens,
+                                "cache_read_tokens": cache_read,
+                                "cache_creation_tokens": cache_creation,
                                 "cost_usd": step_cost
                             })
                             state["metadata"] = state_metadata
@@ -1891,7 +1917,18 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                     is_byok=bool(self.user_key),
                                     max_tokens=1000,
                                     temperature=0.0,
-                                    messages=[{"role": "user", "content": prompt_extract}]
+                                    messages=[
+                                        {
+                                            "role": "user",
+                                            "content": [
+                                                {
+                                                    "type": "text",
+                                                    "text": prompt_extract,
+                                                    "cache_control": {"type": "ephemeral"}
+                                                }
+                                            ]
+                                        }
+                                    ]
                                 )
                                 extracted = _parse_json_clean(_extract_text_content(response))
                                 for k in ["trigger", "actor", "activity", "system", "friction", "location"]:
@@ -1909,16 +1946,21 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 # Cost Tracking
                                 input_tokens = response.usage.input_tokens
                                 output_tokens = response.usage.output_tokens
-                                step_cost = calculate_cost("claude-haiku-4-5-20251001", input_tokens, output_tokens)
+                                cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                                cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                                step_cost = calculate_cost("claude-haiku-4-5-20251001", input_tokens, output_tokens, cache_read, cache_creation)
                                 state_metadata = dict(state.get("metadata", {}))
                                 if "cache_metrics" not in state_metadata:
                                     state_metadata["cache_metrics"] = []
+                                bg_enrich_cost = state_metadata.get("geographic_enrichment_cost", 0.0)
                                 state_metadata["cache_metrics"].append({
                                     "node": "extractor",
                                     "model": "claude-haiku-4-5-20251001",
                                     "input_tokens": input_tokens,
                                     "output_tokens": output_tokens,
-                                    "cost_usd": step_cost
+                                    "cache_read_tokens": cache_read,
+                                    "cache_creation_tokens": cache_creation,
+                                    "cost_usd": step_cost + bg_enrich_cost
                                 })
                                 state["metadata"] = state_metadata
                                 state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
@@ -2006,7 +2048,18 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                     is_byok=bool(self.user_key),
                                     max_tokens=1000,
                                     temperature=0.0,
-                                    messages=[{"role": "user", "content": prompt_question}]
+                                    messages=[
+                                        {
+                                            "role": "user",
+                                            "content": [
+                                                {
+                                                    "type": "text",
+                                                    "text": prompt_question,
+                                                    "cache_control": {"type": "ephemeral"}
+                                                }
+                                            ]
+                                        }
+                                    ]
                                 )
                             question = _extract_text_content(response).strip()
                             clarification_questions = [question]
@@ -2080,7 +2133,18 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 is_byok=bool(self.user_key),
                                 max_tokens=1000,
                                 temperature=0.0,
-                                messages=[{"role": "user", "content": playback_prompt}]
+                                messages=[
+                                    {
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": playback_prompt,
+                                                "cache_control": {"type": "ephemeral"}
+                                            }
+                                        ]
+                                    }
+                                ]
                             )
                             candidate = _extract_text_content(response).strip()
                             if candidate and not candidate.lstrip().startswith("{") and "UNKNOWN" not in candidate:
@@ -2324,7 +2388,13 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     purpose="synthesize_report",
                     is_byok=bool(self.user_key),
                     max_tokens=8000,
-                    system=system_prompt,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": system_prompt,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ],
                     messages=[
                         {"role": "user", "content": f"Here is the history of investigation and evidence ledger gathered:\n{history_text}"}
                     ]
@@ -2362,7 +2432,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 # Cost calculation
                 input_tokens = response.usage.input_tokens
                 output_tokens = response.usage.output_tokens
-                step_cost = calculate_cost("claude-sonnet-5", input_tokens, output_tokens)
+                cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+                cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+                step_cost = calculate_cost("claude-sonnet-5", input_tokens, output_tokens, cache_read, cache_creation)
                 
                 if "cache_metrics" not in state_metadata:
                     state_metadata["cache_metrics"] = []
@@ -2371,6 +2443,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "model": "claude-sonnet-5",
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
+                    "cache_read_tokens": cache_read,
+                    "cache_creation_tokens": cache_creation,
                     "cost_usd": step_cost
                 })
                 state["metadata"] = state_metadata
