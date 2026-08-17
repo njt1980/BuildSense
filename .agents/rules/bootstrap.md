@@ -1,4 +1,4 @@
-# ALWAYS READ agents.md FIRST
+# ALWAYS READ AGENTS.md FIRST
 trigger: always_on
 
-You must always start every new session context by calling `view_file` on `agents.md` at the repository root before making any code modifications or proposing implementation plans.
+You must always start every new session context by calling `view_file` on `AGENTS.md` at the repository root before making any code modifications or proposing implementation plans.
