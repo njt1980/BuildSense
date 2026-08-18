@@ -116,15 +116,17 @@ export function GlobalHeader({ lang }: { lang: string }) {
               >
                 🏠 Workspace Home
               </button>
-              <button
+              <a
+                href={`/${lang}/dev/telemetry`}
+                target="_blank"
+                rel="noopener noreferrer"
                 onClick={() => {
-                  router.push(`/${lang}/dev/telemetry`);
                   setDevDropdownOpen(false);
                 }}
-                className="w-full text-left px-3.5 py-2.5 text-xs text-slate-400 hover:bg-slate-900/50 hover:text-slate-200 transition-all"
+                className="block w-full text-left px-3.5 py-2.5 text-xs text-slate-400 hover:bg-slate-900/50 hover:text-slate-200 transition-all"
               >
                 📊 Telemetry Flow
-              </button>
+              </a>
               <button
                 onClick={() => {
                   router.push(`/${lang}/dev/evaluations`);
