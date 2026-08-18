@@ -42,7 +42,7 @@ class LocalTelemetryStore:
             "level": level,
             "event": event,
             **context,
-            "attributes": sanitize_mapping(attributes),
+            "attributes": sanitize_mapping(attributes, redact_raw=False),
         }
         with self._lock:
             self._events.append(payload)

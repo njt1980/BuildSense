@@ -225,3 +225,14 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** Not yet root-caused. Candidate areas: intake-extraction prompt lacks an explicit anti-hallucination guard for tool/system names; discovery-mode prompt's confirmatory-question ban may not be strongly enough weighted against the model's natural summarizing tendency in longer conversations.
 * **Proposed Resolution:** Not yet implemented.
 * **Files Touched:** `docs/DEFECT_LEDGER.md`
+
+## [CHANGE-004] - Date: 2026-08-18
+* **Issue:** Developers lacked a way to easily copy full run telemetry logs to their clipboard for external analysis, and the telemetry viewer hid raw inputs/outputs (system prompts, user messages, tool arguments, and tool outputs) behind hashes and list lengths.
+* **Root Cause:** Implementation of Phase 3 of Telemetry Log UI Enhancements.
+* **Resolution:** 
+  1. Updated `privacy.py` and `dev_store.py` to support a `redact_raw=False` flag, preserving raw strings/keys in local in-memory storage while still redacting sensitive secrets.
+  2. Updated `llm.py` and `tools.py` to capture raw `messages`, `system`, `response_content`, `tool_input`, and `tool_output` fields during logging.
+  3. Added a "Copy Logs" clipboard copy button in the local telemetry page header.
+  4. Formatted and displayed raw LLM prompts, model completions, tool arguments, and returned outputs in clean, copyable UI panels on the local telemetry viewer.
+  5. Updated backend telemetry tests to assert proper local storage of raw content and redaction of secrets, and verified all frontend/backend code builds and lints successfully.
+* **Files Touched:** `apps/api/app/telemetry/privacy.py`, `apps/api/app/telemetry/dev_store.py`, `apps/api/app/telemetry/logging.py`, `apps/api/app/telemetry/llm.py`, `apps/api/app/telemetry/tools.py`, `apps/api/tests/test_telemetry.py`, `apps/web/src/app/[lang]/dev/telemetry/page.tsx`, `docs/DEFECT_LEDGER.md`

@@ -88,9 +88,8 @@ def test_local_telemetry_events_are_sanitized() -> None:
     attributes = events[0]["attributes"]
     assert attributes["authorization"] == "[REDACTED]"
     assert attributes["anthropic_api_key"] == "[REDACTED]"
-    assert attributes["prompt_hash"]
-    assert attributes["prompt_length"] == 32
-    assert "This is a sensitive user prompt." not in str(events[0])
+    assert attributes["prompt"] == "This is a sensitive user prompt."
+    assert "prompt_hash" not in attributes
 
 
 def test_local_telemetry_api_is_disabled_outside_local(monkeypatch: MonkeyPatch) -> None:
@@ -157,9 +156,12 @@ def test_tool_registry_records_tool_call_events() -> None:
     events = local_telemetry_store.get_by_field("run_id", "run_tool_test")
     event_names = [event["event"] for event in events]
     assert "tool_call_started" in event_names
+    started = next(event for event in events if event["event"] == "tool_call_started")
+    assert started["attributes"]["tool_input"] == {"query": "hello"}
     completed = next(event for event in events if event["event"] == "tool_call_completed")
     assert completed["attributes"]["tool_name"] == "demo_tool"
     assert completed["attributes"]["output_wrapped"] is True
+    assert completed["attributes"]["tool_output"] == output
 
 
 @pytest.mark.asyncio
@@ -185,6 +187,7 @@ async def test_traced_anthropic_call_records_usage_and_cost() -> None:
             is_byok=False,
             max_tokens=100,
             messages=[{"role": "user", "content": "hello"}],
+            system="system-prompt",
         )
     finally:
         reset_context(token)
@@ -193,11 +196,15 @@ async def test_traced_anthropic_call_records_usage_and_cost() -> None:
     events = local_telemetry_store.get_by_field("run_id", "run_llm_test")
     event_names = [event["event"] for event in events]
     assert "llm_call_started" in event_names
+    started = next(event for event in events if event["event"] == "llm_call_started")
+    assert started["attributes"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert started["attributes"]["system"] == "system-prompt"
     completed = next(event for event in events if event["event"] == "llm_call_completed")
     assert completed["attributes"]["llm_model"] == "claude-haiku-4-5-20251001"
     assert completed["attributes"]["input_tokens"] == 100
     assert completed["attributes"]["output_tokens"] == 50
     assert completed["attributes"]["cost_usd"] > 0
+    assert completed["attributes"]["response_content"] == "done"
 
 
 def test_dev_evaluations_results_endpoint() -> None:

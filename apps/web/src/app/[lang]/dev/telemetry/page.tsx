@@ -61,6 +61,19 @@ export default function LocalTelemetryPage(): React.JSX.Element {
   const [errorText, setErrorText] = React.useState<string>("");
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
   const [showRawJson, setShowRawJson] = React.useState<Record<string, boolean>>({});
+  const [copyFeedback, setCopyFeedback] = React.useState<boolean>(false);
+
+  const handleCopyLogs = React.useCallback(async (): Promise<void> => {
+    if (events.length === 0) return;
+    try {
+      const logsJson = JSON.stringify(events, null, 2);
+      await navigator.clipboard.writeText(logsJson);
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy telemetry logs", err);
+    }
+  }, [events]);
 
   const visibleRuns = React.useMemo(() => {
     if (runFilter === "eval") return runs.filter((run) => run.is_eval);
@@ -304,12 +317,33 @@ export default function LocalTelemetryPage(): React.JSX.Element {
           </aside>
 
           <section className="rounded-lg border border-slate-900 bg-[#0b0f19]">
-            <div className="flex flex-col gap-2 border-b border-slate-900 px-4 py-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-2 border-b border-slate-900 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-sm font-bold text-slate-100">Event Timeline</h2>
                 <p className="mt-1 font-mono text-xs text-slate-500">{selectedRunId || "Select a run"}</p>
               </div>
-              {isLoading && <span className="text-xs text-amber-400">Loading...</span>}
+              <div className="flex items-center gap-2">
+                {events.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyLogs()}
+                    className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:border-amber-500/40 transition-all flex items-center gap-1.5"
+                  >
+                    {copyFeedback ? (
+                      <>
+                        <span className="text-emerald-400">✓</span>
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>📋</span>
+                        <span>Copy Logs</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                {isLoading && <span className="text-xs text-amber-400">Loading...</span>}
+              </div>
             </div>
 
             <div className="max-h-[720px] overflow-y-auto p-4">
@@ -434,7 +468,69 @@ export default function LocalTelemetryPage(): React.JSX.Element {
                       )}
 
                       {event.attributes && Object.keys(event.attributes).length > 0 && (
-                        <div className="mt-3 space-y-2">
+                        <div className="mt-3 space-y-3">
+                          {!showRawJson[`${event.timestamp}-${event.event}-${index}`] && (
+                            <>
+                              {event.attributes.system && (
+                                <div className="space-y-1.5">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">System Prompt</span>
+                                  <pre className="max-h-40 overflow-auto rounded border border-slate-900 bg-slate-950 p-2.5 text-xs text-slate-300 font-mono whitespace-pre-wrap select-all">
+                                    {String(event.attributes.system)}
+                                  </pre>
+                                </div>
+                              )}
+
+                              {event.attributes.messages && Array.isArray(event.attributes.messages) && (
+                                <div className="space-y-2">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Prompt Messages</span>
+                                  <div className="space-y-2 max-h-80 overflow-auto rounded border border-slate-900 bg-slate-950 p-3 select-all">
+                                    {(event.attributes.messages as Array<{ role: string; content: unknown }>).map((msg, idx) => (
+                                      <div key={idx} className="border-b border-slate-900/60 pb-2 last:border-0 last:pb-0">
+                                        <div className="flex items-center gap-2">
+                                          <span className={`rounded px-1.5 py-0.5 text-[9px] uppercase font-bold ${
+                                            msg.role === "user" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-sky-500/10 text-sky-400 border border-sky-500/20"
+                                          }`}>
+                                            {msg.role}
+                                          </span>
+                                        </div>
+                                        <div className="mt-1 font-mono text-xs text-slate-355 whitespace-pre-wrap">
+                                          {typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2)}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {event.attributes.response_content && (
+                                <div className="space-y-1.5">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Response Content</span>
+                                  <pre className="max-h-80 overflow-auto rounded border border-slate-900 bg-slate-950 p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap select-all">
+                                    {String(event.attributes.response_content)}
+                                  </pre>
+                                </div>
+                              )}
+
+                              {event.attributes.tool_input && (
+                                <div className="space-y-1.5">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tool Input Arguments</span>
+                                  <pre className="max-h-60 overflow-auto rounded border border-slate-900 bg-slate-950 p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap select-all">
+                                    {JSON.stringify(event.attributes.tool_input, null, 2)}
+                                  </pre>
+                                </div>
+                              )}
+
+                              {event.attributes.tool_output && (
+                                <div className="space-y-1.5">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Tool Output</span>
+                                  <pre className="max-h-80 overflow-auto rounded border border-slate-900 bg-[#03060d] p-3 text-xs text-slate-300 font-mono whitespace-pre-wrap select-all">
+                                    {String(event.attributes.tool_output)}
+                                  </pre>
+                                </div>
+                              )}
+                            </>
+                          )}
+
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Properties</span>
                             <button
@@ -454,7 +550,21 @@ export default function LocalTelemetryPage(): React.JSX.Element {
                               <table className="w-full text-left border-collapse">
                                 <tbody>
                                   {Object.entries(event.attributes)
-                                    .filter(([k]) => !["cost_usd", "duration_ms", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "llm_model", "llm_purpose"].includes(k))
+                                    .filter(([k]) => ![
+                                      "cost_usd",
+                                      "duration_ms",
+                                      "input_tokens",
+                                      "output_tokens",
+                                      "cache_read_tokens",
+                                      "cache_creation_tokens",
+                                      "llm_model",
+                                      "llm_purpose",
+                                      "messages",
+                                      "system",
+                                      "response_content",
+                                      "tool_input",
+                                      "tool_output"
+                                    ].includes(k))
                                     .map(([k, val]) => (
                                       <tr key={k} className="border-b border-slate-900/40 last:border-0 hover:bg-slate-900/10">
                                         <td className="px-3 py-2 font-semibold text-slate-400 capitalize w-1/3 truncate" title={k}>{k.replace(/_/g, " ")}</td>

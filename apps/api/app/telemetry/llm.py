@@ -58,6 +58,8 @@ async def traced_anthropic_messages_create(
         is_byok=is_byok,
         prompt_hash=_payload_hash(kwargs.get("messages")),
         system_hash=_payload_hash(kwargs.get("system")) if kwargs.get("system") is not None else None,
+        messages=kwargs.get("messages"),
+        system=kwargs.get("system"),
     )
     try:
         response = await client.messages.create(model=model, **kwargs)
@@ -68,6 +70,19 @@ async def traced_anthropic_messages_create(
         cache_read_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
         cache_creation_tokens = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
         cost_usd = _estimate_cost(model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+        
+        response_content = None
+        if hasattr(response, "content"):
+            content_blocks = response.content
+            if isinstance(content_blocks, list):
+                response_content = "".join(
+                    getattr(block, "text", "")
+                    for block in content_blocks
+                    if getattr(block, "type", "text") == "text"
+                )
+            elif isinstance(content_blocks, str):
+                response_content = content_blocks
+
         log_event(
             "llm_call_completed",
             llm_call_id=llm_call_id,
@@ -83,6 +98,7 @@ async def traced_anthropic_messages_create(
             cost_usd=round(cost_usd, 8),
             stop_reason=getattr(response, "stop_reason", None),
             response_hash=_payload_hash(getattr(response, "content", "")),
+            response_content=response_content,
         )
         return response
     except Exception as exc:

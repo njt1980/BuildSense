@@ -24,6 +24,8 @@ _RAW_CONTENT_KEYS = (
     "messages",
     "response_content",
     "document",
+    "tool_input",
+    "tool_output",
 )
 
 
@@ -32,7 +34,7 @@ def stable_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
-def sanitize_mapping(payload: Dict[str, Any]) -> Dict[str, Any]:
+def sanitize_mapping(payload: Dict[str, Any], redact_raw: bool = True) -> Dict[str, Any]:
     """Return a telemetry-safe copy of a dictionary."""
     sanitized: Dict[str, Any] = {}
     for key, value in payload.items():
@@ -44,16 +46,33 @@ def sanitize_mapping(payload: Dict[str, Any]) -> Dict[str, Any]:
             sanitized[key] = "[REDACTED]"
             continue
         if any(part == lower_key for part in _RAW_CONTENT_KEYS):
-            if isinstance(value, str):
-                sanitized[f"{key}_hash"] = stable_hash(value)
-                sanitized[f"{key}_length"] = len(value)
+            if not redact_raw:
+                if isinstance(value, dict):
+                    sanitized[key] = sanitize_mapping(value, redact_raw=redact_raw)
+                elif isinstance(value, list):
+                    sanitized[key] = [
+                        sanitize_mapping(item, redact_raw=redact_raw) if isinstance(item, dict) else item
+                        for item in value
+                    ]
+                else:
+                    sanitized[key] = value
             else:
-                sanitized[key] = "[REDACTED]"
+                if isinstance(value, str):
+                    sanitized[f"{key}_hash"] = stable_hash(value)
+                    sanitized[f"{key}_length"] = len(value)
+                else:
+                    sanitized[key] = "[REDACTED]"
             continue
         if isinstance(value, dict):
-            sanitized[key] = sanitize_mapping(value)
+            sanitized[key] = sanitize_mapping(value, redact_raw=redact_raw)
         elif isinstance(value, list):
-            sanitized[key] = f"[list:{len(value)}]"
+            if not redact_raw:
+                sanitized[key] = [
+                    sanitize_mapping(item, redact_raw=redact_raw) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            else:
+                sanitized[key] = f"[list:{len(value)}]"
         else:
             sanitized[key] = value
     return sanitized

@@ -64,6 +64,7 @@ class ToolRegistry:
             tool_source=definition.source,
             requires_untrusted_wrapping=definition.requires_untrusted_wrapping,
             input_keys=sorted(kwargs.keys()),
+            tool_input=kwargs,
         )
         try:
             output = definition.handler(**kwargs)
@@ -85,6 +86,7 @@ class ToolRegistry:
                 duration_ms=duration_ms,
                 output_bytes=len(output.encode("utf-8")),
                 output_wrapped=output_wrapped,
+                tool_output=output,
             )
             return output
         except Exception as exc:
