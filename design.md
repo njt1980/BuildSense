@@ -1,77 +1,108 @@
-# System Design: Fix Test Hangs, Test Crashes, Filter Worker Messages, and Optimize Tool Latency
+# System Design: CI and Quality-Gate Truth-Telling (Audit Cycle 1 of 5)
 
 ## 1. Architecture Overview
-The BuildSense backend orchestrator executes parallel worker tasks concurrently using `asyncio.gather`. However, because they write to and read from the same `messages` key in `AgentState`, their conversation contexts pollute each other over multiple execution loops. Additionally, unit tests that verify persistence and tool handlers make live network requests to the Anthropic API and external search endpoints, causing hangs and slow runs.
 
-To fix these issues, we will:
-1. **Isolate Worker Persona Message History**: Filter message history inside `_execute_live_sdk_loop` to ensure each worker persona only receives their own private history (along with the common playback history) and never sees other workers' tool calls, tool results, or responses.
-2. **Exclude Worker and Tool Messages from User Chat**: Update `_save_intermediate_state` and the final `run_pipeline` response parsing to filter out worker persona messages and tool results, ensuring the user only sees clean conversation turns with the intake consultant (`BuildSense Intelligence`).
-3. **Optimize market_signal Tool**: Run HN and Reddit search calls concurrently in a thread pool and reduce timeout to 1.0 second.
-4. **Mock Unit Test Network Traffic**: Ensure all unit tests run offline in mock mode.
+Today, the repository's quality signal is split across two disconnected layers:
 
----
+- **Local, opt-in**: `.githooks/pre-commit` runs `check_phase_gate.py`, `sync_agent_rules.py --check`, and the backend test suite — but only for a contributor who has run `git config core.hooksPath .githooks`. Nothing enforces that.
+- **CI, always-on but broken**: `reliability-phase1.yml` and `ledger-enforce.yml` run on GitHub Actions, but (a) `reliability-phase1.yml`'s triggers target a `main` branch that doesn't exist in this repo, (b) even when triggered, its mypy/pytest steps swallow failures via `|| true`, and (c) neither workflow invokes `check_phase_gate.py`, so the guardrail built after BUG-028 has no CI-side presence at all.
+
+Separately, the specific guardrail BUG-028 exposed — LLM-judge passing thresholds — is encoded as ~23 duplicated `0.90` literals with no single source of truth and no fast offline test pinning the value or the live/mock gating logic that decides whether those literals are even checked.
+
+This cycle closes both gaps without touching orchestration logic, auth, or the eval suite's live-run scheduling:
+
+1. **Fix branch targeting** so CI actually runs on real commits.
+2. **Remove failure-swallowing** so CI actually reports what happened.
+3. **Wire the existing phase-gate script into CI** using its existing `--staged-files` override, so the guardrail applies regardless of local hook configuration.
+4. **Centralize the threshold and its gating logic** into one importable module used by both eval test files.
+5. **Add fast, offline tests** that would have caught both halves of BUG-028 (the lowered literal, and an inverted live/mock gate) without needing a live API key.
 
 ## 2. Data Flow
+
 ```mermaid
 graph TD
-    A[run_pipeline] --> B[_node_execute_tools]
-    B --> C[run_one_task in parallel]
-    C --> D[_execute_live_sdk_loop]
-    D --> E[Filter api_messages to current Persona]
-    E --> F[Call Claude Sonnet]
-    F --> G[Append Persona-named Tool/Assistant messages]
-    G --> H[Merge task results in _node_execute_tools]
-    H --> I[_save_intermediate_state]
-    I --> J[Filter out non-consultant assistant & tool messages for DB]
-    A --> K[Filter out non-consultant assistant & tool messages for API Response]
+    A[git commit] --> B{Hook installed?}
+    B -- yes --> C[.githooks/pre-commit: check_phase_gate.py, sync_agent_rules.py --check, pytest]
+    B -- no, or --no-verify --> D[Guardrail skipped locally]
+    A --> E[git push]
+    E --> F[GitHub Actions: reliability-phase1.yml]
+    F -->|before this cycle| G[triggers on 'main' - never fires on 'master']
+    F -->|after this cycle| H[triggers on 'master']
+    H --> I[fetch base ref, compute changed files]
+    I --> J[check_phase_gate.py --staged-files ...]
+    I --> K[mypy app/ - failure now fails the job]
+    I --> L[pytest tests/ -q - failure now fails the job]
+    J -->|non-zero exit| M[Job fails]
+    K -->|non-zero exit| M
+    L -->|non-zero exit| M
 ```
 
----
+The key structural change: **D and G are the two ways the guardrail is currently invisible**; this cycle makes the CI path (H/I/J) a reliable backstop independent of whether a contributor's local hook is installed.
 
 ## 3. Atomic Implementation Steps
 
-### Step 1: Isolate Persona Message History
-- **Read Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Modify Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Description**: Add a filter in `_execute_live_sdk_loop` when building `api_messages` to skip messages where the `name` is not `None` and is not `persona` and is not `"BuildSense Intelligence"`.
+### Step 1: Fix and harden `reliability-phase1.yml`
+- **Read Path**: [`.github/workflows/reliability-phase1.yml`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/.github/workflows/reliability-phase1.yml)
+- **Modify Path**: [`.github/workflows/reliability-phase1.yml`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/.github/workflows/reliability-phase1.yml)
+- **Description**:
+  - Change `on.push.branches` and `on.pull_request.branches` from `[ main ]` to `[ master ]`.
+  - Add `fetch-depth: 0` to the existing `actions/checkout@v4` step (needed so the base-ref diff in the next bullet has history to compare against).
+  - Add a new step, after checkout and before the Python setup, that: on `pull_request` events, runs `git diff --name-only origin/${{ github.event.pull_request.base.ref }}...HEAD`; on `push` events, runs `git diff --name-only HEAD~1...HEAD` (falling back to an empty change set on a repo's first commit, e.g. via `|| true` on this diff step only — the diff step, not the check itself); then runs `python scripts/check_phase_gate.py --staged-files <the resulting file list>` and fails the step (`exit 1`) on non-zero.
+  - Remove `|| true` from the "Run mypy backend type checks" step.
+  - Remove `|| true` from the "Run pytest (fast tests)" step.
+- **Targeted verification**: no local runner for GitHub Actions; verify by inspecting the diff and confirming `python scripts/check_phase_gate.py --staged-files spec.md design.md` (a mixed doc+non-existent-source case) still behaves as expected when run manually from repo root.
 
-### Step 2: Filter Worker and Tool Messages from DB & Response
-- **Read Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Modify Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Description**: 
-  - Update `_save_intermediate_state` to skip assistant messages where `name` is not in `{None, "BuildSense Intelligence"}` and skip tool messages.
-  - Update `run_pipeline` to apply the same filter on the returned `SessionState.messages`.
+### Step 2: Fix `ledger-enforce.yml` branch reference
+- **Read Path**: [`.github/workflows/ledger-enforce.yml`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/.github/workflows/ledger-enforce.yml)
+- **Modify Path**: [`.github/workflows/ledger-enforce.yml`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/.github/workflows/ledger-enforce.yml)
+- **Description**: Change `git fetch origin main` to `git fetch origin master`, and `origin/main...HEAD` to `origin/master...HEAD`, in the "Fail CI if tests failed and ledger not updated" step.
+- **Targeted verification**: manual inspection only (no local Actions runner).
 
-### Step 3: Fix TypeError in Analyst Behavior Test
-- **Read Path**: [`apps/api/tests/test_analyst_behavior.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_analyst_behavior.py)
-- **Modify Path**: [`apps/api/tests/test_analyst_behavior.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_analyst_behavior.py)
-- **Description**: Update the mock `complete_execution_loop` function signature to `async def complete_execution_loop(state_dict: dict, *args: Any, **kwargs: Any) -> None:`.
+### Step 3: Create the shared threshold module and update `test_agent_quality.py`
+- **Read Path**: [`apps/api/evals/test_agent_quality.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/apps/api/evals/test_agent_quality.py)
+- **Modify Path**: `apps/api/evals/thresholds.py` (new file), [`apps/api/evals/test_agent_quality.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/apps/api/evals/test_agent_quality.py)
+- **Description**:
+  - Create `apps/api/evals/thresholds.py` with `PASSING_THRESHOLD: float = 0.90` (comment referencing BUG-028) and `assert_quality_grades_pass(grades: dict, is_live: bool, threshold: float = PASSING_THRESHOLD) -> None`, which no-ops when `is_live` is `False` and otherwise raises `AssertionError` listing every metric below `threshold`.
+  - In `test_agent_quality.py`, replace the inline `if not is_live: ... else: assert grades["zero_jargon_score"] >= 0.90 ... assert grades["privacy_safety_score"] >= 0.90` block (around lines 201-218) with `assert_quality_grades_pass(grades, is_live)`, importing both names from `evals.thresholds`.
+- **Targeted verification**: `pytest apps/api/evals/test_agent_quality.py -v` (offline path only; live path requires `LIVE_EVALS=true` + API key and is unchanged in behavior, not re-verified here).
 
-### Step 4: Fix Hang in Checkpointer Persistence Test
-- **Read Path**: [`apps/api/tests/test_langgraph.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_langgraph.py)
-- **Modify Path**: [`apps/api/tests/test_langgraph.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_langgraph.py)
-- **Description**: Wrap the pipeline runs in `test_langgraph_checkpoint_persistence_and_resumption` with `with patch("app.core.orchestrator.HAS_ANTHROPIC", False):`.
+### Step 4: Update `test_runner.py` to use the shared module
+- **Read Path**: [`apps/api/tests/evals/test_runner.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/apps/api/tests/evals/test_runner.py)
+- **Modify Path**: [`apps/api/tests/evals/test_runner.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/apps/api/tests/evals/test_runner.py)
+- **Description**:
+  - Import `PASSING_THRESHOLD`/`assert_quality_grades_pass` from `evals.thresholds`.
+  - Replace the per-scenario grading block's `assert grades["..."] >= 0.90` chain (around lines 409-434) with `assert_quality_grades_pass(grades, is_live)`.
+  - In `test_llm_judge_rubrics`, replace the "good fixture" `assert good_grades["..."] >= 0.90` chain (around lines 524-529) with `assert_quality_grades_pass(good_grades, is_live=True)`, and replace the "bad fixture" `assert (... < 0.90 or ...)` chain (around lines 553-558) with an explicit `pytest.raises(AssertionError)` around `assert_quality_grades_pass(bad_grades, is_live=True)`.
+- **Targeted verification**: `pytest apps/api/tests/evals/test_runner.py -v` (offline-gated portions only; this file's `LIVE_EVALS`-gated assertions are unchanged in behavior).
 
-### Step 5: Optimize market_signal Tool Latency & Parallelize Calls
-- **Read Path**: [`apps/api/app/mcp/tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/mcp/tools.py)
-- **Modify Path**: [`apps/api/app/mcp/tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/mcp/tools.py)
-- **Description**: 
-  - Refactor `market_signal_mcp` to fetch HackerNews and Reddit search results concurrently in parallel threads using `concurrent.futures.ThreadPoolExecutor`.
-  - Reduce connection/request timeouts for both endpoints from 5.0 seconds to 1.0 second.
+### Step 5: Add offline guardrail regression tests
+- **Read Path**: `apps/api/evals/thresholds.py` (created in Step 3)
+- **Modify Path**: `apps/api/tests/test_eval_guardrails.py` (new file)
+- **Description**: Add three tests, none requiring `LIVE_EVALS` or an API key:
+  1. `test_passing_threshold_is_090` — asserts `PASSING_THRESHOLD == 0.90`, with a comment referencing BUG-028.
+  2. `test_assert_quality_grades_pass_raises_when_live_and_failing` — calls `assert_quality_grades_pass({"zero_jargon_score": 0.5}, is_live=True)` inside `pytest.raises(AssertionError)`.
+  3. `test_assert_quality_grades_pass_noop_when_not_live` — calls `assert_quality_grades_pass({"zero_jargon_score": 0.5}, is_live=False)` and asserts no exception is raised (directly covering BUG-028's gate-inversion failure mode).
+- **Targeted verification**: `pytest apps/api/tests/test_eval_guardrails.py -v`
 
-### Step 6: Mock Network in market_signal Tool Test
-- **Read Path**: [`apps/api/tests/test_mcp_tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_mcp_tools.py)
-- **Modify Path**: [`apps/api/tests/test_mcp_tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_mcp_tools.py)
-- **Description**: Update `test_market_signal_mcp_containment` to mock the `httpx.get` calls, ensuring the test run is fully offline.
+### Step 6: Full verification pass
+- **Read Path**: n/a (verification only, no source reads beyond what prior steps already covered)
+- **Modify Path**: none
+- **Description**: Run the full backend suite and both local guardrail scripts to confirm nothing regressed and the phase-gate/sync checks are satisfied for the final commit of this cycle.
+- **Targeted verification**: `pytest apps/api/tests/ -v`, `python scripts/check_phase_gate.py`, `python scripts/sync_agent_rules.py --check`.
 
 ---
 
 ## 4. Verification Plan
 
 ### Automated Tests
-- Run unit and integration tests:
-  `pytest tests/ -v`
-- Run specific tests:
-  `pytest tests/test_analyst_behavior.py -k test_confirmed_intake_is_required_before_execution -v`
-  `pytest tests/test_langgraph.py -v`
-  `pytest tests/test_mcp_tools.py -v`
+- `pytest apps/api/tests/ -v` (run from `apps/api`)
+- `pytest apps/api/tests/test_eval_guardrails.py -v`
+- `pytest apps/api/evals/test_agent_quality.py -v`
+- `pytest apps/api/tests/evals/test_runner.py -v`
+
+### Local Guardrail Scripts
+- `python scripts/check_phase_gate.py` (repo root)
+- `python scripts/sync_agent_rules.py --check` (repo root)
+
+### Manual
+- Diff review of both workflow YAML files (no local GitHub Actions runner available).
