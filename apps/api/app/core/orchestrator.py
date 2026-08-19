@@ -1511,6 +1511,11 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             seen = set()
             for msg in state.get("messages", []):
                 m = _coerce_message(cast(Union[Message, Dict[str, Any]], msg))
+                if m.role == "tool":
+                    continue
+                if m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"}:
+                    continue
+
                 content = m.content
                 if not content or "<untrusted_tool_output" in content:
                     # Skip streaming raw tool outputs or empty artifacts
@@ -3281,14 +3286,24 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     final_state_dict = await app_graph.ainvoke(inputs, cast(Any, config))
                     
                     # Wrap output dictionary back into SessionState model
-                    return SessionState(**final_state_dict)
+                    res = SessionState(**final_state_dict)
+                    res.messages = [
+                        m for m in res.messages
+                        if m.role != "tool" and not (m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"})
+                    ]
+                    return res
             except Exception as e:
                 print(f"Postgres checkpointer failure ({e}). Running on MemorySaver.")
 
         # Fallback to local memory Saver
         app_graph = self.workflow.compile(checkpointer=self.memory_checkpointer)
         final_state_dict = await app_graph.ainvoke(inputs, cast(Any, config))
-        return SessionState(**final_state_dict)
+        res = SessionState(**final_state_dict)
+        res.messages = [
+            m for m in res.messages
+            if m.role != "tool" and not (m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"})
+        ]
+        return res
 
 
 # Create global orchestrator instance

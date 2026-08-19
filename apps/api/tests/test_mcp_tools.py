@@ -5,6 +5,7 @@ for search, economics calculator, and SOP parser tools.
 """
 
 import json
+from unittest.mock import patch, MagicMock
 from app.mcp.tools import web_search_mcp, calculator_mcp, document_parser_mcp, market_signal_mcp
 
 
@@ -91,8 +92,39 @@ def test_market_signal_mcp_containment() -> None:
     """
     Verifies that the market signals tool wraps findings in standard untrusted XML boundaries.
     """
-    output = market_signal_mcp("saas marketing")
-    assert output.startswith('<untrusted_tool_output source="market_signal">')
-    assert output.endswith('</untrusted_tool_output>')
-    assert "Real-time research signals found" in output
+    with patch("app.mcp.tools.httpx.get") as mock_get:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "hits": [
+                {
+                    "title": "HN test story",
+                    "url": "https://news.ycombinator.com/item?id=123",
+                    "num_comments": 10,
+                    "points": 20,
+                    "objectID": "123"
+                }
+            ],
+            "data": {
+                "children": [
+                    {
+                        "data": {
+                            "title": "Reddit test post",
+                            "subreddit": "saas",
+                            "num_comments": 5,
+                            "score": 15,
+                            "permalink": "/r/saas/comments/abc"
+                        }
+                    }
+                ]
+            }
+        }
+        mock_get.return_value = mock_response
+
+        output = market_signal_mcp("saas marketing")
+        assert output.startswith('<untrusted_tool_output source="market_signal">')
+        assert output.endswith('</untrusted_tool_output>')
+        assert "Real-time research signals found" in output
+        assert "HN test story" in output
+        assert "Reddit test post" in output
 

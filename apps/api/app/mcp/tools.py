@@ -7,6 +7,7 @@ SOP process parsing, and real-time market signals scraping.
 import json
 import httpx
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 
 
 def web_search_mcp(query: str) -> str:
@@ -79,16 +80,11 @@ def document_parser_mcp(sop_text: str) -> str:
     return json.dumps(steps)
 
 
-def market_signal_mcp(query: str, niche: Optional[str] = None) -> str:
-    """
-    Fetches real-time quantitative and qualitative market validation signal data
-    from HackerNews Algolia Search API and Reddit Search JSON.
-    Grounds LLM assertions with cited actual user complaints and discussion volume.
-    """
+def _fetch_hn_signals(query: str) -> list[str]:
     hn_results = []
     try:
         url = f"https://hn.algolia.com/api/v1/search?query={query}&tags=story"
-        response = httpx.get(url, timeout=5.0)
+        response = httpx.get(url, timeout=1.0)
         if response.status_code == 200:
             hits = response.json().get("hits", [])[:5]
             for hit in hits:
@@ -99,12 +95,15 @@ def market_signal_mcp(query: str, niche: Optional[str] = None) -> str:
                 hn_results.append(f"- [HN] Title: '{title}' | Link: {url_link} | Comments: {comments} | Points: {points}")
     except Exception as e:
         print(f"Error fetching HackerNews signals: {e}")
+    return hn_results
 
+
+def _fetch_reddit_signals(query: str) -> list[str]:
     reddit_results = []
     try:
         headers = {"User-Agent": "BuildSenseMarketSignalTool/2.0.0"}
         url = f"https://www.reddit.com/search.json?q={query}&limit=5"
-        response = httpx.get(url, headers=headers, timeout=5.0)
+        response = httpx.get(url, headers=headers, timeout=1.0)
         if response.status_code == 200:
             posts = response.json().get("data", {}).get("children", [])
             for post in posts:
@@ -117,6 +116,20 @@ def market_signal_mcp(query: str, niche: Optional[str] = None) -> str:
                 reddit_results.append(f"- [/r/{subreddit}] Title: '{title}' | Link: {permalink} | Score: {score} | Comments: {comments}")
     except Exception as e:
         print(f"Error fetching Reddit signals: {e}")
+    return reddit_results
+
+
+def market_signal_mcp(query: str, niche: Optional[str] = None) -> str:
+    """
+    Fetches real-time quantitative and qualitative market validation signal data
+    from HackerNews Algolia Search API and Reddit Search JSON.
+    Grounds LLM assertions with cited actual user complaints and discussion volume.
+    """
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        hn_future = executor.submit(_fetch_hn_signals, query)
+        reddit_future = executor.submit(_fetch_reddit_signals, query)
+        hn_results = hn_future.result()
+        reddit_results = reddit_future.result()
 
     results_list = hn_results + reddit_results
     
