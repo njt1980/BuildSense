@@ -2898,7 +2898,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         state: Dict[str, Any],
         api_key: str,
         is_byok: bool = False,
-        task: Dict[str, Any] = None
+        task: Optional[Dict[str, Any]] = None
     ) -> None:
         client = AsyncAnthropic(api_key=api_key)
 
@@ -3193,7 +3193,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             )
             next_task["done"] = True
 
-    async def _execute_mock_simulation_loop(self, state: Dict[str, Any], task: Dict[str, Any] = None) -> None:
+    async def _execute_mock_simulation_loop(self, state: Dict[str, Any], task: Optional[Dict[str, Any]] = None) -> None:
         next_task = task if task is not None else next((t for t in state["dag_plan"] if not t["done"]), None)
         if not next_task:
             return
