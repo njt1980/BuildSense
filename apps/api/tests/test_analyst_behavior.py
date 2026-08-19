@@ -166,7 +166,7 @@ async def test_online_business_does_not_require_location() -> None:
 @pytest.mark.asyncio
 async def test_confirmed_intake_is_required_before_execution() -> None:
     """Only a user confirmation should move a complete intake into execution."""
-    async def complete_execution_loop(state_dict: dict) -> None:
+    async def complete_execution_loop(state_dict: dict, *args, **kwargs) -> None:
         """Mark the execution DAG complete so this eval can observe routing."""
         state_dict["dag_plan"] = [
             {"task_id": "1", "task": "deconstruct_workflows", "persona": "Process Analyst Persona", "done": True},

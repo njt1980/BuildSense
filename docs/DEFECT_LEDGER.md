@@ -236,3 +236,9 @@ This ledger records defects discovered during development, their root causes, an
   4. Formatted and displayed raw LLM prompts, model completions, tool arguments, and returned outputs in clean, copyable UI panels on the local telemetry viewer.
   5. Updated backend telemetry tests to assert proper local storage of raw content and redaction of secrets, and verified all frontend/backend code builds and lints successfully.
 * **Files Touched:** `apps/api/app/telemetry/privacy.py`, `apps/api/app/telemetry/dev_store.py`, `apps/api/app/telemetry/logging.py`, `apps/api/app/telemetry/llm.py`, `apps/api/app/telemetry/tools.py`, `apps/api/tests/test_telemetry.py`, `apps/web/src/app/[lang]/dev/telemetry/page.tsx`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-031] - Date: 2026-08-19
+* **Issue:** Analyst behavior test `test_confirmed_intake_is_required_before_execution` failed with a `TypeError` due to an unexpected keyword argument `task` passed to the mocked execution loop.
+* **Root Cause:** The mock function `complete_execution_loop` was defined with a signature that only accepted `state_dict: dict`, whereas the orchestrator logic calls it with additional keyword arguments (like `task=local_task`).
+* **Resolution:** Updated `complete_execution_loop` to accept arbitrary positional and keyword arguments (`*args, **kwargs`).
+* **Files Touched:** `apps/api/tests/test_analyst_behavior.py`, `docs/DEFECT_LEDGER.md`

@@ -2953,10 +2953,22 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             }
         ]
 
+        # Locate next unfinished task
+        next_task = task if task is not None else next((t for t in state["dag_plan"] if not t["done"]), None)
+        if not next_task:
+            return
+
+        persona = next_task["persona"]
+        task_name = next_task["task"]
+
         api_messages: List[Dict[str, Any]] = []
         for message in state["messages"]:
             role = message.role if hasattr(message, "role") else message.get("role")
             content = message.content if hasattr(message, "content") else message.get("content")
+            name = message.name if hasattr(message, "name") else message.get("name")
+            if name is not None and name != persona and name != "BuildSense Intelligence":
+                continue
+
             if role == "assistant":
                 try:
                     parsed_content = json.loads(content)
@@ -2980,14 +2992,6 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         }
                     ]
                 })
-
-        # Locate next unfinished task
-        next_task = task if task is not None else next((t for t in state["dag_plan"] if not t["done"]), None)
-        if not next_task:
-            return
-
-        persona = next_task["persona"]
-        task_name = next_task["task"]
 
         # If conversation ends in assistant message, append user message requesting the next task to avoid prefill issues
         if api_messages and api_messages[-1]["role"] == "assistant":
