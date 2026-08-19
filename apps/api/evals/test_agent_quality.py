@@ -141,23 +141,7 @@ async def test_agent_eval_golden_dataset() -> None:
                 
                 output_state = await orchestrator.run_pipeline(state)
 
-                # Format the judge query payload
-                messages_dump = [msg.model_dump() for msg in output_state.messages]
-                metadata_dump = output_state.metadata
-                
-                judge_query = JUDGE_USER_TEMPLATE.format(
-                    mode=test_case["mode"],
-                    motivation=test_case["motivation"],
-                    prompt=test_case["prompt"],
-                    final_status=output_state.status.value,
-                    metadata_dump=json.dumps(metadata_dump),
-                    messages_dump=json.dumps(messages_dump),
-                )
-
-                # Call the LLM judge to score results
-                grades = await invoke_llm_judge(judge_query)
-
-                # Assert correct status classification
+                # Assert correct status classification for first turn
                 expected_status_str = test_case["expected_routing_status"]
                 print(f"Case '{test_case['name']}': Expected routing status: {expected_status_str}, got: {output_state.status.value}")
                 if output_state.status.value == "FAILED":
@@ -165,6 +149,49 @@ async def test_agent_eval_golden_dataset() -> None:
                 assert output_state.status.value == expected_status_str, (
                     f"Routing failed. Expected: {expected_status_str}, got: {output_state.status.value}. Reason: {output_state.metadata.get('failure_reason')}"
                 )
+
+                # Drive multi-turn conversation to completion if AWAITING_CLARIFICATION
+                final_state = output_state
+                if test_case["mode"] == "OPTIMIZER":
+                    turn = 0
+                    while final_state.status not in [SessionStatus.COMPLETED, SessionStatus.FAILED] and turn < 5:
+                        if final_state.status == SessionStatus.AWAITING_CLARIFICATION:
+                            required_keys = ["trigger", "actor", "activity", "system"]
+                            components_obj = final_state.process_components
+                            if hasattr(components_obj, "model_dump"):
+                                components = components_obj.model_dump()
+                            elif hasattr(components_obj, "dict"):
+                                components = components_obj.dict()
+                            elif isinstance(components_obj, dict):
+                                components = components_obj
+                            else:
+                                components = {}
+                            all_present = all(components.get(k) and str(components[k]).lower() not in ["", "unknown", "none", "null"] for k in required_keys)
+                            
+                            user_reply = "yep" if all_present else "We use Excel and it is based in Chicago"
+                            final_state.messages.append(
+                                Message(role="user", content=user_reply, name=None, tool_call_id=None)
+                            )
+                            final_state.status = SessionStatus.ROUTING
+                            
+                        final_state = await orchestrator.run_pipeline(final_state)
+                        turn += 1
+
+                # Format the judge query payload based on the final conversation state
+                messages_dump = [msg.model_dump() for msg in final_state.messages]
+                metadata_dump = final_state.metadata
+                
+                judge_query = JUDGE_USER_TEMPLATE.format(
+                    mode=test_case["mode"],
+                    motivation=test_case["motivation"],
+                    prompt=test_case["prompt"],
+                    final_status=final_state.status.value,
+                    metadata_dump=json.dumps(metadata_dump),
+                    messages_dump=json.dumps(messages_dump),
+                )
+
+                # Call the LLM judge to score results
+                grades = await invoke_llm_judge(judge_query)
 
                 # Assert scores are above the passing thresholds
                 assert grades["routing_accuracy"] == 1, (
