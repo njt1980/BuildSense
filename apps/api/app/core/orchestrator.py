@@ -2343,7 +2343,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
 
     async def _node_execute_tools(self, state: AgentState) -> Dict[str, Any]:
         """
-        Node: Evaluates DAG tasks and invokes tools.
+        Node: Evaluates DAG tasks and invokes tools concurrently under OPTIMIZER mode.
         """
         dag_plan = list(state["dag_plan"])
         if not dag_plan:
@@ -2352,13 +2352,72 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         state_copy: Dict[str, Any] = dict(state)
         state_copy["dag_plan"] = dag_plan
 
-        # Run execution loop iteration for next unfinished task
         api_key = self.user_key or settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
 
-        if api_key and HAS_ANTHROPIC:
-            await self._execute_live_sdk_loop(state_copy, api_key, is_byok=bool(self.user_key))
-        else:
-            await self._execute_mock_simulation_loop(state_copy)
+        unfinished_tasks = [task for task in dag_plan if not task["done"]]
+
+        if unfinished_tasks:
+            async def run_one_task(t: Dict[str, Any]) -> Dict[str, Any]:
+                t_state = {
+                    "messages": list(state_copy["messages"]),
+                    "metadata": json.loads(json.dumps(state_copy["metadata"])),
+                    "dag_plan": [dict(d) for d in state_copy["dag_plan"]],
+                    "steps_taken": state_copy["steps_taken"],
+                    "budget_spent_usd": state_copy["budget_spent_usd"],
+                    "max_steps": state_copy["max_steps"],
+                    "max_budget_usd": state_copy["max_budget_usd"],
+                    "company_name": state_copy.get("company_name"),
+                    "company_industry": state_copy.get("company_industry"),
+                    "company_core_tools": state_copy.get("company_core_tools"),
+                    "process_components": state_copy.get("process_components"),
+                    "status": state_copy["status"]
+                }
+                local_task = next(lt for lt in t_state["dag_plan"] if lt["task_id"] == t["task_id"])
+                if api_key and HAS_ANTHROPIC:
+                    await self._execute_live_sdk_loop(t_state, api_key, is_byok=bool(self.user_key), task=local_task)
+                else:
+                    await self._execute_mock_simulation_loop(t_state, task=local_task)
+                return t_state
+
+            results = await asyncio.gather(*(run_one_task(t) for t in unfinished_tasks))
+
+            orig_msg_len = len(state_copy["messages"])
+            merged_messages = list(state_copy["messages"])
+            total_steps = state_copy["steps_taken"]
+            total_budget = state_copy["budget_spent_usd"]
+            merged_dag_plan = [dict(d) for d in state_copy["dag_plan"]]
+            merged_metadata = json.loads(json.dumps(state_copy["metadata"]))
+            if "cache_metrics" not in merged_metadata:
+                merged_metadata["cache_metrics"] = []
+            merged_status = state_copy["status"]
+
+            orig_metrics_len = len(state_copy["metadata"].get("cache_metrics", []))
+
+            for r in results:
+                new_msgs = r["messages"][orig_msg_len:]
+                merged_messages.extend(new_msgs)
+                total_steps += (r["steps_taken"] - state_copy["steps_taken"])
+                total_budget += (r["budget_spent_usd"] - state_copy["budget_spent_usd"])
+
+                for r_task in r["dag_plan"]:
+                    if r_task["done"]:
+                        for m_task in merged_dag_plan:
+                            if m_task["task_id"] == r_task["task_id"]:
+                                m_task["done"] = True
+
+                r_metrics = r["metadata"].get("cache_metrics", [])[orig_metrics_len:]
+                merged_metadata["cache_metrics"].extend(r_metrics)
+
+                if r["status"] == SessionStatus.FAILED:
+                    merged_status = SessionStatus.FAILED
+                    merged_metadata["failure_reason"] = r["metadata"].get("failure_reason")
+
+            state_copy["messages"] = merged_messages
+            state_copy["steps_taken"] = total_steps
+            state_copy["budget_spent_usd"] = total_budget
+            state_copy["dag_plan"] = merged_dag_plan
+            state_copy["metadata"] = merged_metadata
+            state_copy["status"] = merged_status
 
         evidence_ledger = extract_evidence_ledger_from_messages(state_copy["messages"])
         updates = {
@@ -2822,7 +2881,13 @@ Before invoking downstream architecture nodes, evaluate the user input against t
 
     # --- SDK Loops ---
 
-    async def _execute_live_sdk_loop(self, state: Dict[str, Any], api_key: str, is_byok: bool = False) -> None:
+    async def _execute_live_sdk_loop(
+        self,
+        state: Dict[str, Any],
+        api_key: str,
+        is_byok: bool = False,
+        task: Dict[str, Any] = None
+    ) -> None:
         client = AsyncAnthropic(api_key=api_key)
 
         tools_schema: List[Any] = [
@@ -2905,7 +2970,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 })
 
         # Locate next unfinished task
-        next_task = next((task for task in state["dag_plan"] if not task["done"]), None)
+        next_task = task if task is not None else next((t for t in state["dag_plan"] if not t["done"]), None)
         if not next_task:
             return
 
@@ -3116,8 +3181,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             )
             next_task["done"] = True
 
-    async def _execute_mock_simulation_loop(self, state: Dict[str, Any]) -> None:
-        next_task = next((task for task in state["dag_plan"] if not task["done"]), None)
+    async def _execute_mock_simulation_loop(self, state: Dict[str, Any], task: Dict[str, Any] = None) -> None:
+        next_task = task if task is not None else next((t for t in state["dag_plan"] if not t["done"]), None)
         if not next_task:
             return
 

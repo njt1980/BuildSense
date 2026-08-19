@@ -202,6 +202,7 @@ async def test_orchestrator_document_ingestion() -> None:
     )
 
     with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
+         patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)), \
          patch.object(orchestrator, "_execute_task_loop", AsyncMock()), \
          patch("app.core.orchestrator.HAS_ANTHROPIC", False):
         updated_state = await orchestrator.run_pipeline(state)
