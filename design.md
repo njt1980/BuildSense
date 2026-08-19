@@ -1,87 +1,77 @@
-# System Design: Safe Deterministic Confirmation Gate & Consolidated Consulting Synthesis
+# System Design: Fix Test Hangs, Test Crashes, Filter Worker Messages, and Optimize Tool Latency
 
-## 1. Architecture & Telemetry Data Flow
+## 1. Architecture Overview
+The BuildSense backend orchestrator executes parallel worker tasks concurrently using `asyncio.gather`. However, because they write to and read from the same `messages` key in `AgentState`, their conversation contexts pollute each other over multiple execution loops. Additionally, unit tests that verify persistence and tool handlers make live network requests to the Anthropic API and external search endpoints, causing hangs and slow runs.
 
-The optimized orchestrator modifies the graph execution flow:
-
-```text
-User Input
-   │
-   ├──► route_intent (Awaiting Playback Confirmation)
-   │      │
-   │      ├──► [Normalizer] check_deterministic_confirmation
-   │      │      ├──► Matches (yes/no synonyms) ──► Sets playback_confirmed ──► Skip Haiku confirm_gate LLM
-   │      │      └──► Nuance ("Yes, but...") ──► Claude Haiku confirm_gate LLM (extracts new components)
-   │      │
-   │      └──► If playback_confirmed == True: Advances to PLANNING/EXECUTING
-   │
-   └──► execute_tools Node
-          │
-          └──► Concurrently runs Process Analyst & Automation Architect tasks via asyncio.gather
-                 - System prompts do NOT include general orchestrator system prompt
-                 - Workers act in background (analysis only), producing no user-facing questions
-```
+To fix these issues, we will:
+1. **Isolate Worker Persona Message History**: Filter message history inside `_execute_live_sdk_loop` to ensure each worker persona only receives their own private history (along with the common playback history) and never sees other workers' tool calls, tool results, or responses.
+2. **Exclude Worker and Tool Messages from User Chat**: Update `_save_intermediate_state` and the final `run_pipeline` response parsing to filter out worker persona messages and tool results, ensuring the user only sees clean conversation turns with the intake consultant (`BuildSense Intelligence`).
+3. **Optimize market_signal Tool**: Run HN and Reddit search calls concurrently in a thread pool and reduce timeout to 1.0 second.
+4. **Mock Unit Test Network Traffic**: Ensure all unit tests run offline in mock mode.
 
 ---
 
-## 2. Component Design & Changes
-
-### 2.1 Safe Deterministic check
-- Create `check_deterministic_confirmation(user_prompt: str) -> Optional[bool]` inside `orchestrator.py`.
-- Strips punctuation and matches against confirmation/denial sets.
-- Integrates with `_node_route_intent` at the confirmation classifier gate.
-
-### 2.2 Worker Prompt Separation & Background Enforcement
-- Define distinct system prompts in `orchestrator.py` for worker tasks:
-  - `PROCESS_ANALYST_WORKER_PROMPT`: Instructs the model to deconstruct workflow steps, identify friction, and map evidence on the Evidence Ladder.
-  - `AUTOMATION_ARCHITECT_WORKER_PROMPT`: Instructs the model to analyze technology constraints and draft automation designs.
-  - Both prompts explicitly forbid asking the user questions or returning interactive chat messages.
-
-### 2.3 Concurrency (Parallel Execution)
-- In `_node_execute_tools`, group worker task execution using `asyncio.gather` to concurrently run the tasks in `_execute_live_sdk_loop`.
+## 2. Data Flow
+```mermaid
+graph TD
+    A[run_pipeline] --> B[_node_execute_tools]
+    B --> C[run_one_task in parallel]
+    C --> D[_execute_live_sdk_loop]
+    D --> E[Filter api_messages to current Persona]
+    E --> F[Call Claude Sonnet]
+    F --> G[Append Persona-named Tool/Assistant messages]
+    G --> H[Merge task results in _node_execute_tools]
+    H --> I[_save_intermediate_state]
+    I --> J[Filter out non-consultant assistant & tool messages for DB]
+    A --> K[Filter out non-consultant assistant & tool messages for API Response]
+```
 
 ---
 
 ## 3. Atomic Implementation Steps
 
-### Step 1: Implement Safe Deterministic Confirmation Bypass
-- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Action**: Implement `check_deterministic_confirmation` and update the confirmation gate logic in `_node_route_intent` to call it first, bypassing the LLM classifier for simple inputs.
+### Step 1: Isolate Persona Message History
+- **Read Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Modify Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Description**: Add a filter in `_execute_live_sdk_loop` when building `api_messages` to skip messages where the `name` is not `None` and is not `persona` and is not `"BuildSense Intelligence"`.
 
-### Step 2: Implement Unit Tests for Deterministic Confirmation Gate
-- **Read/Modify file**: [`test_orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_orchestrator.py)
-- **Action**: Add unit tests checking various confirmation synonyms (`"yep"`, `"sure."`, `"yup"`, `"no"`, `"nope"`) and nuance strings (`"yes, but we also use Excel"`, `"no, receptionist handles it"`).
+### Step 2: Filter Worker and Tool Messages from DB & Response
+- **Read Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Modify Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Description**: 
+  - Update `_save_intermediate_state` to skip assistant messages where `name` is not in `{None, "BuildSense Intelligence"}` and skip tool messages.
+  - Update `run_pipeline` to apply the same filter on the returned `SessionState.messages`.
 
-### Step 3: Isolate and Decouple Worker Prompts
-- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Action**: Define `PROCESS_ANALYST_WORKER_PROMPT` and `AUTOMATION_ARCHITECT_WORKER_PROMPT`. Update `_execute_live_sdk_loop` to use them without appending `_build_system_guidance()`.
+### Step 3: Fix TypeError in Analyst Behavior Test
+- **Read Path**: [`apps/api/tests/test_analyst_behavior.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_analyst_behavior.py)
+- **Modify Path**: [`apps/api/tests/test_analyst_behavior.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_analyst_behavior.py)
+- **Description**: Update the mock `complete_execution_loop` function signature to `async def complete_execution_loop(state_dict: dict, *args: Any, **kwargs: Any) -> None:`.
 
-### Step 4: Parallelize Worker Task Execution
-- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Action**: Refactor `_node_execute_tools` to run deconstruct and design tasks concurrently using `asyncio.gather` when executing under OPTIMIZER mode.
+### Step 4: Fix Hang in Checkpointer Persistence Test
+- **Read Path**: [`apps/api/tests/test_langgraph.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_langgraph.py)
+- **Modify Path**: [`apps/api/tests/test_langgraph.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_langgraph.py)
+- **Description**: Wrap the pipeline runs in `test_langgraph_checkpoint_persistence_and_resumption` with `with patch("app.core.orchestrator.HAS_ANTHROPIC", False):`.
 
-### Step 5: Refine Consultant Prompts for Human-like Tone
-- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
-- **Action**: Update `CONSULTANT_INTAKE_PROMPT` and `CONSULTANT_PLAYBACK_PROMPT` to enforce warm, friendly, fun, and human-like interactions.
+### Step 5: Optimize market_signal Tool Latency & Parallelize Calls
+- **Read Path**: [`apps/api/app/mcp/tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/mcp/tools.py)
+- **Modify Path**: [`apps/api/app/mcp/tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/mcp/tools.py)
+- **Description**: 
+  - Refactor `market_signal_mcp` to fetch HackerNews and Reddit search results concurrently in parallel threads using `concurrent.futures.ThreadPoolExecutor`.
+  - Reduce connection/request timeouts for both endpoints from 5.0 seconds to 1.0 second.
 
-### Step 6: Expand Golden Dataset
-- **Read/Modify file**: [`golden_dataset.json`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/evals/golden_dataset.json)
-- **Action**: Add scenarios representing physical logistics, wholesale distributor, and manufacturing business cases.
-
-### Step 7: Update and Elaborate Agent Quality Evaluations
-- **Read/Modify file**: [`test_agent_quality.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/evals/test_agent_quality.py)
-- **Action**: Refactor evaluation runner to test multi-turn interactions (initial prompt -> clarification -> confirmation -> report synthesis) and assert zero jargon, grounding, and tone score constraints.
+### Step 6: Mock Network in market_signal Tool Test
+- **Read Path**: [`apps/api/tests/test_mcp_tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_mcp_tools.py)
+- **Modify Path**: [`apps/api/tests/test_mcp_tools.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_mcp_tools.py)
+- **Description**: Update `test_market_signal_mcp_containment` to mock the `httpx.get` calls, ensuring the test run is fully offline.
 
 ---
 
-## 4. Verification & Testing Design
+## 4. Verification Plan
 
-### 4.1 Automated Validation
-- Run unit tests: `pytest apps/api/tests/ -v`
-- Run agentic evaluations: `pytest apps/api/evals/test_agent_quality.py -v --run-evals`
-
-### 4.2 Manual Verification
-- Deploy local backend and run the client dialogue panel.
-- Verify that confirming with `"yep"` bypasses the LLM and instantly completes report synthesis.
-- Verify that worker personas do not print intermediate questions on the screen.
-- Inspect the generated report to confirm a friendly, jargon-free tone.
+### Automated Tests
+- Run unit and integration tests:
+  `pytest tests/ -v`
+- Run specific tests:
+  `pytest tests/test_analyst_behavior.py -k test_confirmed_intake_is_required_before_execution -v`
+  `pytest tests/test_langgraph.py -v`
+  `pytest tests/test_mcp_tools.py -v`
