@@ -2,9 +2,9 @@ name: Reliability Phase 1
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
   preflight-checks:
@@ -17,6 +17,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history is required so the phase-gate step below can diff
+          # against the PR base ref / previous push commit.
+          fetch-depth: 0
 
       - name: Fail if required infra secrets are missing
         run: |
@@ -28,6 +32,19 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Run phase-gate check (post-BUG-028 guardrail) on changed files
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch origin "${{ github.event.pull_request.base.ref }}"
+            CHANGED=$(git diff --name-only "origin/${{ github.event.pull_request.base.ref }}...HEAD")
+          else
+            CHANGED=$(git diff --name-only HEAD~1...HEAD || true)
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          python scripts/check_phase_gate.py --staged-files $CHANGED
+
       - name: Install backend dependencies
         working-directory: apps/api
         run: |
@@ -37,12 +54,12 @@ jobs:
       - name: Run mypy backend type checks
         working-directory: apps/api
         run: |
-          python -m mypy app/ || true
+          python -m mypy app/
 
       - name: Run pytest (fast tests)
         working-directory: apps/api
         run: |
-          pytest tests/ -q || true
+          pytest tests/ -q
 
   frontend-typecheck:
     name: Frontend Type-Check
