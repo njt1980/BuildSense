@@ -596,3 +596,75 @@ async def test_synthesis_constraints_friction_and_next_horizons() -> None:
         assert "Next Horizons" in system_prompt
         assert "adjacent business pillar" in system_prompt
 
+
+def test_deterministic_confirmation_gate_helper() -> None:
+    """Verifies that check_deterministic_confirmation behaves correctly for all test cases."""
+    from app.core.orchestrator import check_deterministic_confirmation
+    
+    # Confirmations
+    assert check_deterministic_confirmation("yes") is True
+    assert check_deterministic_confirmation("yep!") is True
+    assert check_deterministic_confirmation("yup.") is True
+    assert check_deterministic_confirmation("sure") is True
+    assert check_deterministic_confirmation("accurate now") is True
+    assert check_deterministic_confirmation("indeed") is True
+    
+    # Denials
+    assert check_deterministic_confirmation("no") is False
+    assert check_deterministic_confirmation("nope") is False
+    assert check_deterministic_confirmation("wrong!") is False
+    assert check_deterministic_confirmation("incorrect") is False
+    assert check_deterministic_confirmation("not correct") is False
+    assert check_deterministic_confirmation("not accurate") is False
+    
+    # Fallback cases (qualifying words / too long)
+    assert check_deterministic_confirmation("yes, but we also use Excel") is None
+    assert check_deterministic_confirmation("no, actually") is None
+    assert check_deterministic_confirmation("yes indeed sure") is None  # 3 words
+    assert check_deterministic_confirmation("actually yes") is None
+    assert check_deterministic_confirmation("no, instead") is None
+    assert check_deterministic_confirmation("yes, except for routing") is None
+
+
+@pytest.mark.asyncio
+async def test_deterministic_confirmation_gate_integration() -> None:
+    """Verifies that route_intent bypasses LLM call and sets playback_confirmed for yup/yep."""
+    orchestrator = Orchestrator()
+    
+    # Setup state where all required components are present (so confirmation gate is active)
+    state = SessionState(
+        session_id="test-det-confirm",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[
+            Message(role="user", content="yep")
+        ],
+        process_components={
+            "trigger": "Customer order",
+            "actor": "Staff",
+            "activity": "Do tasks",
+            "system": "Excel",
+            "friction": "Wastes time"
+        },
+        playback_confirmed=False
+    )
+    
+    # Patch Anthropic AsyncClient to ensure it is NOT called
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
+         patch.object(orchestrator.db, "update_project_mode_and_title", AsyncMock()), \
+         patch.object(orchestrator, "_save_intermediate_state", AsyncMock()):
+        
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        
+        # Run route_intent node directly
+        res = await orchestrator._node_route_intent(state.model_dump())
+        
+        # Verify that it bypassed the LLM (AsyncAnthropic not called for messages.create)
+        assert not mock_client.messages.create.called
+        # Verify that playback_confirmed was set to True
+        assert res.get("playback_confirmed") is True
+
+

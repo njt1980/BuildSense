@@ -762,6 +762,49 @@ def is_missing_component_value(value: Any) -> bool:
     return str(value).strip().lower() in PLACEHOLDER_VALUES
 
 
+def check_deterministic_confirmation(user_prompt: str) -> Optional[bool]:
+    """
+    Checks if a user prompt is a simple deterministic confirmation or denial.
+    Returns True for confirmation, False for denial, and None to fall back to the LLM.
+    """
+    if not user_prompt:
+        return None
+    
+    # Convert to lowercase and strip whitespace
+    prompt = user_prompt.lower().strip()
+    
+    # Remove common trailing punctuation (e.g. !, ., ?, ,)
+    prompt = re.sub(r'[!.,?]+$', '', prompt).strip()
+    
+    confirmations = {
+        "yes", "yep", "yup", "yea", "yeah", "sure", "ok", "okay",
+        "correct", "accurate", "accurate now", "indeed"
+    }
+    denials = {
+        "no", "nope", "wrong", "incorrect", "not correct", "not accurate"
+    }
+    
+    # Condition: If the response is longer than 2 words, or contains qualifying words,
+    # bypass must not occur.
+    words = prompt.split()
+    if len(words) > 2:
+        return None
+        
+    # Check for qualifying words
+    clean_words = {re.sub(r'[^a-z]', '', w) for w in words}
+    qualifying_words = {"but", "except", "actually", "instead"}
+    if clean_words & qualifying_words:
+        return None
+        
+    if prompt in confirmations:
+        return True
+    if prompt in denials:
+        return False
+        
+    return None
+
+
+
 def sanitize_components_for_prompt(components: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """
     Converts internal component sentinels into prompt-safe missing values.
@@ -1806,7 +1849,12 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     corrections = {}
                     unmapped_correction = None
 
-                    if api_key and HAS_ANTHROPIC:
+                    det_confirm = check_deterministic_confirmation(user_prompt)
+                    if det_confirm is not None:
+                        is_confirmation = det_confirm
+                        if not is_confirmation:
+                            unmapped_correction = user_prompt
+                    elif api_key and HAS_ANTHROPIC:
                         try:
                             client = AsyncAnthropic(api_key=api_key)
                             prompt_confirm = (
