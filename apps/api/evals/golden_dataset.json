@@ -22,5 +22,29 @@
     "motivation": "REVENUE",
     "expected_routing_status": "AWAITING_CLARIFICATION",
     "expects_questions": true
+  },
+  {
+    "name": "Logistics Dispatch Fleet (Optimizer Mode)",
+    "prompt": "We manage a local dispatch fleet for food delivery in Chicago. Every morning the dispatcher opens Excel, maps routes manually, and texts drivers their stops on WhatsApp.",
+    "mode": "OPTIMIZER",
+    "motivation": "REVENUE",
+    "expected_routing_status": "AWAITING_CLARIFICATION",
+    "expects_questions": true
+  },
+  {
+    "name": "Wholesale Bakery Distribution (Optimizer Mode)",
+    "prompt": "We distribute wholesale pastry orders to local cafes. We get purchase orders via email, manually check inventory, and write invoices.",
+    "mode": "OPTIMIZER",
+    "motivation": "REVENUE",
+    "expected_routing_status": "AWAITING_CLARIFICATION",
+    "expects_questions": true
+  },
+  {
+    "name": "Batch Metal Manufacturing (Optimizer Mode)",
+    "prompt": "We run a reactive batch metal fabrication shop. When a custom production order comes in, we assign it to a machine operator via a physical whiteboard sheet and hope they complete it on time.",
+    "mode": "OPTIMIZER",
+    "motivation": "REVENUE",
+    "expected_routing_status": "AWAITING_CLARIFICATION",
+    "expects_questions": true
   }
 ]
