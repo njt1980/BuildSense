@@ -28,7 +28,7 @@ Ensure you have the following installed:
 3. Open the newly created `.env` file and set the required keys. 
    
    > [!NOTE]
-   > The backend supports **local fallbacks** (in-memory SQLite/dictionary database and in-memory mock Redis) when Postgres or Redis are unreachable. You do not need active Redis or Postgres instances to run locally.
+   > The backend supports **local fallbacks** (in-memory SQLite/dictionary database and in-memory mock Redis) when Postgres or Redis are unreachable. You do not need active Redis or Postgres instances to run locally. Also, running tests is optional and not required to bring up or run the application.
 
 ---
 

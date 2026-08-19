@@ -164,7 +164,7 @@ def calculate_financial_metrics(users: int, avg_revenue_per_user: float) -> dict
 
 ## 7. Testing & Validation Commands
 
-Run validation commands according to the change scope. Documentation-only commits require a status/secret-staging check. Executable source changes require targeted checks while developing and broader checks before marking the task resolved.
+Run validation commands according to the change scope. Running tests is not required nor recommended when simply bringing up, starting, or running the application. Documentation-only commits require a status/secret-staging check. Executable source changes require targeted checks while developing and broader checks before marking the task resolved.
 
 ### Backend Engine (`apps/api`)
 - **Run Unit & Integration Tests**: `pytest tests/ -v`
@@ -196,4 +196,4 @@ Before presenting a task as complete in Antigravity:
 - [ ] All changes have been committed to git with a descriptive conventional commit message.
 - [ ] All work has been committed using the `.antigravity/skills/secure-checkpoint.md` skill.
 
-<!-- AGENTS.md sha256: 55d2214a065d15e3d41a7bde45da25b10b2745d9105e5e8ce01ef5ce6342db5b -->
+<!-- AGENTS.md sha256: e0b4aa72a6f7f2e784303930367a2095239690e78a39ad32268689542f2c8986 -->

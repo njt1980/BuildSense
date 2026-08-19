@@ -2,6 +2,9 @@
 
 This guide explains how to run BuildSense locally and execute the main validation commands.
 
+> [!NOTE]
+> Running tests is optional and not required to bring up or run the application.
+
 ## Prerequisites
 
 - Python 3.11+

@@ -27,6 +27,9 @@ Backend API surface includes company, project, transcription, orchestration, ses
 
 ## Local Quick Start
 
+> [!NOTE]
+> Running tests is optional and not required to bring up or run the application.
+
 Prerequisites:
 
 - Python 3.11+

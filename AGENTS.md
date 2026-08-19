@@ -161,7 +161,7 @@ def calculate_financial_metrics(users: int, avg_revenue_per_user: float) -> dict
 
 ## 7. Testing & Validation Commands
 
-Run validation commands according to the change scope. Documentation-only commits require a status/secret-staging check. Executable source changes require targeted checks while developing and broader checks before marking the task resolved.
+Run validation commands according to the change scope. Running tests is not required nor recommended when simply bringing up, starting, or running the application. Documentation-only commits require a status/secret-staging check. Executable source changes require targeted checks while developing and broader checks before marking the task resolved.
 
 ### Backend Engine (`apps/api`)
 - **Run Unit & Integration Tests**: `pytest tests/ -v`
