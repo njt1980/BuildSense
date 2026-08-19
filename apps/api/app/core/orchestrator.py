@@ -443,6 +443,22 @@ Latest owner message:
 Return only the owner-facing playback message."""
 
 
+PROCESS_ANALYST_WORKER_PROMPT = """You are a Process Analyst. Your role is to analyze and deconstruct the user's As-Is business workflows.
+You are running as a background task. You must deconstruct the workflow steps, identify friction points and bottlenecks, and map claims onto the Evidence Ladder.
+
+CRITICAL RULES:
+1. You are running as a background task. You MUST NEVER ask the user questions, prompt the user for feedback, or return interactive chat messages.
+2. Produce only background analysis. Do not address the user directly as a conversational partner."""
+
+
+AUTOMATION_ARCHITECT_WORKER_PROMPT = """You are an Automation Architect. Your role is to design To-Be automation solutions and analyze technology constraints.
+You are running as a background task. You must analyze existing tools, identify integration patterns, and draft automation designs.
+
+CRITICAL RULES:
+1. You are running as a background task. You MUST NEVER ask the user questions, prompt the user for feedback, or return interactive chat messages.
+2. Produce only background analysis. Do not address the user directly as a conversational partner."""
+
+
 SIX_PILLARS: Dict[str, Dict[str, Any]] = {
     "market": {
         "name": "Market",
@@ -2903,10 +2919,18 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 "content": f"Please proceed with the next task: {task_name}."
             })
 
+        # Determine the isolated worker prompt or default to orchestrator system prompt
+        if task_name == "deconstruct_workflows":
+            base_system_prompt = PROCESS_ANALYST_WORKER_PROMPT
+        elif task_name == "design_automations":
+            base_system_prompt = AUTOMATION_ARCHITECT_WORKER_PROMPT
+        else:
+            base_system_prompt = self._build_system_guidance()
+
         system_prompt_blocks = [
             {
                 "type": "text",
-                "text": self._build_system_guidance() + "\n\n" +
+                "text": base_system_prompt + "\n\n" +
                     f"You are executing task: {task_name} acting as {persona}.\n\n"
                     "IMPORTANT: You must prioritize the Active Company Context (specifically the company's industry vertical and existing core tools/technology stack) "
                     "over general target persona guidelines when calculating numbers, mapping ontologies, or analyzing processes.\n\n"
