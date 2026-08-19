@@ -1,83 +1,87 @@
-# System Design: Telemetry Logs Copying & Raw Input/Output Visibility
+# System Design: Safe Deterministic Confirmation Gate & Consolidated Consulting Synthesis
 
 ## 1. Architecture & Telemetry Data Flow
 
-We are updating the telemetry capture flow in local/test environments to retain raw developer inputs and outputs in memory, while maintaining production privacy through standard logging sanitization.
+The optimized orchestrator modifies the graph execution flow:
 
 ```text
-Backend Execution (LLM / Tool)
-  │
-  ├─► Structured Logger (log_event) ──► sanitize_mapping(redact_raw=True) ──► Console/File (Hashed/Redacted)
-  │
-  └─► Local telemetry store (record_event) ──► sanitize_mapping(redact_raw=False) ──► In-Memory Store (Raw text preserved)
-                                                                                            ▲
-                                                                                            │ (HTTP GET)
-                                                                                            │
-                                                                                    Frontend UI Tab
-                                                                                      - Event Timeline Viewer
-                                                                                      - Copy Logs (Clipboard)
+User Input
+   │
+   ├──► route_intent (Awaiting Playback Confirmation)
+   │      │
+   │      ├──► [Normalizer] check_deterministic_confirmation
+   │      │      ├──► Matches (yes/no synonyms) ──► Sets playback_confirmed ──► Skip Haiku confirm_gate LLM
+   │      │      └──► Nuance ("Yes, but...") ──► Claude Haiku confirm_gate LLM (extracts new components)
+   │      │
+   │      └──► If playback_confirmed == True: Advances to PLANNING/EXECUTING
+   │
+   └──► execute_tools Node
+          │
+          └──► Concurrently runs Process Analyst & Automation Architect tasks via asyncio.gather
+                 - System prompts do NOT include general orchestrator system prompt
+                 - Workers act in background (analysis only), producing no user-facing questions
 ```
 
 ---
 
 ## 2. Component Design & Changes
 
-### 2.1 Backend: `privacy.py` and `dev_store.py`
-- `sanitize_mapping` is updated with `redact_raw: bool = True`.
-- When `redact_raw` is `False`, content-rich keys (e.g. `messages`, `prompt`, `response_content`, `tool_input`, `tool_output`, `file_content`) are preserved exactly as-is without hashing or length replacement.
-- Secrets (`authorization`, API keys, etc.) are **always** redacted, even if `redact_raw` is `False`.
+### 2.1 Safe Deterministic check
+- Create `check_deterministic_confirmation(user_prompt: str) -> Optional[bool]` inside `orchestrator.py`.
+- Strips punctuation and matches against confirmation/denial sets.
+- Integrates with `_node_route_intent` at the confirmation classifier gate.
 
-### 2.2 Backend: `llm.py` and `tools.py`
-- LLM calls will capture the raw `messages` parameters and the text content of responses, logging them as `messages`, `system`, and `response_content`.
-- Tool calls will capture the input parameters as `tool_input` and the returned string as `tool_output`.
+### 2.2 Worker Prompt Separation & Background Enforcement
+- Define distinct system prompts in `orchestrator.py` for worker tasks:
+  - `PROCESS_ANALYST_WORKER_PROMPT`: Instructs the model to deconstruct workflow steps, identify friction, and map evidence on the Evidence Ladder.
+  - `AUTOMATION_ARCHITECT_WORKER_PROMPT`: Instructs the model to analyze technology constraints and draft automation designs.
+  - Both prompts explicitly forbid asking the user questions or returning interactive chat messages.
 
-### 2.3 Frontend: `page.tsx`
-- Add a **Copy Logs** button using Tailwind styling next to the "Event Timeline" header.
-- Create an implementation utilizing the `navigator.clipboard.writeText` API to copy the formatted JSON string representing all events of the selected run.
-- Enhance event list item rendering:
-  - If the event is an LLM call or has `messages`, `system`, or `response_content` attributes, display them in neat code blocks/panels.
-  - If the event is a Tool call, render `tool_input` and `tool_output` properties inside readable tables or text blocks.
+### 2.3 Concurrency (Parallel Execution)
+- In `_node_execute_tools`, group worker task execution using `asyncio.gather` to concurrently run the tasks in `_execute_live_sdk_loop`.
 
 ---
 
 ## 3. Atomic Implementation Steps
 
-### Step 1: Update Backend Privacy Sanitization
-- **Read/Modify file**: [`privacy.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/telemetry/privacy.py)
-- **Action**: Add `tool_input` and `tool_output` to `_RAW_CONTENT_KEYS`. Add `redact_raw` parameter to `sanitize_mapping` and support raw bypass.
+### Step 1: Implement Safe Deterministic Confirmation Bypass
+- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Action**: Implement `check_deterministic_confirmation` and update the confirmation gate logic in `_node_route_intent` to call it first, bypassing the LLM classifier for simple inputs.
 
-### Step 2: Update Logging and Store Dispatch
-- **Read/Modify file**: [`logging.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/telemetry/logging.py)
-- **Read/Modify file**: [`dev_store.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/telemetry/dev_store.py)
-- **Action**:
-  - In `logging.py`, pass original `attributes` to `record_event`.
-  - In `dev_store.py`, call `sanitize_mapping(attributes, redact_raw=False)` in `LocalTelemetryStore.append`.
+### Step 2: Implement Unit Tests for Deterministic Confirmation Gate
+- **Read/Modify file**: [`test_orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_orchestrator.py)
+- **Action**: Add unit tests checking various confirmation synonyms (`"yep"`, `"sure."`, `"yup"`, `"no"`, `"nope"`) and nuance strings (`"yes, but we also use Excel"`, `"no, receptionist handles it"`).
 
-### Step 3: Update LLM and Tool Instrumentation
-- **Read/Modify file**: [`llm.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/telemetry/llm.py)
-- **Read/Modify file**: [`tools.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/telemetry/tools.py)
-- **Action**:
-  - In `llm.py`, pass raw messages and system fields to `log_event`. Extract completion text from `response.content` and pass it as `response_content`.
-  - In `tools.py`, pass `tool_input` and `tool_output` to `log_event`.
+### Step 3: Isolate and Decouple Worker Prompts
+- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Action**: Define `PROCESS_ANALYST_WORKER_PROMPT` and `AUTOMATION_ARCHITECT_WORKER_PROMPT`. Update `_execute_live_sdk_loop` to use them without appending `_build_system_guidance()`.
 
-### Step 4: Update Backend Telemetry Tests
-- **Read/Modify file**: [`test_telemetry.py`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/api/tests/test_telemetry.py)
-- **Action**: Update `test_local_telemetry_events_are_sanitized` to verify secret redaction while checking that the prompt text is preserved in local storage.
+### Step 4: Parallelize Worker Task Execution
+- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Action**: Refactor `_node_execute_tools` to run deconstruct and design tasks concurrently using `asyncio.gather` when executing under OPTIMIZER mode.
 
-### Step 5: Update Frontend UI for Copying Logs & Displaying Raw IO
-- **Read/Modify file**: [`page.tsx`](file:///c:/Users/nimel.thomas/Desktop/BuildSense/apps/web/src/app/[lang]/dev/telemetry/page.tsx)
-- **Action**: Implement "Copy Logs" button in `LocalTelemetryPage`. Render raw prompts, responses, tool inputs, and tool outputs.
+### Step 5: Refine Consultant Prompts for Human-like Tone
+- **Read/Modify file**: [`orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py)
+- **Action**: Update `CONSULTANT_INTAKE_PROMPT` and `CONSULTANT_PLAYBACK_PROMPT` to enforce warm, friendly, fun, and human-like interactions.
+
+### Step 6: Expand Golden Dataset
+- **Read/Modify file**: [`golden_dataset.json`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/evals/golden_dataset.json)
+- **Action**: Add scenarios representing physical logistics, wholesale distributor, and manufacturing business cases.
+
+### Step 7: Update and Elaborate Agent Quality Evaluations
+- **Read/Modify file**: [`test_agent_quality.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/evals/test_agent_quality.py)
+- **Action**: Refactor evaluation runner to test multi-turn interactions (initial prompt -> clarification -> confirmation -> report synthesis) and assert zero jargon, grounding, and tone score constraints.
 
 ---
 
 ## 4. Verification & Testing Design
 
 ### 4.1 Automated Validation
-- Run backend tests: `pytest apps/api/tests/test_telemetry.py -v`
-- Run frontend type check and linting:
-  - `npm run type-check`
-  - `npm run lint`
+- Run unit tests: `pytest apps/api/tests/ -v`
+- Run agentic evaluations: `pytest apps/api/evals/test_agent_quality.py -v --run-evals`
 
 ### 4.2 Manual Verification
-- Verify that copying logs copies all selected run events to the clipboard.
-- Verify that raw LLM instructions/prompts/responses and Tool arguments/returns are displayed when inspecting events.
+- Deploy local backend and run the client dialogue panel.
+- Verify that confirming with `"yep"` bypasses the LLM and instantly completes report synthesis.
+- Verify that worker personas do not print intermediate questions on the screen.
+- Inspect the generated report to confirm a friendly, jargon-free tone.
