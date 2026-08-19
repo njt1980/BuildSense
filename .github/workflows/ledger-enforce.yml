@@ -27,8 +27,8 @@ jobs:
             exit 0
           else
             echo "Tests failed. Checking for docs/DEFECT_LEDGER.md in commits..."
-            git fetch origin main || true
-            CHANGED=$(git diff --name-only origin/main...HEAD || true)
+            git fetch origin master || true
+            CHANGED=$(git diff --name-only origin/master...HEAD || true)
             echo "Changed files:\n$CHANGED"
             echo "$CHANGED" | grep -q "docs/DEFECT_LEDGER.md" && { echo "Ledger updated in this branch — allowing failure."; exit 0; } || { echo "Tests failed and docs/DEFECT_LEDGER.md not updated. Failing workflow."; exit 1; }
         shell: bash
