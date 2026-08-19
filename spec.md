@@ -1,55 +1,59 @@
-# Specification: Safe Deterministic Confirmation Gate & Consolidated Consulting Synthesis
+# Specification: Fix Test Hangs, Test Crashes, Filter Worker Messages, and Optimize Tool Latency
 
 ## 1. Goal Description
-To improve user experience, reduce backend response latency, and fix duplicate assistant questions, we are optimizing the BuildSense orchestrator to:
-1. Implement a **Safe Deterministic Confirmation Gate** that instantly processes simple yes/no responses (including synonyms like `"yep"` or `"nope"`) without calling the LLM, while falling back to the LLM for nuanced inputs (like `"Yes, but..."`).
-2. **Isolate Worker Prompts** in the backend DAG execution phase, ensuring worker personas (`Process Analyst` and `Automation Architect`) perform background analyses without leakage of orchestrator-level interview instructions that cause redundant user questions.
-3. **Reduce Latency** by running independent worker tasks in parallel.
-4. Adopt a **Friendly, Fun, and Human-like Tone** in all user-facing interactions to build rapport and keep the discovery experience engaging.
+The purpose of this specification is to:
+1. Eliminate hangs in the test suite by ensuring no unit tests make actual, unmocked network calls to external APIs.
+2. Fix a `TypeError` crash in `test_confirmed_intake_is_required_before_execution` within `tests/test_analyst_behavior.py`.
+3. Filter worker persona and tool messages out of the user-visible chat history, preventing internal assistant logs and raw JSON reasoning signatures from being displayed in the chat window.
+4. Reduce latency in the `market_signal` tool by executing external calls concurrently in a thread pool and lowering connection timeouts.
+5. Mock the network requests in `test_market_signal_mcp_containment` to prevent slow external dependencies from affecting test runs.
 
 ---
 
 ## 2. Functional Requirements
 
-### 2.1 Safe Deterministic Confirmation Check
-- Normalize the user's prompt by converting it to lowercase and removing common trailing punctuation (e.g. `!`, `.`, `?`, `,`).
-- Define exact match sets:
-  - **Confirmations**: `{"yes", "yep", "yup", "yea", "yeah", "sure", "ok", "okay", "correct", "accurate", "accurate now", "indeed"}`
-  - **Denials**: `{"no", "nope", "wrong", "incorrect", "not correct", "not accurate"}`
-- If the prompt matches a word in either set, set `playback_confirmed` directly to `True` (for confirmation) or `False` (for denial), and **bypass** the LLM `confirm_gate` API call.
-- If the response is longer than 2 words, or contains qualifying words (like `"but"`, `"except"`, `"actually"`, `"instead"`), the bypass **must not** occur; the orchestrator must fall back to the LLM `confirm_gate` to classify the input and extract updated components.
+### 2.1 Filter Worker Persona and Tool Messages
+- Modify `_save_intermediate_state` in `apps/api/app/core/orchestrator.py`:
+  - Filter out `assistant` messages whose `name` is not `None` and is not `"BuildSense Intelligence"`.
+  - Filter out all messages with `role == "tool"`.
+  - This ensures that background process analysts and automation architects' intermediate thought processes and tool results are not saved to the user-facing database.
+- Modify `run_pipeline` in `apps/api/app/core/orchestrator.py`:
+  - Perform the same filtering on the returned `SessionState.messages` before returning it to the API route, preventing worker persona outputs and JSON thinking blocks from leaking into the immediate HTTP response.
 
-### 2.2 Worker Prompt Isolation & Question Suppression
-- In the task execution node (`_node_execute_tools`), the system prompts for worker personas must **not** include the general orchestrator prompt (`_build_system_guidance`).
-- Worker personas must receive specific system prompts instructing them to analyze the As-Is process or design the To-Be automation solutions in the background, explicitly stating they are running as a background task and **must never** ask questions or prompt the user.
+### 2.2 Fix Test Suite Hang in Checkpointer Persistence Test
+- Modify `test_langgraph_checkpoint_persistence_and_resumption` in `tests/test_langgraph.py` to run inside a `with patch("app.core.orchestrator.HAS_ANTHROPIC", False):` block.
+- This ensures the checkpointer test runs in local mock simulation mode instead of executing live Anthropic SDK calls, preventing connection hangs when a fake key is present in `.env`.
 
-### 2.3 Parallel Task Execution
-- Update [`_node_execute_tools`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/apps/api/app/core/orchestrator.py) to run both independent DAG tasks (`deconstruct_workflows` and `design_automations`) in parallel using `asyncio.gather` instead of executing them sequentially in separate graph loops.
+### 2.3 Fix TypeError Crash in Analyst Behavior Test
+- Modify `complete_execution_loop` inside `test_confirmed_intake_is_required_before_execution` in `tests/test_analyst_behavior.py` to accept arbitrary positional and keyword arguments (`*args: Any, **kwargs: Any`).
+- This prevents `TypeError` when `_node_execute_tools` calls the mocked `_execute_mock_simulation_loop` with keyword arguments (like `task=local_task`).
 
-### 2.4 Friendly, Fun, and Human-like Tone
-- Update the system instructions in `CONSULTANT_INTAKE_PROMPT` and `CONSULTANT_PLAYBACK_PROMPT` to enforce a friendly, fun, encouraging, and human-like tone:
-  - Use warm greetings (e.g. *"Perfect!"*, *"Got it, thanks!"*, *"Great, let's keep moving!"*).
-  - Use relatable metaphors and encouraging feedback.
-  - Avoid dry, robotic, or overly corporate phrasing.
+### 2.4 Optimize market_signal Tool Latency & Parallelize Requests
+- Refactor `market_signal_mcp` in `apps/api/app/mcp/tools.py`:
+  - Run the HackerNews and Reddit HTTP searches concurrently using a thread pool (e.g. `concurrent.futures.ThreadPoolExecutor`).
+  - Reduce the timeout for each `httpx.get` request from `5.0` seconds to `1.0` second.
+  - If both calls timeout or fail, gracefully fall back to the local simulated signals as before.
+  - This reduces the maximum network blocking time from `10.0` seconds to `1.0` second.
+
+### 2.5 Mock Network in market_signal Unit Test
+- Update `test_market_signal_mcp_containment` in `tests/test_mcp_tools.py` to mock `httpx.get` (or mock `market_signal_mcp` network dependencies) to guarantee zero real network traffic during test collection and execution.
 
 ---
 
 ## 3. Non-Functional Requirements & Latency Targets
-- **Latency**: Reduce total execution latency for confirming playback and generating the report by 30-50% (saving 1-2 Sonnet round-trips and 1 Haiku call).
-- **Correctness**: Maintain 100% routing accuracy on simple confirmations and denials.
+- **Test Suite Execution Time**: Reduce total test execution time by avoiding network timeouts and live API connection attempts.
+- **Tool Latency**: Worst-case execution latency for `market_signal` tool must be capped at 1.0 second (down from 10.0 seconds).
 
 ---
 
 ## 4. Acceptance Criteria
-1. Synonyms like `"yep"`, `"yup"`, `"sure"`, `"correct"` instantly confirm the playback and advance the graph without invoking the Haiku LLM classifier.
-2. Synonyms like `"nope"` or `"wrong"` reject the playback and prompt for correction without invoking the Haiku LLM classifier.
-3. Complex responses like `"Yes, but we also use Excel"` trigger LLM extraction and successfully add "Excel" to the system components.
-4. Worker personas do not output duplicate questions in the conversation history during Phase 3.
-5. All automated unit tests in `test_orchestrator.py` pass.
-6. The agentic quality evaluations (`test_agent_quality.py`) score above 90% on zero-jargon, factuality, routing, and consultant quality metrics, with judge verification that the tone is friendly and human-like.
+1. Background worker persona messages (e.g., `Process Analyst Persona`, `Automation Architect Persona`) and raw JSON thinking/reasoning blocks are not visible in the chat history returned to the client or saved in the database.
+2. The test `test_confirmed_intake_is_required_before_execution` passes without throwing a `TypeError`.
+3. The checkpointer persistence test `test_langgraph_checkpoint_persistence_and_resumption` runs and completes in under 2 seconds without hanging.
+4. The tool test `test_market_signal_mcp_containment` passes without making real HTTP calls to Reddit or HackerNews.
+5. All automated unit tests in `pytest tests/ -v` pass successfully.
 
 ---
 
 ## 5. Verification Plan
-- Run unit tests: `pytest apps/api/tests/ -v`
-- Run agentic evaluation suite: `pytest apps/api/evals/test_agent_quality.py -v --run-evals`
+- Run unit tests: `pytest tests/ -v`
