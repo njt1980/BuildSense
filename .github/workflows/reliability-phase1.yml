@@ -44,6 +44,13 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED"
           python scripts/check_phase_gate.py --staged-files $CHANGED
+          echo "CHANGED<<PHASE_GATE_CHANGED_EOF" >> "$GITHUB_ENV"
+          echo "$CHANGED" >> "$GITHUB_ENV"
+          echo "PHASE_GATE_CHANGED_EOF" >> "$GITHUB_ENV"
+
+      - name: Run secrets/debug-statement lint on changed files
+        run: |
+          python scripts/check_secrets_and_debug_statements.py --staged-files $CHANGED
 
       - name: Install backend dependencies
         working-directory: apps/api

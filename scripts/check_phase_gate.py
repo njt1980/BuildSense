@@ -27,6 +27,11 @@ LEDGER_FILE = "docs/DEFECT_LEDGER.md"
 SPEC_GREP = "^docs: finalize specification"
 DESIGN_GREP = "^docs: finalize system design"
 
+AGENTS_MD_PATH = "AGENTS.md"
+AGENTS_MD_COMMIT_RE = re.compile(
+    r'git commit --no-verify -m "([^"]+)"'
+)
+
 COMPARISON_RE = re.compile(r"[><]=?\s*([0-9]+(?:\.[0-9]+)?)")
 KEYWORD_RE = re.compile(r"(score|threshold)", re.IGNORECASE)
 
@@ -164,6 +169,36 @@ def check_threshold_regression(staged: list[str]) -> list[str]:
     return lines
 
 
+def check_agents_md_coupling(staged: list[str]) -> list[str]:
+    """AGENTS.md's own coupling note: its two literal checkpoint commit-message
+    strings must match SPEC_GREP/DESIGN_GREP (anchor stripped), or this script's
+    Phase 1/Phase 2 detection has silently drifted from what AGENTS.md documents.
+    Runs unconditionally, not gated on staged files, since it's a single-file
+    text comparison independent of what this commit touches.
+    """
+    try:
+        with open(AGENTS_MD_PATH, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return [f"PHASE GATE: could not read {AGENTS_MD_PATH} to verify coupling."]
+
+    matches = AGENTS_MD_COMMIT_RE.findall(text)
+    expected = {SPEC_GREP.lstrip("^"), DESIGN_GREP.lstrip("^")}
+    found = set(matches)
+
+    if expected <= found:
+        return []
+
+    lines = [
+        f"PHASE GATE: {AGENTS_MD_PATH} checkpoint commit messages no longer match",
+        "check_phase_gate.py's SPEC_GREP/DESIGN_GREP constants.",
+        f"  AGENTS.md commit messages found: {sorted(found)}",
+        f"  Script expects:                  {sorted(expected)}",
+        "Update SPEC_GREP/DESIGN_GREP in this script to match AGENTS.md, or fix AGENTS.md.",
+    ]
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -176,7 +211,12 @@ def main() -> int:
 
     staged = args.staged_files if args.staged_files is not None else get_staged_files()
 
-    for check in (check_mixed_staging, check_checkpoint_recency, check_threshold_regression):
+    for check in (
+        check_mixed_staging,
+        check_checkpoint_recency,
+        check_threshold_regression,
+        check_agents_md_coupling,
+    ):
         messages = check(staged)
         if messages:
             for line in messages:
