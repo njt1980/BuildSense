@@ -12,6 +12,13 @@ import re
 from re import Match
 from typing import Any, Dict, List, Optional, Tuple, Union, TypedDict, cast
 from app.core.config import settings
+from app.core.prompts import (
+    FOURTH_WALL_RULE,
+    CONSULTANT_INTAKE_PROMPT,
+    CONSULTANT_PLAYBACK_PROMPT,
+    PROCESS_ANALYST_WORKER_PROMPT,
+    AUTOMATION_ARCHITECT_WORKER_PROMPT,
+)
 from app.db.postgres import postgres_client
 from app.db.redis import redis_client
 from app.models.state import SessionState, SessionMode, SessionStatus, Message, ProcessComponents
@@ -334,64 +341,23 @@ def _coerce_message(message: Union[Message, Dict[str, Any]]) -> Message:
     return Message(**message)
 
 
-CONSULTANT_INTAKE_PROMPT = """You are BuildSense's intake consultant: a warm, plain-spoken operations consultant for local business owners.
-Think "McKinsey for the common man": careful, practical, empathetic, and allergic to jargon.
+def is_user_facing_message(m: Message) -> bool:
+    """
+    Return True if a message belongs in the owner-facing conversation history.
 
-TONE & RAPPORT RULES:
-- Use a friendly, fun, encouraging, and human-like tone in all interactions to build warm rapport with the owner.
-- Use warm, conversational greetings and acknowledgments (e.g., "Perfect!", "Got it, thanks!", "Great, let's keep moving!").
-- Provide encouraging feedback and use relatable, everyday metaphors.
-- Avoid dry, robotic, or overly corporate phrasing.
-
-Your job is to ask the next natural question in a workflow discovery conversation.
-
-THE FOURTH WALL RULE (NO METADATA LEAKAGE):
-- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
-- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Market Pillar", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
-- Translate all internal state logic, completeness rules, or internal structures into natural, conversational English.
-
-DISCOVERY VS. CONFIRMATION BOUNDARY:
-- You are in Discovery Mode. You are strictly forbidden from ending your turn with a closed confirmation query like "Is that right?", "Is this correct?", or any summary requesting final verification.
-- You MUST end the turn using the Neutral Gap rule (asking an open-ended "How/What" question anchored on a known fact) to ask about the next highest-priority business blind spot or missing detail.
-
-Conversation discipline:
-- Follow this discovery strategy: {next_question_strategy}.
-- If strategy is seed_and_story, do NOT ask abstract questions like "What process do you want to automate?". Instead, conversationally list 2-3 highly specific, relatable operational pain points for the user's industry (The Seed), and immediately ask the user to describe the first two hours of their day (The Story) to identify where their specific friction lies. The output must be entirely conversational plain text with no UI chips, buttons, or suggestions.
-- If strategy is handshake, validate the pain, promise to help with the immediate issue, and ask permission to look at the broader workflow.
-- If strategy is neutral_gap, anchor on a known fact and ask one open-ended How or What question.
-- If strategy is multiple_choice_anchor, acknowledge the vague answer and offer 2-3 relatable options in one question to lower cognitive load.
-- Use Thread Pulling. Start by briefly acknowledging the concrete thing the owner just told you, then ask the next logical question.
-- Ask about exactly one missing detail: {missing_item}.
-- Consider the selected business blind spot: {blind_spot_json}.
-- If the blind spot is more decision-critical than the missing workflow detail, ask about the blind spot instead.
-- Ask one short question only. Do not ask multi-part questions.
-- Do not ask leading yes/no questions.
-- Mirror the owner's domain vocabulary from these terms: {domain_mirror_terms_json}.
-- Stay focused on the immediate bleeding-neck workflow. Do not turn this into a broad business audit.
-- Speak in the user's target language: {lang_code}.
-- Do not use internal labels such as Trigger, Actor, Activity, System, Friction, schema, slot, component, extraction, or JSON.
-- Do not use placeholder words such as UNKNOWN, null, None, or Not specified.
-- Do not ask the owner to name bottlenecks, friction, inefficiencies, pain points, or time waste during intake. BuildSense will infer those later.
-- Do not invent, assume, or hallucinate systems, software, people, steps, locations, or workflows. If the owner did not explicitly state a specific tool, system, or person, do not name one as fact — describe the gap generically instead.
-- You may offer a tiny example only as an optional possibility, never as a presumed fact.
-- Do not summarize all known fields. Just acknowledge the previous statement and pull one thread forward.
-
-Known workflow details, for grounding only:
-{components_json}
-
-Six-pillar coverage, for grounding only:
-{six_pillar_json}
-
-Iterative discovery metadata, for routing context only:
-{iterative_discovery_json}
-
-Conversation so far:
-{history}
-
-Latest owner message:
-{latest_user_message}
-
-Return only the owner-facing acknowledgement plus the single question."""
+    Excludes tool-role scratchpad messages entirely, and excludes assistant
+    messages whose `name` marks them as an internal worker persona (i.e. any
+    name other than None or "BuildSense Intelligence") -- those are background
+    analysis output, not something the owner should see. This is the single
+    canonical implementation of a predicate that used to be reimplemented
+    independently at three call sites (`_save_intermediate_state` and two
+    filters in `run_pipeline`), which had let the copies drift out of sync.
+    """
+    if m.role == "tool":
+        return False
+    if m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"}:
+        return False
+    return True
 
 
 MISSING_COMPONENT_QUESTION_FALLBACKS = {
@@ -401,62 +367,6 @@ MISSING_COMPONENT_QUESTION_FALLBACKS = {
     "activity": "I follow you. What are the main steps they take once this starts?",
     "system": "That makes sense. What app, tool, notebook, or other place do they use to keep track of it?",
 }
-
-
-CONSULTANT_PLAYBACK_PROMPT = """You are BuildSense's intake consultant.
-Write a natural playback summary of the owner's current workflow understanding and ask them to confirm or correct it.
-
-TONE & RAPPORT RULES:
-- Use a friendly, fun, encouraging, and human-like tone in all interactions to build warm rapport with the owner.
-- Use warm, conversational greetings and acknowledgments (e.g., "Perfect!", "Got it, thanks!", "Great, let's keep moving!").
-- Provide encouraging feedback and use relatable, everyday metaphors.
-- Avoid dry, robotic, or overly corporate phrasing.
-
-THE FOURTH WALL RULE (NO METADATA LEAKAGE):
-- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.
-- Specifically, you are strictly forbidden from printing words like "turn_index", "confidence_score", "Trigger", "Market Pillar", "Actor", "System", or "Friction" (case-insensitive) under any circumstances.
-- Translate all state logic, internal fields, and operational classifications into natural, conversational English.
-
-Rules:
-- Use only known concrete details from the structured context.
-- Treat UNKNOWN, null, None, empty strings, and Not specified as absent details. Do not mention them.
-- Do not use field labels, JSON, schema words, Trigger, Market Pillar, Actor, Activity, System, or Friction.
-- If there is correction context, the newest user correction overrides earlier assistant summaries and extracted values.
-- Ask only for confirmation or correction in this turn. Do not ask a separate blind-spot question.
-- Speak in the user's target language: {lang_code}.
-
-Known workflow details, for grounding only:
-{components_json}
-
-Company and architect context, for grounding only:
-{architect_json}
-
-Pending correction context, if any:
-{pending_correction}
-
-Conversation so far:
-{history}
-
-Latest owner message:
-{latest_user_message}
-
-Return only the owner-facing playback message."""
-
-
-PROCESS_ANALYST_WORKER_PROMPT = """You are a Process Analyst. Your role is to analyze and deconstruct the user's As-Is business workflows.
-You are running as a background task. You must deconstruct the workflow steps, identify friction points and bottlenecks, and map claims onto the Evidence Ladder.
-
-CRITICAL RULES:
-1. You are running as a background task. You MUST NEVER ask the user questions, prompt the user for feedback, or return interactive chat messages.
-2. Produce only background analysis. Do not address the user directly as a conversational partner."""
-
-
-AUTOMATION_ARCHITECT_WORKER_PROMPT = """You are an Automation Architect. Your role is to design To-Be automation solutions and analyze technology constraints.
-You are running as a background task. You must analyze existing tools, identify integration patterns, and draft automation designs.
-
-CRITICAL RULES:
-1. You are running as a background task. You MUST NEVER ask the user questions, prompt the user for feedback, or return interactive chat messages.
-2. Produce only background analysis. Do not address the user directly as a conversational partner."""
 
 
 SIX_PILLARS: Dict[str, Dict[str, Any]] = {
@@ -1523,9 +1433,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             seen = set()
             for msg in state.get("messages", []):
                 m = _coerce_message(cast(Union[Message, Dict[str, Any]], msg))
-                if m.role == "tool":
-                    continue
-                if m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"}:
+                if not is_user_facing_message(m):
                     continue
 
                 content = m.content
@@ -1873,8 +1781,6 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 # 2. Determine required keys for this business context (add location advantage for physical businesses)
                 planned_required = architect_plan.get("required_components")
                 required_keys = list(planned_required) if isinstance(planned_required, list) else ["trigger", "actor", "activity", "system"]
-                if architect_plan.get("requires_location") and "location" not in required_keys:
-                    required_keys.append("location")
                 if "location" in required_keys and "location" not in components:
                     components["location"] = None
 
@@ -2194,6 +2100,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             history_str = build_history_text(state["messages"])
 
                             prompt_question = CONSULTANT_INTAKE_PROMPT.format(
+                                fourth_wall_rule=FOURTH_WALL_RULE,
                                 next_question_strategy=iterative_discovery.get("next_question_strategy", "neutral_gap"),
                                 missing_item=selected_missing_item or "the next concrete workflow detail",
                                 blind_spot_json=json.dumps(selected_blind_spot, indent=2),
@@ -2284,6 +2191,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         try:
                             client = AsyncAnthropic(api_key=api_key)
                             playback_prompt = CONSULTANT_PLAYBACK_PROMPT.format(
+                                fourth_wall_rule=FOURTH_WALL_RULE,
                                 lang_code=lang_code,
                                 components_json=json.dumps(sanitized_components, indent=2),
                                 architect_json=json.dumps(architect_plan, indent=2),
@@ -2558,10 +2466,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     "Do NOT translate the JSON keys. Keep JSON keys strictly as English: 'as_is_workflow', 'friction_analysis', 'technology_neutral_recommendations', 'roi_economics'.\n"
                     "IMPORTANT FOR CONCISENESS: Keep your thinking/reasoning extremely brief and short. Do NOT write a long chain of thought. Avoid verbose filler or repetitive sentences. Proceed to outputting the JSON as quickly as possible to prevent response truncation.\n"
                     "You must adhere to the Zero-Jargon rule: any term a non-technical small-business owner would not use in casual conversation must include an immediate everyday analogy in parentheses on EVERY SINGLE OCCURRENCE throughout the entire report, even if the term has already been defined earlier. This covers acronyms (including but not limited to LTV, CAC, ROI, MRR, VAT, GST, VIES, CSV, OSS, MVP, API, OCR), named tools/platforms/product categories (e.g. SaaS, Zapier, CRM, POS system), and abstract business or technical phrases (e.g. approval hierarchy, deterministic automation, unit economics). If you cite a named external benchmark, index, or analyst study, add a short parenthetical the first time it appears explaining in plain English what it measures. Do not omit the parenthetical analogy on subsequent occurrences under any circumstances, no matter how long the report is.\n"
-                    "THE FOURTH WALL RULE (NO METADATA LEAKAGE):\n"
-                    "- You MUST NEVER print, mention, or expose any internal LangGraph state variables or framework labels in your output.\n"
-                    "- Specifically, you are strictly forbidden from printing words like 'turn_index', 'confidence_score', 'Trigger', 'Market Pillar', 'Actor', 'System', or 'Friction' (case-insensitive) in any user-facing text values.\n"
-                    "- Translate all state terminology and internal categories into natural, conversational English.\n\n"
+                    + FOURTH_WALL_RULE + "\n\n"
                     "IMPORTANT: You must prioritize the Active Company Context (specifically the company's industry vertical and existing core tools/technology stack) "
                     "over the general target persona guidelines when determining recommendations and analyzing workflows. The persona should only guide the tone of presentation.\n"
                     f"Target Persona Guidelines: {persona_rule}\n\n"
@@ -3329,7 +3234,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     res = SessionState(**final_state_dict)
                     res.messages = [
                         m for m in res.messages
-                        if m.role != "tool" and not (m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"})
+                        if is_user_facing_message(m)
                     ]
                     return res
             except Exception as e:
@@ -3341,7 +3246,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         res = SessionState(**final_state_dict)
         res.messages = [
             m for m in res.messages
-            if m.role != "tool" and not (m.role == "assistant" and m.name not in {None, "BuildSense Intelligence"})
+            if is_user_facing_message(m)
         ]
         return res
 

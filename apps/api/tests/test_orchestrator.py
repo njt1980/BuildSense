@@ -524,10 +524,43 @@ async def test_blank_canvas_seed_and_story() -> None:
 
 
 def test_fourth_wall_metadata_leakage_checks() -> None:
-    """Asserts that system prompts strictly forbid leakage of state variables."""
-    from app.core.orchestrator import CONSULTANT_INTAKE_PROMPT, CONSULTANT_PLAYBACK_PROMPT
-    assert "Market Pillar" in CONSULTANT_INTAKE_PROMPT
-    assert "Market Pillar" in CONSULTANT_PLAYBACK_PROMPT
+    """Asserts that system prompts strictly forbid leakage of state variables.
+
+    CONSULTANT_INTAKE_PROMPT and CONSULTANT_PLAYBACK_PROMPT now source their Fourth
+    Wall Rule text from the centralized FOURTH_WALL_RULE constant (app/core/prompts.py,
+    audit cycle 5) via a `{fourth_wall_rule}` .format() placeholder rather than
+    embedding it directly, so this checks both that the canonical rule text still
+    contains the forbidden-word example and that it is actually wired into each
+    prompt's placeholder and survives rendering.
+    """
+    from app.core.orchestrator import CONSULTANT_INTAKE_PROMPT, CONSULTANT_PLAYBACK_PROMPT, FOURTH_WALL_RULE
+    assert "Market Pillar" in FOURTH_WALL_RULE
+    assert "{fourth_wall_rule}" in CONSULTANT_INTAKE_PROMPT
+    assert "{fourth_wall_rule}" in CONSULTANT_PLAYBACK_PROMPT
+    rendered_intake = CONSULTANT_INTAKE_PROMPT.format(
+        fourth_wall_rule=FOURTH_WALL_RULE,
+        next_question_strategy="",
+        missing_item="",
+        blind_spot_json="",
+        domain_mirror_terms_json="",
+        lang_code="",
+        components_json="",
+        six_pillar_json="",
+        iterative_discovery_json="",
+        history="",
+        latest_user_message="",
+    )
+    rendered_playback = CONSULTANT_PLAYBACK_PROMPT.format(
+        fourth_wall_rule=FOURTH_WALL_RULE,
+        lang_code="",
+        components_json="",
+        architect_json="",
+        pending_correction="",
+        history="",
+        latest_user_message="",
+    )
+    assert "Market Pillar" in rendered_intake
+    assert "Market Pillar" in rendered_playback
 
 
 @pytest.mark.asyncio
