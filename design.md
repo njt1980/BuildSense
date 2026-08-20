@@ -1,85 +1,72 @@
-# System Design: Orchestrator Dedup — Fourth Wall Rule, Message Filter, Required-Components, prompts.py (Audit Cycle 5 of 5)
+# System Design: Meta-Governance Cycle 1 — Secrets/Debug Lint, AGENTS.md↔Phase-Gate Coupling Check, Push-Freshness Guard
 
 ## 1. Architecture Overview
 
-Four independent, sequential edits: create the new `prompts.py` module, wire `orchestrator.py` to import from it (including splicing `FOURTH_WALL_RULE` into the one prompt that stays inline), extract the message-filter predicate into one helper, and delete the now-redundant required-components re-derivation. All four land in `apps/api/app/core/` only; no other part of the codebase is touched.
+Three independent, additive mechanisms, each following the existing `check_phase_gate.py` pattern (pure stdlib, git-plumbing only, `--staged-files` override for CI): a new secrets/debug-statement scanner, a new coupling check added to the existing phase-gate script, and a new push-freshness scanner wired into its own scheduled workflow. A final step wires the two new scanners into the existing local hook and CI workflow. No application code (`apps/api/app/`, `apps/web/src/`) is touched — this cycle is tooling/CI only, per spec.md's non-functional requirements.
 
-**Commit granularity note**: per the convention adopted in Cycle 1 (`docs/DEFECT_LEDGER.md` BUG-032), all steps below land in **one final commit**, not one per step. Run each step's targeted verification for fast feedback as you go; only `git commit` once, after Step 5's full verification pass.
+**Commit granularity note**: per the convention adopted in Cycle 1 (`docs/DEFECT_LEDGER.md` BUG-032) and repeated in Cycle 5, all steps below land in **one final commit**, not one per step. Run each step's targeted verification for fast feedback as you go; only `git commit` once, after Step 5's full verification pass.
 
 ## 2. Data Flow
 
 ```mermaid
 graph TD
-    A[apps/api/app/core/prompts.py - new] --> B[FOURTH_WALL_RULE]
-    A --> C[CONSULTANT_INTAKE_PROMPT]
-    A --> D[CONSULTANT_PLAYBACK_PROMPT]
-    A --> E[PROCESS_ANALYST_WORKER_PROMPT]
-    A --> F[AUTOMATION_ARCHITECT_WORKER_PROMPT]
+    A[scripts/check_secrets_and_debug_statements.py - new] -->|scans| B[apps/api/app/**/*.py]
+    A -->|scans| C[apps/web/src/**/*.ts,tsx]
+    A --> D[.githooks/pre-commit]
+    A --> E[reliability-phase1.yml]
 
-    G[orchestrator.py] -->|imports| A
-    C -->|.format fourth_wall_rule=B| H[intake question generation]
-    D -->|.format fourth_wall_rule=B| I[playback summary generation]
-    B -->|spliced directly, prompt stays inline| J[_node_synthesize_report system prompt]
-    E --> K[_execute_live_sdk_loop worker system prompt]
-    F --> K
+    F[scripts/check_phase_gate.py] -->|new: check_agents_md_coupling| G[AGENTS.md]
+    G -->|literal commit-message strings| H[SPEC_GREP / DESIGN_GREP constants]
 
-    L[_node_context_architect] -->|sole authority: required_components incl. location| M[architect_plan]
-    M -->|read only, no re-derivation| N[_node_route_intent]
-
-    O[is_user_facing_message helper - new] --> P[_save_intermediate_state]
-    O --> Q[run_pipeline filter site 1]
-    O --> R[run_pipeline filter site 2]
+    I[scripts/check_push_freshness.py - new] -->|reads| J[git log HEAD commit date]
+    I --> K[.github/workflows/push-freshness.yml - new]
+    K -->|schedule: daily cron + workflow_dispatch| I
 ```
 
 ## 3. Atomic Implementation Steps
 
-### Step 1: Create `apps/api/app/core/prompts.py`
-- **Read Path**: [`apps/api/app/core/orchestrator.py`](file:///C:/Users/nimel.thomas/Desktop/BuildSense/.claude/worktrees/audit-remediation/apps/api/app/core/orchestrator.py) (lines 337-459)
-- **Modify Path**: `apps/api/app/core/prompts.py` (new)
-- **Description**: Create the new module with, in order: `FOURTH_WALL_RULE` (one canonical version synthesizing the three current copies' wording, per spec.md 2.1), then `CONSULTANT_INTAKE_PROMPT` (moved from lines 337-405, Fourth Wall block replaced with a `{fourth_wall_rule}` placeholder), `CONSULTANT_PLAYBACK_PROMPT` (moved from lines 406-443, same placeholder substitution), `PROCESS_ANALYST_WORKER_PROMPT` (moved verbatim from lines 446-451), `AUTOMATION_ARCHITECT_WORKER_PROMPT` (moved verbatim from lines 454-459). No import from `orchestrator.py` in this new module (one-directional dependency, per spec.md's non-functional requirements).
-- **Targeted verification**: `python -c "from app.core.prompts import FOURTH_WALL_RULE, CONSULTANT_INTAKE_PROMPT, CONSULTANT_PLAYBACK_PROMPT, PROCESS_ANALYST_WORKER_PROMPT, AUTOMATION_ARCHITECT_WORKER_PROMPT; print('ok')"` (from `apps/api`) — confirms the module imports cleanly before wiring anything else to it.
+### Step 1: Create `scripts/check_secrets_and_debug_statements.py`
+- **Read Path**: `scripts/check_phase_gate.py` (style/pattern reference: `get_staged_files()`, `--staged-files` argparse override, stdlib-only approach)
+- **Modify Path**: `scripts/check_secrets_and_debug_statements.py` (new)
+- **Description**: Implement per spec.md 2.1 — scope to `^apps/api/app/.*\.py$` and `^apps/web/src/.*\.(ts|tsx)$` only; flag `print(`/`console.log(`, AWS-style keys (`AKIA[0-9A-Z]{16}`), private-key headers, and `(api[_-]?key|secret|token|password)\s*[:=]\s*["'][A-Za-z0-9+/=_-]{16,}["']` (case-insensitive). Print file/line/category per finding to stderr; exit 1 on any finding, exit 0 otherwise.
+- **Targeted verification**: `python scripts/check_secrets_and_debug_statements.py` (repo root) against the current tree — expect exit 0. Then create a scratch file outside the repo's tracked paths containing a fake `AKIA` key and a `print(` call, run with `--staged-files <scratch_path>`, confirm exit 1 with both findings reported, then delete the scratch file.
 
-### Step 2: Wire `orchestrator.py` to import from `prompts.py` and splice `FOURTH_WALL_RULE`
-- **Read Path**: same file (lines 337-459 for the definitions being removed, ~2196-2207 and ~2286 area for the two `.format()` call sites, ~2561-2564 for the inline synthesis prompt)
-- **Modify Path**: `apps/api/app/core/orchestrator.py`
-- **Description**:
-  - Remove the five now-duplicated constant definitions (lines 337-459) from `orchestrator.py`; add an import from `app.core.prompts` for all five names.
-  - Add `fourth_wall_rule=FOURTH_WALL_RULE` to the `CONSULTANT_INTAKE_PROMPT.format(...)` call's keyword arguments.
-  - Add `fourth_wall_rule=FOURTH_WALL_RULE` to the `CONSULTANT_PLAYBACK_PROMPT.format(...)` call's keyword arguments.
-  - In `_node_synthesize_report`'s inline synthesis system prompt, replace the three hardcoded Fourth Wall Rule lines with an interpolation of `FOURTH_WALL_RULE` (this prompt is built via string concatenation/f-string, so this is a direct substitution, not a `.format()` placeholder).
-- **Targeted verification**: `pytest apps/api/tests/test_interview.py -v` (from `apps/api`) — exercises both consultant prompt call sites; `grep -n "THE FOURTH WALL RULE" apps/api/app/core/orchestrator.py apps/api/app/core/prompts.py` should show the canonical text once in `prompts.py` and no hardcoded duplicate blocks remaining in `orchestrator.py`.
+### Step 2: Add `check_agents_md_coupling()` to `check_phase_gate.py`
+- **Read Path**: `AGENTS.md` (Phase 1/Phase 2 sections, to locate the exact literal commit command strings), `scripts/check_phase_gate.py` (existing `SPEC_GREP`/`DESIGN_GREP` constants and `main()`'s check list)
+- **Modify Path**: `scripts/check_phase_gate.py`
+- **Description**: Add a function that reads `AGENTS.md`, extracts the message text from `git commit --no-verify -m "docs: finalize specification"` and `git commit --no-verify -m "docs: finalize system design"`, and asserts each matches `SPEC_GREP`/`DESIGN_GREP` with the `^` anchor stripped. Add it to the `for check in (...)` tuple in `main()` so it runs unconditionally (not gated on staged-file patterns). On mismatch, print both values side by side and exit 1.
+- **Targeted verification**: `python scripts/check_phase_gate.py` (repo root) — expect exit 0 (confirms the new check passes against the current, correctly-paired AGENTS.md/script state).
 
-### Step 3: Extract `is_user_facing_message` and use it at all three filter sites
-- **Read Path**: same file (lines 1526-1528, 3332, 3344)
-- **Modify Path**: same file
-- **Description**: Add `is_user_facing_message(m: Message) -> bool` as a module-level helper near the other message-coercion helpers (e.g. near `_coerce_message`), implementing exactly the predicate currently duplicated three times (per spec.md 2.3). Replace `_save_intermediate_state`'s imperative `if m.role == "tool": continue` / `if m.role == "assistant" and m.name not in {...}: continue` pair with a single `if not is_user_facing_message(m): continue`. Replace both `run_pipeline` list-comprehension predicates with calls to the same helper.
-- **Targeted verification**: `pytest apps/api/tests/test_orchestrator.py apps/api/tests/test_analyst_behavior.py -v` (from `apps/api`) — these are the suites most likely to assert on message filtering/isolation behavior from earlier BUG fixes in this area.
+### Step 3: Create `scripts/check_push_freshness.py` and `.github/workflows/push-freshness.yml`
+- **Read Path**: `.github/workflows/reliability-phase1.yml` (style reference for workflow structure)
+- **Modify Path**: `scripts/check_push_freshness.py` (new), `.github/workflows/push-freshness.yml` (new)
+- **Description**: `check_push_freshness.py` is a small pure-Python script exposing a testable `days_since(commit_iso_date: str, now: datetime | None = None) -> int` function and a `main()` that runs `git log -1 --format=%aI` on the currently checked-out HEAD, computes days elapsed, and exits 1 with a clear message if greater than a `--max-days` argument (default 3). The workflow (`schedule:` daily cron + `workflow_dispatch:`) checks out the repo and calls this script with no arguments beyond an optional threshold env var. Keeping the date-diff logic in a plain function (not inlined in YAML/bash) is what makes it testable per spec.md acceptance criterion 3.
+- **Targeted verification**: run `python -c "from scripts.check_push_freshness import days_since; from datetime import datetime, timezone; print(days_since('2020-01-01T00:00:00+00:00', datetime(2020,1,10, tzinfo=timezone.utc)))"` (repo root) — expect `9`. Validate the workflow YAML parses: `python -c "import yaml; yaml.safe_load(open('.github/workflows/push-freshness.yml'))"`.
 
-### Step 4: Remove the redundant required-components re-derivation
-- **Read Path**: same file (lines 1755-1761 for context, 1874-1876 for the removal)
-- **Modify Path**: same file
-- **Description**: Delete the `if architect_plan.get("requires_location") and "location" not in required_keys: required_keys.append("location")` block from `_node_route_intent`. Leave the preceding line (`required_keys = list(planned_required) if isinstance(planned_required, list) else [...]`) unchanged — it remains the read path, now sourced exclusively from `_node_context_architect`'s output.
-- **Targeted verification**: `pytest apps/api/tests/test_interview.py::test_architect_requires_location_for_physical_shop apps/api/tests/test_ontology.py -v` (from `apps/api`) — the two suites that directly assert on `requires_location`/`required_components` behavior.
+### Step 4: Wire the secrets/debug check into the local hook and CI
+- **Read Path**: `.githooks/pre-commit`, `.github/workflows/reliability-phase1.yml`
+- **Modify Path**: `.githooks/pre-commit`, `.github/workflows/reliability-phase1.yml`
+- **Description**: In `.githooks/pre-commit`, add `python scripts/check_secrets_and_debug_statements.py || exit 1` alongside the existing `check_phase_gate.py`/`sync_agent_rules.py --check` calls, before the pytest step. In `reliability-phase1.yml`, add a step after the existing "Run phase-gate check" step that runs `python scripts/check_secrets_and_debug_statements.py --staged-files $CHANGED`, reusing the `$CHANGED` variable already computed there.
+- **Targeted verification**: `sh .githooks/pre-commit` (repo root, dry run) — confirm the new check executes and exits 0 before pytest runs. Visual review of the workflow diff for correct step placement (no live CI run possible from local verification).
 
 ### Step 5: Full verification pass and single commit
 - **Read Path**: n/a
 - **Modify Path**: none
-- **Description**: Run the full backend suite, mypy, and both local guardrail scripts. If all pass, stage the new `prompts.py` and the modified `orchestrator.py` (two files — no other file should have changed) and make one commit for the whole cycle, through the normal pre-commit hook (no `--no-verify`).
-- **Targeted verification**: `pytest apps/api/tests/ -v`, `mypy app/`, `python scripts/check_phase_gate.py`, `python scripts/sync_agent_rules.py --check`.
+- **Description**: Run the full backend suite, mypy, and all four local guardrail scripts (`check_phase_gate.py`, `sync_agent_rules.py --check`, `check_secrets_and_debug_statements.py`, `check_push_freshness.py` in dry-run/importable-function mode). If all pass, stage the five new/modified files (two new scripts, one new workflow, `.githooks/pre-commit`, `reliability-phase1.yml`) and make one commit for the whole cycle, through the normal pre-commit hook (no `--no-verify`).
+- **Targeted verification**: `pytest apps/api/tests/ -v`, `mypy app/`, `python scripts/check_phase_gate.py`, `python scripts/sync_agent_rules.py --check`, `python scripts/check_secrets_and_debug_statements.py`.
 
 ---
 
 ## 4. Verification Plan
 
-### Automated Tests
-- `pytest apps/api/tests/ -v` (from `apps/api`)
-- `pytest apps/api/tests/test_interview.py apps/api/tests/test_orchestrator.py apps/api/tests/test_ontology.py apps/api/tests/test_analyst_behavior.py -v` (from `apps/api`)
+### Automated / Local Guardrail Scripts
+- `pytest apps/api/tests/ -v` (from `apps/api`) — confirms zero regression, since no application code is touched.
 - `mypy app/` (from `apps/api`)
-
-### Local Guardrail Scripts
-- `python scripts/check_phase_gate.py` (repo root)
+- `python scripts/check_phase_gate.py` (repo root) — now includes the new coupling check.
 - `python scripts/sync_agent_rules.py --check` (repo root)
+- `python scripts/check_secrets_and_debug_statements.py` (repo root)
 
 ### Manual
-- `grep -n "THE FOURTH WALL RULE" apps/api/app/core/orchestrator.py apps/api/app/core/prompts.py` — one canonical copy in `prompts.py`, no hardcoded duplicates left in `orchestrator.py`.
-- `git diff --stat` against the pre-cycle commit — confirms only `apps/api/app/core/prompts.py` (new) and `apps/api/app/core/orchestrator.py` (modified) changed.
+- Fixture test for the secrets/debug scanner (Step 1), discarded after use.
+- Temporary one-character edit to a scratch copy of AGENTS.md's commit-message string to confirm `check_agents_md_coupling()` actually fails on drift, then revert (never commit the broken copy).
+- `git diff --stat` against the pre-cycle commit — confirms only the five files named in Step 5 changed.
