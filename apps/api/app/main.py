@@ -489,7 +489,6 @@ async def orchestrate(
         for q, ans in payload.clarification_responses.items():
             state.messages.append(Message(role="user", content=f"Q: {q}\nA: {ans}", name=None, tool_call_id=None))
         await postgres_client.save_chat_messages(project_id, state.messages)
-        state.status = SessionStatus.PLANNING
         log_event("clarification_responses_received", response_count=len(payload.clarification_responses))
 
     # Run the session orchestrator pipeline

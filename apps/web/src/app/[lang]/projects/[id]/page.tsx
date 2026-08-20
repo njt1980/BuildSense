@@ -192,7 +192,7 @@ export default function ProjectWorkspacePage() {
   useEffect(() => {
     if (activeSessionState?.status === "AWAITING_CLARIFICATION") {
       setActiveTab("chat");
-      setIsClarificationOpen(false);
+      setIsClarificationOpen(true);
     } else {
       setIsClarificationOpen(false);
     }
