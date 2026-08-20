@@ -1,74 +1,69 @@
-# Specification: Orchestrator Dedup — Fourth Wall Rule, Message Filter, Required-Components, prompts.py (Audit Cycle 5 of 5)
+# Specification: Meta-Governance Cycle 1 — Secrets/Debug Lint, AGENTS.md↔Phase-Gate Coupling Check, Push-Freshness Guard
 
 ## 1. Goal Description
 
-`apps/api/app/core/orchestrator.py` (3,310+ lines) has three mechanisms that must stay consistent across multiple independently-maintained copies, which is the structural reason fixes in this file keep not sticking (per the original audit and the defect ledger's own history: BUG-009, BUG-023, BUG-026 all trace back to the required-components duplication specifically). This cycle centralizes three of them and takes one small, self-contained first step toward splitting this file into modules. Re-verified against the current worktree (all line numbers below are current, not from the original audit pass, since Cycles 2-4 have shifted the file):
+This cycle is not an application feature — it is tooling that closes three specific, evidence-backed gaps in how this repository verifies its own process is being followed, found during a governance review of the audit-remediation effort (Cycles 1-5) and its supporting scripts:
 
-1. **The Fourth Wall Rule is copy-pasted three times with drifted wording**, at lines 348-351 (`CONSULTANT_INTAKE_PROMPT`), 415-418 (`CONSULTANT_PLAYBACK_PROMPT`), and 2561-2564 (inline in the synthesis system prompt inside `_node_synthesize_report`). The first bullet is now identical across all three; the second and third bullets still differ (e.g. "under any circumstances" vs. "in any user-facing text values"; "internal state logic, completeness rules, or internal structures" vs. "state logic, internal fields, and operational classifications" vs. "state terminology and internal categories").
-2. **The user-facing message filter predicate is reimplemented three times**: an imperative loop in `_save_intermediate_state` (lines 1526-1528) and two separate list comprehensions in `run_pipeline` (lines 3332, 3344), all expressing the same logic (`role != "tool" and not (role == "assistant" and name not in {None, "BuildSense Intelligence"})`) independently.
-3. **Required-components/location logic is computed in two places.** `_node_context_architect` (lines 1755-1761) is the authoritative computation — it builds `required_components` and already appends `"location"` when `requires_location` is true, storing both in `architect_plan`. `_node_route_intent` (lines 1874-1876) redundantly re-derives this: it reads `architect_plan.get("required_components")` but then re-checks `requires_location` and re-appends `"location"` again. Tracing this confirms the second append is currently a no-op in every real code path (the architect node's output already satisfies the condition that would make it fire) — but nothing enforces that invariant, which is exactly the seam BUG-009/023/026 broke.
-4. **The file has no internal module boundaries.** As a small, low-risk first step (not the full multi-module split), extract the file's cleanly-isolated top-level prompt-string constants — `CONSULTANT_INTAKE_PROMPT`, `CONSULTANT_PLAYBACK_PROMPT`, `PROCESS_ANALYST_WORKER_PROMPT`, `AUTOMATION_ARCHITECT_WORKER_PROMPT` (lines 337-459) — into a new `apps/api/app/core/prompts.py` module, alongside the new centralized `FOURTH_WALL_RULE` constant from item 1. The two worker prompts (`PROCESS_ANALYST_WORKER_PROMPT`, `AUTOMATION_ARCHITECT_WORKER_PROMPT`) have no `.format()` placeholders at all and are trivial to move; the two consultant prompts already use `.format()`-style placeholders and gain one more (`{fourth_wall_rule}`) as part of this cycle. The synthesis prompt (inline, dynamically built in `_node_synthesize_report`) is **not** moved in this cycle — it stays inline in `orchestrator.py` but imports and splices in the same `FOURTH_WALL_RULE` constant, so its wording is centralized even though its surrounding template isn't relocated yet.
+1. **No automated check for hardcoded secrets or stray debug statements.** AGENTS.md's Definition of Done lists "No hardcoded secrets, API keys, or unhandled debug logs (`print()`, `console.log()`)" as a completion criterion, but nothing mechanically checks it — it depends entirely on whoever is reviewing a commit remembering to look.
+2. **AGENTS.md's own coupling note is unenforced.** `scripts/check_phase_gate.py`'s docstring states: "the commit-message prefixes this script greps for... are defined in AGENTS.md's MANDATORY_WORKFLOW. If those strings change there, update the patterns below in the same commit." Nothing verifies that pairing — the two literal commit-message strings in AGENTS.md and the `SPEC_GREP`/`DESIGN_GREP` constants in `check_phase_gate.py` could drift apart silently.
+3. **No detection for a stalled remote.** This session found 76 commits — spanning all five audit-remediation cycles, including the fix to `reliability-phase1.yml` itself — sitting unpushed to `origin/master` for 5 days. During that window, every CI workflow in `.github/workflows/` ran zero times against this work, because none of them trigger on anything but push/PR. Nothing in the repo would have surfaced this on its own; it was found by manual inspection.
 
-Explicitly out of scope for this cycle (deferred, per discussion): fixing the two-worker task DAG's lack of real sequencing (a behavioral/execution-loop change, not dedup — a candidate for a future cycle), and the rest of the file-module split (node methods, extraction/confidence-scoring helpers, deterministic fallback builders, SDK execution loops all remain in `orchestrator.py`). Auth/JWT remains out of scope for the whole remediation effort.
+Explicitly out of scope for this cycle: branch protection settings on `master` (a GitHub repository setting, not source code — handled separately, outside this spec/design/code ritual, pending a decision on PR-based vs. direct-to-master workflow). Also out of scope: the deterministic proxy checks for LLM-judged prompt properties (Fourth-Wall leakage, zero-jargon) and the production-feedback/eval-fixture pipeline — both depend on this cycle's script-authoring pattern but are larger, separate efforts (Phases 3 and 5 of the governance improvement plan).
 
 ---
 
 ## 2. Functional Requirements
 
-### 2.1 Create `apps/api/app/core/prompts.py`
-- New module containing, in this order:
-  - `FOURTH_WALL_RULE: str` — one canonical version of the rule, synthesizing the most complete wording found across the three current copies (all three specific forbidden-word examples; the strongest phrasing from each of the three drifted third-bullet variants, merged into one clear instruction). Written as a plain multi-line string (not an f-string), safe to interpolate into both `.format()`-style templates (via a `{fourth_wall_rule}` placeholder) and directly into runtime-built f-strings/concatenation.
-  - `CONSULTANT_INTAKE_PROMPT` — moved verbatim from `orchestrator.py:337-405`, with its existing Fourth Wall Rule block (lines 348-351) replaced by a `{fourth_wall_rule}` placeholder consistent with its other existing `.format()` placeholders.
-  - `CONSULTANT_PLAYBACK_PROMPT` — moved verbatim from `orchestrator.py:406-443`, with its existing Fourth Wall Rule block (lines 415-418) replaced by a `{fourth_wall_rule}` placeholder the same way.
-  - `PROCESS_ANALYST_WORKER_PROMPT` — moved verbatim from `orchestrator.py:446-451` (no placeholders, no change needed to its content).
-  - `AUTOMATION_ARCHITECT_WORKER_PROMPT` — moved verbatim from `orchestrator.py:454-459` (no placeholders, no change needed to its content).
+### 2.1 `scripts/check_secrets_and_debug_statements.py` (new)
+- Pure-stdlib script, following `check_phase_gate.py`'s existing style (git-plumbing only, `--staged-files` override flag for CI use, independent of the `apps/api` virtualenv).
+- Scope: only files matching `^apps/api/app/.*\.py$` or `^apps/web/src/.*\.(ts|tsx)$` (application source only — excludes `scripts/`, `apps/api/tests/`, `apps/api/evals/`, and `.env.example`, where `print()`/placeholder key names are legitimate).
+- Debug-statement check: flags any matched file containing `print(` (Python) or `console.log(` (TypeScript/TSX).
+- Secret check: flags any matched file containing (a) an AWS-style access key pattern (`AKIA[0-9A-Z]{16}`), (b) a private-key header (`-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----`), or (c) an assignment of the form `(api[_-]?key|secret|token|password)\s*[:=]\s*["'][A-Za-z0-9+/=_-]{16,}["']` (case-insensitive) — i.e. a plausibly-real secret value, not an empty placeholder or a variable name alone.
+- On any match, print the file, line number, and matched pattern category to stderr and exit 1. Exit 0 if no matched files or no findings.
 
-### 2.2 Update `orchestrator.py` to import from `prompts.py`
-- Remove the four moved constants' definitions from `orchestrator.py`; import them (plus `FOURTH_WALL_RULE`) from `app.core.prompts` instead.
-- At the `CONSULTANT_INTAKE_PROMPT.format(...)` call site (currently `orchestrator.py:2196-2207`), add `fourth_wall_rule=FOURTH_WALL_RULE` to the keyword arguments.
-- At the `CONSULTANT_PLAYBACK_PROMPT.format(...)` call site (currently `orchestrator.py:2286` area), add `fourth_wall_rule=FOURTH_WALL_RULE` to the keyword arguments.
-- In `_node_synthesize_report`'s inline synthesis system prompt (currently `orchestrator.py:2561-2564`), replace the three hardcoded Fourth Wall Rule lines with an interpolation of the imported `FOURTH_WALL_RULE` constant, preserving the rest of that prompt's content and structure unchanged.
+### 2.2 AGENTS.md ↔ `check_phase_gate.py` coupling check
+- Add a new check function inside `scripts/check_phase_gate.py` (not a separate script — this is specifically about that script's own documented coupling): `check_agents_md_coupling()`.
+- Reads `AGENTS.md`, locates the two literal commit command strings in the Phase 1 and Phase 2 sections (`git commit --no-verify -m "docs: finalize specification"` and `git commit --no-verify -m "docs: finalize system design"`), and asserts their message text matches `SPEC_GREP`/`DESIGN_GREP` (with the `^` anchor stripped) exactly.
+- Runs unconditionally in `main()`'s check list (not gated on staged files — a single-file text comparison, negligible cost), so drift is caught on every commit, not just ones touching phase-gate-relevant files.
+- On mismatch, print both the AGENTS.md text and the script's constant so the discrepancy is immediately visible, and exit 1.
 
-### 2.3 Centralize the user-facing message filter
-- Add a helper function `is_user_facing_message(m: Message) -> bool` in `orchestrator.py` (module level, near the other message-coercion helpers), implementing the shared predicate: not a `"tool"` role, and not an `"assistant"` message whose `name` is set to something other than `None`/`"BuildSense Intelligence"`.
-- Replace the imperative filtering logic in `_save_intermediate_state` (lines 1526-1528) with a call to this helper.
-- Replace both list-comprehension predicates in `run_pipeline` (lines 3332, 3344) with calls to this helper.
-- No behavior change: the helper must implement exactly the same predicate as all three existing call sites currently do.
+### 2.3 `.github/workflows/push-freshness.yml` (new)
+- Triggers: `schedule` (daily cron) and `workflow_dispatch` (manual run).
+- Checks out the repository (`fetch-depth: 0` not required — only the current default-branch HEAD commit's date is needed).
+- Computes days elapsed since that commit's authored date; fails the job with a clear message if elapsed days exceed a threshold (default 3, set as a workflow-level env var so it's a one-line change to tune).
+- No external notification integration in this cycle (e.g. Slack) — relies on the workflow run showing red in the Actions tab, plus GitHub's default behavior of emailing repository owners on scheduled-workflow failure, which requires no additional configuration.
 
-### 2.4 Remove the redundant required-components re-derivation
-- In `_node_route_intent` (currently lines 1874-1876), remove the `if architect_plan.get("requires_location") and "location" not in required_keys: required_keys.append("location")` block. Keep the existing line that reads `required_keys` from `architect_plan.get("required_components")` (with its existing fallback default when `required_components` is missing/not a list) — that remains the single source of truth, now populated exclusively by `_node_context_architect`.
-- Do not change `_node_context_architect` itself (lines 1755-1761 are already correct and become the sole authority).
+### 2.4 Wiring
+- `.githooks/pre-commit`: add a call to `scripts/check_secrets_and_debug_statements.py`, alongside the existing `check_phase_gate.py`/`sync_agent_rules.py --check` calls, before the pytest step.
+- `.github/workflows/reliability-phase1.yml`: add a step running `check_secrets_and_debug_statements.py --staged-files $CHANGED`, using the same `$CHANGED` file list already computed for the existing `check_phase_gate.py` step.
 
 ---
 
 ## 3. Non-Functional Requirements
 
-- No prompt text visible to the LLM may change in substance for `CONSULTANT_INTAKE_PROMPT` or `CONSULTANT_PLAYBACK_PROMPT` beyond the Fourth Wall Rule wording itself becoming the new centralized version (i.e. do not alter tone rules, discovery/confirmation boundary text, or any other section while moving these constants).
-- `is_user_facing_message` must be a pure function with no side effects, callable identically from both `_save_intermediate_state` and `run_pipeline`.
-- This cycle must not touch the two-worker task DAG (`_generate_task_dag`), the SDK execution loops, or any node method's control flow beyond the specific lines named in 2.4.
-- `apps/api/app/core/prompts.py` must have no import dependency on `orchestrator.py` (one-directional: `orchestrator.py` imports from `prompts.py`, never the reverse), to avoid introducing a circular import.
+- All new scripts are pure stdlib (no new pip/npm dependency), consistent with `check_phase_gate.py`'s existing rationale (must run in the fast pre-commit path without a virtualenv).
+- No new CI step may use `|| true` or otherwise swallow a non-zero exit code (per the defect this exact pattern caused earlier in `reliability-phase1.yml`).
+- No application code (`apps/api/app/`, `apps/web/src/`) is modified in this cycle — tooling and CI/workflow files only.
+- `check_secrets_and_debug_statements.py` must produce zero findings against the current, already-clean state of `apps/api/app/` and `apps/web/src/` (i.e., it must not be introduced already-failing).
 
 ---
 
 ## 4. Acceptance Criteria
 
-1. `apps/api/app/core/prompts.py` exists and defines `FOURTH_WALL_RULE`, `CONSULTANT_INTAKE_PROMPT`, `CONSULTANT_PLAYBACK_PROMPT`, `PROCESS_ANALYST_WORKER_PROMPT`, `AUTOMATION_ARCHITECT_WORKER_PROMPT`.
-2. `orchestrator.py` no longer defines any of those five names itself; it imports them from `app.core.prompts`.
-3. All three Fourth Wall Rule sites (the two moved prompts, plus the still-inline synthesis prompt) render the same canonical wording at runtime.
-4. `is_user_facing_message` exists once in `orchestrator.py` and is the only place implementing this predicate; `_save_intermediate_state` and both `run_pipeline` filter sites call it instead of reimplementing it.
-5. `_node_route_intent` no longer contains a `requires_location`-based re-append of `"location"`; `required_keys` comes solely from `architect_plan.get("required_components")`.
-6. `_node_context_architect` is unchanged.
-7. Full backend suite (`pytest apps/api/tests/ -v` from `apps/api`) passes.
-8. `mypy app/` (from `apps/api`) passes.
-9. `python scripts/check_phase_gate.py` and `python scripts/sync_agent_rules.py --check`, run locally against the final staged commit, both exit 0.
+1. `scripts/check_secrets_and_debug_statements.py` exists, exits 0 against the current codebase, and exits 1 against a deliberately-introduced test fixture containing a fake AWS-style key and a stray `print()`.
+2. `check_phase_gate.py` contains `check_agents_md_coupling()`, wired into `main()`; it exits 0 against the current AGENTS.md/script pairing.
+3. `.github/workflows/push-freshness.yml` exists, is valid workflow YAML, and its threshold logic is unit-testable independent of an actual 3-day wait (e.g. via a small pure-Python date-diff function covered by a local script test, not requiring a real stale commit to verify).
+4. `.githooks/pre-commit` and `reliability-phase1.yml` both invoke the new secrets/debug check.
+5. Existing `pytest apps/api/tests/ -v` and `mypy app/` are unaffected (no application code touched).
+6. `python scripts/check_phase_gate.py` and `python scripts/sync_agent_rules.py --check`, run locally, both still exit 0.
 
 ---
 
 ## 5. Verification Plan
 
-- `pytest apps/api/tests/ -v` (from `apps/api`)
-- `pytest apps/api/tests/test_interview.py apps/api/tests/test_orchestrator.py apps/api/tests/test_ontology.py apps/api/tests/test_analyst_behavior.py -v` (from `apps/api`) — targeted check on intake/routing/architect behavior, where 2.3 and 2.4 have the most surface area
-- `mypy app/` (from `apps/api`)
-- `python scripts/check_phase_gate.py` (repo root)
-- `python scripts/sync_agent_rules.py --check` (repo root)
-- Manual: `grep -n "THE FOURTH WALL RULE" apps/api/app/core/orchestrator.py apps/api/app/core/prompts.py` — confirm the rule text appears once in `prompts.py` (as `FOURTH_WALL_RULE`) and the three usage sites all reference it rather than hardcoding it.
+- `python scripts/check_secrets_and_debug_statements.py` (repo root) — exits 0 against current tree.
+- Manual fixture test: create a scratch file with a fake `AKIA...` key and a `print(`, run the script with `--staged-files` pointing at it, confirm exit 1 and correct findings reported; discard the scratch file.
+- `python scripts/check_phase_gate.py` (repo root) — exits 0, confirms the new coupling check passes.
+- Manual: temporarily edit one character of the commit-message string in a local scratch copy of AGENTS.md, confirm `check_agents_md_coupling()` fails with a clear diff, then revert.
+- `pytest apps/api/tests/ -v`, `mypy app/` (from `apps/api`) — confirm no regression.
+- `python scripts/sync_agent_rules.py --check` (repo root).
