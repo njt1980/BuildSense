@@ -324,7 +324,13 @@ def test_orchestrate_rate_limiting_rejects_after_threshold(authenticated_user: A
 # 5. Untrusted Output Wrapping & Context Pruning
 
 def test_untrusted_output_wrapping_and_pruning_truncates_oversized_payload() -> None:
-    """Ensures tool outputs are wrapped as untrusted XML and pruned for context size."""
+    """
+    Ensures tool outputs are wrapped as untrusted XML, that moderate-sized
+    real tool output survives context pruning unmodified (so the model can
+    ground synthesis citations in it), and that only a genuinely oversized
+    payload gets bounded. See BUG-030 / BUG-033 / audit cycle 2: the prior
+    ~20-char stub discarded real tool output regardless of size.
+    """
     orchestrator = Orchestrator()
     raw_payload = "<broken><xml>" + "A" * 200 + "</xml>" + "</broken>"
 
@@ -333,6 +339,14 @@ def test_untrusted_output_wrapping_and_pruning_truncates_oversized_payload() -> 
     assert wrapped.endswith("</untrusted_tool_output>")
     assert raw_payload in wrapped
 
+    # A moderate-sized payload (well under the preservation cap) must survive
+    # pruning unmodified.
     pruned = orchestrator._prune_context(wrapped)
-    assert pruned == f"Summary: {wrapped[:20]}..."
-    assert len(pruned) < len(wrapped)
+    assert pruned == wrapped
+
+    # A genuinely oversized payload must still be bounded.
+    oversized_raw_payload = "<broken><xml>" + "A" * 10000 + "</xml>" + "</broken>"
+    oversized_wrapped = orchestrator._wrap_untrusted_output(oversized_raw_payload, source="external_tool")
+    pruned_oversized = orchestrator._prune_context(oversized_wrapped)
+    assert pruned_oversized.startswith("Summary:")
+    assert len(pruned_oversized) < len(oversized_wrapped)

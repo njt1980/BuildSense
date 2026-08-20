@@ -192,6 +192,7 @@ async def test_confirmed_intake_is_required_before_execution() -> None:
         messages=[Message(role="user", content="Yes, that is correct.")],
         process_components=components,
         playback_confirmed=False,
+        playback_shown=True,
         metadata={
             "architect_plan": {
                 "business_vertical": "GENERIC",

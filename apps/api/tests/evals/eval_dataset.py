@@ -333,7 +333,7 @@ GOLDEN_SCENARIOS: List[EvalScenario] = [
         "expect_synthesis": True,
         "user_constraints": ["Avoid adding chaos"],
         "initial_turns_count": 0,
-        "expected_report_contains": ["Unverified Assumptions", "contracts@starlight.com", "Next Horizons"],
+        "expected_report_contains": ["Unverified Assumptions", "contracts@yourcompany.com", "Next Horizons"],
         "expected_report_forbidden_terms": ["Zapier", "CRM", "contract management software"],
         "scenario_tags": ["multi_turn", "vague_start", "escape_hatch", "synthesis_success"],
         "eval_archetype": "professional_services",

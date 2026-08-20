@@ -129,7 +129,12 @@ def test_orchestrator_xml_untrusted_containment() -> None:
 
 def test_orchestrator_context_pruning_hook() -> None:
     """
-    Checks that heavy payloads are summarized by the context pruning hook.
+    Checks that genuinely heavy tool payloads are bounded by the context
+    pruning hook, while real (moderate-sized) tool output is preserved
+    unmodified so the model can ground synthesis citations in it instead of
+    reproducing citation-like text from parametric memory (BUG-030 / audit
+    cycle 2: the prior ~20-char stub discarded real benchmark citations
+    before they could reach the model).
 
     Arguments:
         None
@@ -138,11 +143,23 @@ def test_orchestrator_context_pruning_hook() -> None:
         None
     """
     orchestrator = Orchestrator()
-    raw_payload = "<untrusted_tool_output source='search'>Long raw html output</untrusted_tool_output>"
-    pruned = orchestrator._prune_context(raw_payload)
-    
-    assert "Summary:" in pruned
-    assert len(pruned) < len(raw_payload)
+
+    # A genuinely heavy payload (well past the preservation cap) must still
+    # be bounded so a single tool result cannot unboundedly grow history.
+    heavy_payload = (
+        "<untrusted_tool_output source='search'>"
+        + ("Benchmark citation detail. " * 300)
+        + "</untrusted_tool_output>"
+    )
+    pruned_heavy = orchestrator._prune_context(heavy_payload)
+    assert "Summary:" in pruned_heavy
+    assert len(pruned_heavy) < len(heavy_payload)
+
+    # Real tool output under the cap must be preserved unmodified, not
+    # truncated to a near-useless stub.
+    small_payload = "<untrusted_tool_output source='search'>Long raw html output</untrusted_tool_output>"
+    pruned_small = orchestrator._prune_context(small_payload)
+    assert pruned_small == small_payload
 
 
 @pytest.mark.asyncio
@@ -284,7 +301,8 @@ async def test_tiered_routing_and_caching() -> None:
         max_steps=15,
         messages=[Message(role="user", content="Yes, confirm.")],
         process_components=components,
-        playback_confirmed=False
+        playback_confirmed=False,
+        playback_shown=True
     )
 
     with patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
@@ -649,7 +667,8 @@ async def test_deterministic_confirmation_gate_integration() -> None:
             "system": "Excel",
             "friction": "Wastes time"
         },
-        playback_confirmed=False
+        playback_confirmed=False,
+        playback_shown=True
     )
     
     # Patch Anthropic AsyncClient to ensure it is NOT called

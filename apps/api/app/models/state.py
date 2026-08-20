@@ -111,5 +111,6 @@ class SessionState(BaseModel):
     lang: str = Field("en", description="User selected language code (en, hi, kn, ta, ml).")
     process_components: ProcessComponents = Field(default_factory=lambda: ProcessComponents(), description="Accumulated process components.")
     playback_confirmed: bool = Field(default=False, description="Whether the user confirmed the playback summary.")
+    playback_shown: bool = Field(default=False, description="Whether a playback summary was shown to the user on the most recent non-confirmed turn.")
     clarification_turns: int = Field(default=0, description="Count of clarification turns taken during intake.")
     geographic_context: Optional[Dict[str, Any]] = Field(default=None, description="Optional enriched geographic payload (nearby hubs, arteries, constraints).")

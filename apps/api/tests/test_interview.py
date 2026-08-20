@@ -120,7 +120,8 @@ async def test_playback_confirmation_gate_yes() -> None:
             Message(role="user", content="Yes, this is accurate.")
         ],
         process_components=components,
-        playback_confirmed=False
+        playback_confirmed=False,
+        playback_shown=True
     )
 
     # Mock Claude response for confirmation gate
@@ -186,7 +187,8 @@ async def test_playback_confirmation_gate_no_correction() -> None:
             Message(role="user", content="No, we don't use Excel, we use Tally ERP.")
         ],
         process_components=components,
-        playback_confirmed=False
+        playback_confirmed=False,
+        playback_shown=True
     )
 
     # Mock Claude response for confirmation gate: not a confirmation, system is corrected to Tally ERP
@@ -653,6 +655,7 @@ async def test_correction_overwrites_prior_assumption_before_replayback() -> Non
         ],
         process_components=components,
         playback_confirmed=False,
+        playback_shown=True,
     )
 
     mock_confirm = make_mock_response(json.dumps({

@@ -100,6 +100,7 @@ class AgentState(TypedDict):
     lang: str
     process_components: Dict[str, Optional[str]]
     playback_confirmed: bool
+    playback_shown: bool
     clarification_turns: int
     geographic_context: Optional[Dict[str, Any]]
 
@@ -220,45 +221,32 @@ def extract_evidence_ledger_from_messages(messages: List[Any]) -> List[Dict[str,
     for msg in messages:
         content = msg.content if hasattr(msg, "content") else msg.get("content", "")
         c_lower = content.lower()
-        
+        # The claim text below is always the user's own message content
+        # (trimmed), never a canned string -- keyword matching only selects
+        # which Evidence Ladder level/source category applies. Fabricating
+        # specific statistics from bare keyword triggers regardless of what
+        # the user actually said was a deterministic hallucination path.
+        # See BUG-030 / audit cycle 2.
+        claim = content.strip()
+
         # Level 3: System Export (High reliability)
         if "export" in c_lower or "database" in c_lower or "system" in c_lower:
-            claim = "Average vehicle utilization is 65%"
-            if "utilization" in c_lower:
-                claim = "Average vehicle utilization is 65%"
-            elif "shrinkage" in c_lower:
-                claim = "Monthly shrinkage rate is 0.2%"
-            elif "catalog" in c_lower:
-                claim = "Lost hours cataloging inventory details"
-            
             ledger.append({
                 "claim": claim,
                 "source": "System Export / Database",
                 "ladder_level": "System Export"
             })
-            
+
         # Level 2: Employee Stated (Medium reliability)
         elif "stated" in c_lower or "manager" in c_lower or "staff" in c_lower or "employee" in c_lower:
-            claim = "Route planning takes 4 hours daily"
-            if "hours" in c_lower:
-                claim = "Route planning takes 4 hours daily"
-            elif "incoming" in c_lower or "box" in c_lower:
-                claim = "Managing incoming boxes is slow"
-            
             ledger.append({
                 "claim": claim,
                 "source": "Staff / Dispatch Manager",
                 "ladder_level": "Employee Stated"
             })
-            
+
         # Level 1: Owner Estimate (Low reliability)
         elif "estimate" in c_lower or "assume" in c_lower or "think" in c_lower:
-            claim = "5% of products are damaged during shipping"
-            if "damaged" in c_lower:
-                claim = "5% of products are damaged during shipping"
-            elif "maintenance" in c_lower or "reactive" in c_lower:
-                claim = "Equipment maintenance schedule is reactive"
-            
             ledger.append({
                 "claim": claim,
                 "source": "Owner Estimate",
@@ -384,7 +372,7 @@ Conversation discipline:
 - Do not use internal labels such as Trigger, Actor, Activity, System, Friction, schema, slot, component, extraction, or JSON.
 - Do not use placeholder words such as UNKNOWN, null, None, or Not specified.
 - Do not ask the owner to name bottlenecks, friction, inefficiencies, pain points, or time waste during intake. BuildSense will infer those later.
-- Do not invent, assume, or hallucinate systems, software, people, steps, locations, or workflows. If the owner did not say they use Excel, Tally, WhatsApp, a notebook, an ERP, a dispatcher, or any other tool/person/process, do not mention it as fact.
+- Do not invent, assume, or hallucinate systems, software, people, steps, locations, or workflows. If the owner did not explicitly state a specific tool, system, or person, do not name one as fact — describe the gap generically instead.
 - You may offer a tiny example only as an optional possibility, never as a presumed fact.
 - Do not summarize all known fields. Just acknowledge the previous statement and pull one thread forward.
 
@@ -517,6 +505,27 @@ E2E_CONFIDENCE_THRESHOLD = 0.85
 LOW_CONFIDENCE_THRESHOLD = 0.5
 
 
+def _matches_whole_word_marker(text_lower: str, marker: str) -> bool:
+    """
+    Checks whether `marker` (a single word or short phrase) appears in
+    `text_lower` as a whole word/phrase, not merely as a substring.
+
+    Ad hoc confirmation-detection fallbacks previously used `marker in text`,
+    which misclassifies "incorrect" as a confirmation because it contains
+    "correct" as a substring. Word-boundary matching avoids that class of
+    false positive while still matching multi-word markers such as
+    "that's right". See BUG-030 / audit cycle 2.
+
+    Args:
+        text_lower: Lowercased text to search within.
+        marker: Lowercased single word or short phrase to look for.
+
+    Returns:
+        True if the marker appears as a whole word/phrase in text_lower.
+    """
+    return re.search(rf"\b{re.escape(marker)}\b", text_lower) is not None
+
+
 def classify_answer_quality(user_prompt: str, components: Dict[str, Any]) -> str:
     """
     Classifies the latest owner answer for iterative discovery routing.
@@ -541,7 +550,7 @@ def classify_answer_quality(user_prompt: str, components: Dict[str, Any]) -> str
         return "dead_end"
     if prompt_lower.startswith(correction_markers):
         return "correction"
-    if any(marker in prompt_lower for marker in confirmation_markers) and len(prompt_lower.split()) <= 5:
+    if any(_matches_whole_word_marker(prompt_lower, marker) for marker in confirmation_markers) and len(prompt_lower.split()) <= 5:
         return "confirmation"
     if any(marker in prompt_lower for marker in vague_markers) or len(prompt_lower.split()) <= 5:
         return "vague"
@@ -922,7 +931,10 @@ def build_six_pillar_coverage(
 
     for pillar, definition in SIX_PILLARS.items():
         for keyword in definition["keywords"]:
-            if keyword in combined_text:
+            # Word-boundary match (not substring): a bare `in` check would let
+            # "tally" match inside "totally", fabricating pillar evidence the
+            # user never actually stated. See BUG-030 / audit cycle 2.
+            if re.search(rf"\b{re.escape(keyword)}\b", combined_text):
                 _append_evidence(coverage, pillar, f"Mentions {keyword}")
                 break
 
@@ -1259,7 +1271,7 @@ def build_ambiguity_fallback_report(
     if business_object == "vendor contracts":
         recommendation = (
             "Recommendations:\n"
-            "1. Create one strict contract intake channel, such as contracts@starlight.com, and use it only for vendor contracts.\n"
+            "1. Create one strict contract intake channel, such as contracts@yourcompany.com, and use it only for vendor contracts.\n"
             "2. Define three plain statuses: received, needs counter-signature, and fully signed.\n"
             "3. Review that inbox at the same time every business day before adding any new contract software.\n\n"
             "Next Horizons:\n"
@@ -1553,6 +1565,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 lang=state.get("lang", "en"),
                 process_components=ProcessComponents(**state.get("process_components", {})) if state.get("process_components") else ProcessComponents(),
                 playback_confirmed=bool(state.get("playback_confirmed", False)),
+                playback_shown=bool(state.get("playback_shown", False)),
                 clarification_turns=int(state.get("clarification_turns", 0)),
                 geographic_context=state.get("geographic_context") or state.get("metadata", {}).get("geographic_context")
             )
@@ -1845,6 +1858,11 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 "friction": None
             }
             playback_confirmed = bool(state.get("playback_confirmed", False))
+            # Tracks whether a playback summary was actually shown this cycle,
+            # so the confirmation/correction classifier below never treats a
+            # turn as a possible confirmation before the user has seen
+            # anything to confirm. See BUG-030 / audit cycle 2.
+            playback_shown = bool(state.get("playback_shown", False))
             if state.get("file_content") or state.get("session_id", "").startswith("eval-session-"):
                 playback_confirmed = True
 
@@ -1877,7 +1895,13 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 state["metadata"] = metadata
 
                 # 3. Handle Confirmation / Correction Gate
-                if initial_required_present:
+                # Only run the confirmation/correction classifier once a
+                # playback summary has actually been shown to the user this
+                # cycle -- otherwise a turn where fields merely became
+                # complete (but nothing was shown to confirm yet) would be
+                # misrouted into the confirmation gate. See BUG-030 / audit
+                # cycle 2.
+                if initial_required_present and playback_shown:
                     is_confirmation = False
                     corrections = {}
                     unmapped_correction = None
@@ -1960,9 +1984,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
                         except Exception as e:
                             print(f"Confirmation gate LLM error: {e}")
-                            is_confirmation = any(w in user_prompt.lower() for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
+                            is_confirmation = any(_matches_whole_word_marker(user_prompt.lower(), w) for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
                     else:
-                        is_confirmation = any(w in user_prompt.lower() for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
+                        is_confirmation = any(_matches_whole_word_marker(user_prompt.lower(), w) for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
                         negative_correction_starts = ("no", "not ", "actually", "rather", "instead")
                         if user_prompt.strip().lower().startswith(negative_correction_starts):
                             is_confirmation = False
@@ -1993,7 +2017,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
 
                 # 4. Extract and accumulate components if incomplete
-                else:
+                elif not initial_required_present:
                     # Check for "Escape Hatch" keywords or turn budget exhaustion
                     unk_keywords = ["don't know", "dont know", "not sure", "no idea", "unknown", "variable", "not documented", "undocumented"]
                     user_declined = any(kw in user_prompt.lower() for kw in unk_keywords)
@@ -2117,6 +2141,14 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         # Re-verify completeness against the architect-selected requirements.
                         all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
 
+                # All required fields are present, but no playback has been
+                # shown yet this cycle -- fall through directly to Step 5
+                # (determine conversational next action) instead of running
+                # either the confirmation classifier or the extraction
+                # logic. See BUG-030 / audit cycle 2.
+                else:
+                    pass
+
                 answer_quality = classify_answer_quality(user_prompt, components)
                 iterative_discovery = build_iterative_discovery_metadata(
                     {**state, "metadata": metadata},
@@ -2151,7 +2183,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
 
                 # 5. Determine conversational next action
                 e2e_confidence = iterative_discovery.get("e2e_confidence_score", 0.0)
-                if not playback_confirmed and (not all_required_present or (e2e_confidence < 0.85 and clarification_turns < MAX_CLARIFICATION_TURNS)):
+                if not playback_confirmed and (not all_required_present or (e2e_confidence < E2E_CONFIDENCE_THRESHOLD and clarification_turns < MAX_CLARIFICATION_TURNS)):
                     question = ""
                     clarification_questions = []
                     selected_missing_item = select_next_missing_component(required_keys, components)
@@ -2238,6 +2270,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         "budget_spent_usd": state.get("budget_spent_usd", 0.0),
                         "process_components": components,
                         "playback_confirmed": False,
+                        "playback_shown": False,
                         "clarification_turns": clarification_turns + 1
                     }
                     await self._save_intermediate_state({**state, **updates})
@@ -2310,6 +2343,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         "budget_spent_usd": state.get("budget_spent_usd", 0.0),
                         "process_components": components,
                         "playback_confirmed": False,
+                        "playback_shown": True,
                         "clarification_turns": clarification_turns
                     }
                     await self._save_intermediate_state({**state, **updates})
@@ -2809,8 +2843,14 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         return f'<untrusted_tool_output source="{source}">\n{raw_content}\n</untrusted_tool_output>'
 
     def _prune_context(self, raw_content: str) -> str:
-        if len(raw_content) > 50:
-            return f"Summary: {raw_content[:20]}..."
+        # Preserve real tool output (benchmark citations, search snippets, etc.)
+        # well beyond a stub so the model can ground synthesis claims in it,
+        # instead of reproducing citation-like text from parametric memory.
+        # A generous cap still exists so one tool result cannot unboundedly
+        # grow the conversation history. See BUG-030 / audit cycle 2.
+        max_chars = 4000
+        if len(raw_content) > max_chars:
+            return f"Summary: {raw_content[:max_chars]}... [truncated, {len(raw_content)} chars total]"
         return raw_content
 
     def _generate_task_dag(self, mode: Union[SessionMode, str]) -> List[Dict[str, Any]]:
