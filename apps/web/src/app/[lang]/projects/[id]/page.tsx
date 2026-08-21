@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ReportView } from "@/components/report-view";
 import { StrategicProgress } from "@/components/strategic-progress";
 import { useOrchestratorStream } from "@/lib/useOrchestratorStream";
-import { ClarificationModal } from "@/components/clarification-modal";
+
 import { getDictionary } from "@/lib/dictionaries";
 import { getApiBaseUrl } from "@/lib/api";
 import { GlobalHeader } from "@/components/global-header";
@@ -72,7 +72,6 @@ export default function ProjectWorkspacePage() {
   const [activeTab, setActiveTab] = useState<"report" | "graph" | "stepper" | "chat">("report");
   const [nodes, setNodes] = useState<any[]>([]);
   const [edges, setEdges] = useState<any[]>([]);
-  const [isClarificationOpen, setIsClarificationOpen] = useState(false);
 
   // Onboarding Wizard states
   const [isOnboardingActive, setIsOnboardingActive] = useState(false);
@@ -190,12 +189,6 @@ export default function ProjectWorkspacePage() {
 
   // Sync state transitions & clarification modals
   useEffect(() => {
-    if (activeSessionState?.status === "AWAITING_CLARIFICATION") {
-      setActiveTab("chat");
-      setIsClarificationOpen(true);
-    } else {
-      setIsClarificationOpen(false);
-    }
     // Force Dialogue panel if collected process components are incomplete
     const components = (activeSessionState?.metadata as any)?.process_components || (activeSessionState as any)?.process_components || {};
     const required = ["trigger", "actor", "activity", "system"];
@@ -351,14 +344,7 @@ export default function ProjectWorkspacePage() {
     });
   };
 
-  const handleClarificationSubmit = (answers: Record<string, string>) => {
-    setIsClarificationOpen(false);
-    executeOrchestratorRequest({
-      session_id: projectId,
-      clarification_responses: answers,
-      lang: lang
-    });
-  };
+
 
   const handleSendChatMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -626,16 +612,6 @@ export default function ProjectWorkspacePage() {
           </div>
         )}
       </section>
-
-      {/* HITL Clarification Modal */}
-      {activeSessionState && (
-        <ClarificationModal
-          isOpen={isClarificationOpen}
-          questions={activeSessionState.clarification_questions}
-          onSubmit={handleClarificationSubmit}
-          onClose={() => setIsClarificationOpen(false)}
-        />
-      )}
     </main>
   );
 }

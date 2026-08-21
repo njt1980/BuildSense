@@ -51,7 +51,8 @@ def get_limiter_storage_uri(url: str) -> str:
         with socket.create_connection((host, port), timeout=0.5):
             return url
     except Exception:
-        print("Warning: Redis is unreachable. Falling back to local memory storage for rate limiting.")
+        import logging
+        logging.warning("Warning: Redis is unreachable. Falling back to local memory storage for rate limiting.")
         return "memory://"
 
 limiter = Limiter(
@@ -577,9 +578,7 @@ async def get_session(
         display_company = company_name or "your company"
         greeting = (
             f"Hello! I am BuildSense, your AI operations analyst. Let's work together "
-            f"to map and optimize your workflows at **{display_company}**. To get started, "
-            f"could you describe a typical process or task that you perform manually, "
-            f"or share a challenge you'd like to automate?"
+            f"to map and optimize your workflows at **{display_company}**."
         )
 
         state = SessionState(
@@ -638,10 +637,10 @@ async def startup_event() -> None:
     if os.path.exists(schema_path):
         try:
             await postgres_client.init_db(schema_path)
-            print("Successfully verified PostgreSQL schema tables and RLS configurations.")
+            logging.info("Successfully verified PostgreSQL schema tables and RLS configurations.")
             log_event("app_startup_completed", schema_verified=True)
         except Exception as e:
-            print(f"Warning: PostgreSQL migrations setup aborted ({e})")
+            logging.warning(f"Warning: PostgreSQL migrations setup aborted ({e})")
             log_event("app_startup_completed", level="warning", schema_verified=False, error_type=type(e).__name__)
             
 @app.on_event("shutdown")
