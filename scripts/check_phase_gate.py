@@ -27,6 +27,9 @@ LEDGER_FILE = "docs/DEFECT_LEDGER.md"
 SPEC_GREP = "^docs: finalize specification"
 DESIGN_GREP = "^docs: finalize system design"
 
+NOTES_REF = "refs/notes/approvals"
+APPROVAL_TEXT = "approved"
+
 AGENTS_MD_PATH = "AGENTS.md"
 AGENTS_MD_COMMIT_RE = re.compile(
     r'git commit --no-verify -m "([^"]+)"'
@@ -53,6 +56,35 @@ def get_staged_files() -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
+def check_utf8_encoding(staged: list[str]) -> list[str]:
+    """Reject a staged spec.md/design.md blob that isn't valid UTF-8.
+
+    Fetches the staged blob's raw bytes directly (not via run_git(), whose
+    text=True would itself raise/mangle non-UTF-8 bytes before this check
+    could inspect them). Also rejects embedded NUL bytes: plain ASCII text
+    saved as UTF-16 (the actual incident behind BUG-037/spec.md 4.3) decodes
+    "successfully" under UTF-8 with a NUL interleaved after every character,
+    so a bare decode() call would miss it. NUL-byte presence is checked
+    directly instead, mirroring git's own binary-blob heuristic.
+    """
+    bad = []
+    for path in staged:
+        if not is_doc_checkpoint_file(path):
+            continue
+        result = subprocess.run(["git", "show", f":{path}"], capture_output=True)
+        raw = result.stdout
+        if b"\x00" in raw:
+            bad.append(path)
+            continue
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            bad.append(path)
+    if not bad:
+        return []
+    return ["PHASE GATE: checkpoint file is not valid UTF-8:"] + [f"  {p}" for p in bad]
+
+
 def check_mixed_staging(staged: list[str]) -> list[str]:
     """Step A (Scenario B): reject doc-checkpoint + source files staged together."""
     doc_files = [f for f in staged if is_doc_checkpoint_file(f)]
@@ -77,6 +109,11 @@ def find_most_recent_commit_by_grep(pattern: str) -> str | None:
     result = run_git(["log", "--format=%H", f"--grep={pattern}"])
     hashes = [line for line in result.stdout.splitlines() if line]
     return hashes[0] if hashes else None
+
+
+def get_note(commit: str) -> str | None:
+    result = run_git(["notes", f"--ref={NOTES_REF}", "show", commit])
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def find_last_source_commit(history_oldest_first: list[str]) -> str | None:
@@ -123,6 +160,40 @@ def check_checkpoint_recency(staged: list[str]) -> list[str]:
     if not errors:
         return []
     return ["PHASE GATE: cannot commit source/test changes."] + [f"  - {e}" for e in errors]
+
+
+def check_approval_evidence(staged: list[str]) -> list[str]:
+    """Require a human-added git-notes approval marker between checkpoints.
+
+    check_checkpoint_recency() only verifies a spec/design commit pair
+    exists and is fresh; it cannot tell whether a human actually reviewed
+    the content in between (BUG-037). A `refs/notes/approvals` note is
+    added only by a documented user-run command (never by an agent's own
+    commit), so its presence on a checkpoint commit is evidence a human
+    acted on it.
+    """
+    doc_files = [f for f in staged if is_doc_checkpoint_file(f)]
+    source_files = [f for f in staged if is_source_file(f)]
+    errors = []
+
+    if "design.md" in doc_files:
+        spec_commit = find_most_recent_commit_by_grep(SPEC_GREP)
+        if spec_commit and get_note(spec_commit) != APPROVAL_TEXT:
+            errors.append(
+                f"spec.md checkpoint ({spec_commit[:7]}) has no approval note. "
+                f"Run: git notes --ref={NOTES_REF} add -m {APPROVAL_TEXT} {spec_commit}"
+            )
+    if source_files:
+        design_commit = find_most_recent_commit_by_grep(DESIGN_GREP)
+        if design_commit and get_note(design_commit) != APPROVAL_TEXT:
+            errors.append(
+                f"design.md checkpoint ({design_commit[:7]}) has no approval note. "
+                f"Run: git notes --ref={NOTES_REF} add -m {APPROVAL_TEXT} {design_commit}"
+            )
+
+    if not errors:
+        return []
+    return ["PHASE GATE: missing human approval evidence."] + [f"  - {e}" for e in errors]
 
 
 def extract_threshold_values(text: str) -> list[float]:
@@ -212,8 +283,10 @@ def main() -> int:
     staged = args.staged_files if args.staged_files is not None else get_staged_files()
 
     for check in (
+        check_utf8_encoding,
         check_mixed_staging,
         check_checkpoint_recency,
+        check_approval_evidence,
         check_threshold_regression,
         check_agents_md_coupling,
     ):

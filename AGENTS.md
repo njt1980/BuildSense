@@ -14,15 +14,15 @@ Execute these phases in exact order:
 ### PHASE 1: SPECIFICATION
 1. Draft or update `spec.md` detailing the precise requirements, scope, and acceptance criteria.
 2. Pause and wait for user approval.
-3. Once approved, execute: `git add spec.md` followed by `git commit --no-verify -m "docs: finalize specification"` because this is a documentation-only phase checkpoint.
-*STOP: Do not proceed to Phase 2 until this commit is successfully executed.*
+3. Once approved, execute: `git add spec.md` followed by `git commit --no-verify -m "docs: finalize specification"` because this is a documentation-only phase checkpoint. Then run `python scripts/archive_checkpoint.py --phase spec` to assign this cycle a `BS-<N>` ticket ID and archive `spec.md` under `docs/cycles/`. Finally, state the exact approval command the user must run — `git notes --ref=refs/notes/approvals add -m approved <spec-commit-sha>` — and wait for the user to confirm they ran it. Never run this `git notes` command yourself: it must be a human action, since `scripts/check_phase_gate.py`'s `check_approval_evidence()` check treats its presence as the only evidence a human actually reviewed the content (see BUG-037).
+*STOP: Do not proceed to Phase 2 until this commit is successfully executed and the user has confirmed they added the approval note.*
 
 ### PHASE 2: SYSTEM DESIGN
 1. Draft or update `design.md` outlining the architecture, data flow, and file structures required to satisfy `spec.md`. `design.md` must break the Phase 3 work into a numbered list of **Atomic Implementation Steps**; each step must explicitly list the exact file paths it will read and the exact file paths it will modify, and must be scoped narrowly enough to finish inside a single context window.
 2. Pause and wait for user approval.
-3. Once approved, execute: `git add design.md` followed by `git commit --no-verify -m "docs: finalize system design"` because this is a documentation-only phase checkpoint.
+3. Once approved, execute: `git add design.md` followed by `git commit --no-verify -m "docs: finalize system design"` because this is a documentation-only phase checkpoint. Then run `python scripts/archive_checkpoint.py --phase design` to archive `design.md` under this cycle's existing `BS-<N>` ticket in `docs/cycles/`. Finally, state the exact approval command the user must run — `git notes --ref=refs/notes/approvals add -m approved <design-commit-sha>` — and wait for the user to confirm they ran it. Never run this `git notes` command yourself, for the same reason as the spec.md approval note in Phase 1 step 3. This design.md approval note is what `check_approval_evidence()` requires before it will accept Phase 3's first source-touching commit.
 4. **Context Flush Checkpoint:** Before requesting a new chat session, verify that both `spec.md` and `design.md` exist on disk, are fully populated with the approved specification and design, and have been successfully committed to version control. Once verified, pause and instruct the user to open a new conversation/chat session in Antigravity to flush the conversational history and free context space. Do not begin Phase 3 work in the same context window that carried the Phase 1/2 discussion.
-*STOP: Do not proceed to Phase 3 until this commit is successfully executed.*
+*STOP: Do not proceed to Phase 3 until this commit is successfully executed and the user has confirmed they added the approval note.*
 
 > **Coupling note:** the exact strings `docs: finalize specification` and `docs: finalize system design` above are read literally by `scripts/check_phase_gate.py`. If either commit message prefix changes, update that script in the same commit — otherwise the phase gate will silently stop recognizing checkpoint commits.
 
