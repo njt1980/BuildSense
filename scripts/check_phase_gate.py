@@ -278,18 +278,27 @@ def main() -> int:
         default=None,
         help="Override the staged file list (test harness use only, bypasses git diff --cached).",
     )
+    parser.add_argument(
+        "--skip-approval-evidence",
+        action="store_true",
+        help=(
+            "Skip check_approval_evidence(). Git notes (refs/notes/approvals) "
+            "are not transferred by a plain 'git push' or fetched by a default "
+            "clone/checkout, so this check can only be meaningfully evaluated "
+            "in the same local clone where the approval command ran. Pass this "
+            "flag in CI, where that is never true (BUG-040)."
+        ),
+    )
     args = parser.parse_args()
 
     staged = args.staged_files if args.staged_files is not None else get_staged_files()
 
-    for check in (
-        check_utf8_encoding,
-        check_mixed_staging,
-        check_checkpoint_recency,
-        check_approval_evidence,
-        check_threshold_regression,
-        check_agents_md_coupling,
-    ):
+    checks = [check_utf8_encoding, check_mixed_staging, check_checkpoint_recency]
+    if not args.skip_approval_evidence:
+        checks.append(check_approval_evidence)
+    checks += [check_threshold_regression, check_agents_md_coupling]
+
+    for check in checks:
         messages = check(staged)
         if messages:
             for line in messages:

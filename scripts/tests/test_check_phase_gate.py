@@ -38,8 +38,10 @@ def commit(repo: Path, message: str, files: list[str]) -> None:
     run_git(repo, "commit", "-q", "-m", message)
 
 
-def run_phase_gate(repo: Path) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, SCRIPT], cwd=repo, capture_output=True, text=True)
+def run_phase_gate(repo: Path, *extra_args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, SCRIPT, *extra_args], cwd=repo, capture_output=True, text=True
+    )
 
 
 @pytest.fixture
@@ -220,6 +222,22 @@ def test_approval_evidence_gates_source_commit_on_design_note(repo: Path) -> Non
     run_git(repo, "notes", "--ref=approvals", "add", "-m", "approved", design_commit)
     result = run_phase_gate(repo)
     assert result.returncode == 0, result.stderr
+
+
+def test_skip_approval_evidence_flag_bypasses_check(repo: Path) -> None:
+    write(repo, "spec.md", "spec\n")
+    commit(repo, "docs: finalize specification", ["spec.md"])
+    # deliberately no approval note on the spec commit
+
+    write(repo, "design.md", "design\n")
+    run_git(repo, "add", "design.md")
+
+    result = run_phase_gate(repo, "--skip-approval-evidence")
+    assert result.returncode == 0, result.stderr
+
+    result = run_phase_gate(repo)
+    assert result.returncode == 1
+    assert "missing human approval evidence" in result.stderr
 
 
 def test_approval_evidence_note_on_wrong_commit_rejected(repo: Path) -> None:

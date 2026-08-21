@@ -34,7 +34,13 @@ jobs:
           fi
           echo "Changed files:"
           echo "$CHANGED"
-          python scripts/check_phase_gate.py --staged-files $CHANGED
+          # check_approval_evidence() cannot pass here: git notes are not
+          # transferred by a plain push or fetched by a default checkout,
+          # so this fresh actions/checkout@v4 clone will never have
+          # refs/notes/approvals. Do NOT "fix" this by trying to push/fetch
+          # notes into CI without re-reading spec.md/design.md for BS-1
+          # (BUG-040) first -- that tradeoff was deliberately declined.
+          python scripts/check_phase_gate.py --skip-approval-evidence --staged-files $CHANGED
           echo "CHANGED<<PHASE_GATE_CHANGED_EOF" >> "$GITHUB_ENV"
           echo "$CHANGED" >> "$GITHUB_ENV"
           echo "PHASE_GATE_CHANGED_EOF" >> "$GITHUB_ENV"
