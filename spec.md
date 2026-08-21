@@ -1,133 +1,101 @@
-# Specification: Real Approval Evidence + Checkpoint Archive for the Phase Gate
+# Specification: Scope Approval-Evidence Check to Local-Only Enforcement
 
-## 1. Problem (BUG-037)
+## 1. Problem (BUG-040)
 
-`scripts/check_phase_gate.py` mechanically verifies that `spec.md`/`design.md`
-checkpoint commits exist with the right commit messages and are newer than the
-last source commit. It does **not** verify that a human actually reviewed and
-approved the content in between. Nothing stops an agent from writing a stub
-`spec.md`, immediately writing a stub `design.md`, and committing both back to
-back — which is exactly what happened this session (`4bcb4f6` and `e6be72c`,
-12 seconds apart). Separately, `spec.md`/`design.md` are a single mutable pair
-with no per-cycle archive, so each cycle's content is only recoverable by
-manually mining `git log --grep` + `git show <commit>:<file>`.
+`check_approval_evidence()` (added in `BS-001`/`BUG-037`, commit `32b826e`)
+rejects a `design.md` or source commit unless a `refs/notes/approvals` git
+note reading `approved` exists on the preceding checkpoint commit. This was
+verified to work correctly in the local pre-commit hook, where the note is
+created and checked in the same clone.
 
-This spec covers two related fixes to the phase-gate tooling itself. It does
-not touch product code (`apps/api`, `apps/web`).
+It does not work in CI. Empirically verified (isolated scratch push/clone
+test, not against this repo's real remote):
 
-## 2. Goals
+1. A plain `git push` does **not** transfer notes refs — confirmed via a
+   local bare-repo test (`Everything up-to-date`, no notes ref created on
+   the remote).
+2. Even after an *explicit* `git push origin refs/notes/approvals`, a fresh
+   `git clone` does **not** fetch notes by default — confirmed via the same
+   test (`git notes show` fails on the fresh clone despite the note existing
+   on the remote).
 
-1. Make the human-approval pause between Phase 1 (spec) and Phase 2 (design),
-   and between Phase 2 and Phase 3 (code), a fact `check_phase_gate.py` can
-   verify — not just a sentence in `AGENTS.md` that an agent can choose to
-   skip.
-2. Preserve every cycle's `spec.md`/`design.md` content as an addressable,
-   browsable artifact, so "what did we spec/design N cycles ago" is answerable
-   without manual git forensics.
+`.github/workflows/reliability-phase1.yml`'s `preflight-checks` job runs
+`python scripts/check_phase_gate.py --staged-files $CHANGED` against a fresh
+`actions/checkout@v4` checkout on every push and pull request to `master`.
+That checkout structurally cannot have `refs/notes/approvals` under the
+current setup (nothing pushes it, and default checkout wouldn't fetch it
+even if something did). `get_note()` therefore returns `None` in CI for
+every commit, so `check_approval_evidence()` will reject **every future
+CI run** that touches `design.md` or a source file — regardless of whether
+real human approval happened locally. This is a functional regression
+introduced by `BS-001`, not a pre-existing issue.
 
-## 3. Non-Goals
+## 2. Goal
 
-- Not solving the multi-writer/concurrent-cycle problem (tracked separately in
-  the governance backlog).
-- Not replacing `check_phase_gate.py`'s existing mixed-staging or
-  threshold-regression checks — those are unaffected.
-- Not building a UI for browsing checkpoint history; a plain markdown/JSON
-  index in the repo is sufficient for this cycle.
+Make `check_approval_evidence()` run where it can actually produce a
+correct answer (the local clone where the approval command was run) and
+not run where it structurally cannot (a fresh CI checkout), without
+weakening any of `check_phase_gate.py`'s other checks in either
+environment.
+
+## 3. Decision
+
+Per user direction: local-only enforcement. Do not attempt to push/fetch
+notes into CI (that was considered and explicitly declined — it would make
+approval notes a permanent public record on the remote for a check that
+still can't verify *who* ran the command, for comparatively large added
+complexity: a push step in the human approval flow, a fetch step in CI).
 
 ## 4. Requirements
 
-### 4.1 Approval evidence gate
-- `check_phase_gate.py` must refuse to accept a `design.md` checkpoint commit
-  unless a distinct **approval marker** for the immediately-preceding
-  `spec.md` checkpoint commit exists, and that marker must be creatable only
-  by a human action — never something an agent's own commit can satisfy by
-  itself in the same breath.
-- The same requirement applies before a source-touching commit is accepted:
-  there must be an approval marker for the current `design.md` checkpoint.
-- Concretely: a `git notes` entry (ref e.g. `refs/notes/approvals`) attached to
-  the checkpoint commit, containing a fixed literal string (e.g. `approved`),
-  added by the user running a documented one-line command
-  (`git notes --ref=approvals add -m approved <commit>`). Agents are
-  instructed never to run this command on the user's behalf. `check_phase_gate.py`
-  checks for the note's existence and content via `git notes --ref=approvals show`.
-- Failure message must clearly state which checkpoint is missing approval and
-  the exact command the user needs to run.
+- `check_phase_gate.py` gains a `--skip-approval-evidence` CLI flag. When
+  passed, `check_approval_evidence` is excluded from `main()`'s check list;
+  every other check (`check_utf8_encoding`, `check_mixed_staging`,
+  `check_checkpoint_recency`, `check_threshold_regression`,
+  `check_agents_md_coupling`) still runs unchanged.
+- `.githooks/pre-commit`'s existing invocation (`python
+  scripts/check_phase_gate.py`, no flags) is **unchanged** — the local hook
+  keeps full enforcement, including approval evidence, exactly as today.
+- `.github/workflows/reliability-phase1.yml`'s phase-gate step adds
+  `--skip-approval-evidence` to its existing `check_phase_gate.py`
+  invocation, so CI stops rejecting commits solely because a ref git does
+  not propagate through push/clone by default is absent.
+- A short comment near `check_approval_evidence()` (or immediately above
+  the CI workflow's phase-gate step, design.md to decide which) records
+  *why* — future readers should not "fix" this by trying to push notes into
+  CI without first reading this rationale.
+- `scripts/tests/test_check_phase_gate.py` gets a new test: a `design.md`
+  (or source) commit with **no** approval note passes when
+  `--skip-approval-evidence` is passed, and still fails without it (already
+  covered by `BS-001`'s existing tests — this new test only needs to prove
+  the flag's effect).
+- `docs/DEFECT_LEDGER.md` gets a `BUG-040` entry documenting the gap and its
+  resolution.
 
-### 4.2 Per-cycle checkpoint archive
-- Every phase-gate cycle (feature, fix, or governance change alike) gets one
-  project-wide ticket ID, `BS-<N>`, assigned once at the Phase 1 (spec)
-  finalize commit and immutable thereafter. `<N>` comes from a single
-  monotonic counter file, `docs/tickets/.next_id` — never derived from
-  directory counts or commit hashes, so it survives manual cleanup of old
-  archive folders. Abandoned cycles simply leave a gap in the sequence, same
-  as an unused JIRA key.
-- This is a new, separate counter from `docs/DEFECT_LEDGER.md`'s existing
-  `BUG-XXX`/`CHANGE-XXX` numbering. That ledger numbering is not retroactively
-  migrated or renumbered — it stays the historical record as-is. A cycle that
-  also produces a ledger entry cross-references both IDs (this cycle is
-  `BS-001` / `BUG-037`).
-- On each `spec.md`/`design.md` finalize commit, the content is also copied
-  into `docs/cycles/BS-<N>-<slug>/spec.md` (or `design.md`), where `<slug>` is
-  a short kebab-case label derived from the spec's first heading.
-- `docs/cycles/INDEX.md` gets one row per cycle: ticket ID, slug, spec commit
-  hash, design commit hash, date, and (once known) the source commit(s) that
-  implemented it.
-- Archiving happens via a small script (`scripts/archive_checkpoint.py`)
-  invoked as part of the normal Phase 1/Phase 2 commit steps in `AGENTS.md`
-  (not automatically inside the git hook, so it stays a visible, deliberate
-  step) — exact invocation point to be nailed down in `design.md`.
-- This cycle is `BS-001`, the first to use the scheme; no historical cycles
-  are backfilled into `docs/cycles/`.
+## 5. Non-Goals
 
-### 4.3 Checkpoint file encoding
-- `check_phase_gate.py` must reject a `spec.md`/`design.md` checkpoint commit
-  whose staged blob is not valid UTF-8. Root cause (discovered while drafting
-  this very spec): this cycle's own `spec.md` was written as UTF-16LE with no
-  BOM, and so was the prior cycle's committed stub — which is also why
-  `git show --stat` reported both as `Bin` diffs instead of line diffs. A
-  binary-to-git checkpoint file defeats requirement 4.2's "browsable" goal
-  outright (no `git diff`, no line-level PR review, no plain-text archive),
-  so this is a prerequisite for 4.2, not a separate nice-to-have.
+- No change to `check_checkpoint_recency`, `check_utf8_encoding`,
+  `check_mixed_staging`, `check_threshold_regression`, or
+  `check_agents_md_coupling`.
+- No attempt to add note-author identity or cryptographic verification —
+  the self-approval limitation discussed with the user (an agent could in
+  principle run the approval-note command itself, restrained only by
+  `AGENTS.md` prose) is a separate, already-acknowledged limitation and is
+  not addressed by this fix.
+- No changes to `AGENTS.md`'s Phase 1/2 approval-note instructions — the
+  human-facing command is unaffected; only the CI-side check invocation
+  changes.
 
-## 5. Acceptance Criteria
+## 6. Acceptance Criteria
 
-- A new spec/design commit pair with no approval note is **rejected** by
-  `check_phase_gate.py` with a clear, actionable error.
-- After the user adds the approval note for `spec.md`, the `design.md`
-  checkpoint commit is accepted; after approving `design.md`, a source commit
-  is accepted.
-- `scripts/tests/test_check_phase_gate.py` gets new test cases covering: no
-  approval note (rejected), correct approval note (accepted), note on the
-  wrong commit (rejected).
-- After a full cycle, `docs/cycles/BS-<N>-<slug>/` contains a copy of that
-  cycle's `spec.md` and `design.md`, and `docs/cycles/INDEX.md` has a new row
-  with the ticket ID.
-- A `spec.md`/`design.md` checkpoint commit whose file is not valid UTF-8 is
-  **rejected** with a clear error naming the offending file.
-- `AGENTS.md`'s Phase 1/Phase 2 instructions are updated to include the
-  approval-note command as the actual approval step, the ticket-ID assignment,
-  and the archive step, per the Documentation Drift Check requirement.
-- Existing phase-gate tests and the mixed-staging/threshold-regression checks
-  still pass unmodified.
-
-## 6. Decisions Made While Drafting (resolved, not left for design.md)
-
-1. **Cycle numbering**: a counter file (`docs/tickets/.next_id`), not
-   directory-count or hash derivation — see 4.2.
-2. **Dogfooding this cycle on itself**: yes. Once `design.md` for this fix is
-   approved, the user applies the real approval-note command for both this
-   cycle's `spec.md` and `design.md` checkpoints before Phase 3 starts, even
-   though the checking code doesn't exist until Phase 3 lands. This gives
-   Phase 3's tests a real fixture, not just synthetic ones, and means this
-   fix's own two approval gates are honored for real in the same cycle that
-   fixes the fact that they weren't.
-
-## 7. Open Questions (for design.md to resolve, not to guess silently)
-
-1. `scripts/archive_checkpoint.py`'s exact invocation point — called
-   explicitly by the agent as a documented extra step in Phase 1/Phase 2, or
-   wrapped into the existing `git commit` step somehow. Must stay a visible,
-   deliberate action either way (see 4.2's git-hook note).
-2. Exact slug-derivation rule from the spec's first heading (lowercase,
-   strip punctuation, truncate to N words) — pick something deterministic and
-   simple; bikeshedding not needed, just pin it down in design.md.
+- `python scripts/check_phase_gate.py --staged-files design.md
+  --skip-approval-evidence` exits 0 for a `design.md` commit with no
+  approval note present.
+- The same invocation without `--skip-approval-evidence` still exits 1
+  (existing `BS-001` behavior, unchanged).
+- `.github/workflows/reliability-phase1.yml`'s phase-gate step passes
+  `--skip-approval-evidence`.
+- `.githooks/pre-commit` is byte-for-byte unchanged.
+- `scripts/tests/test_check_phase_gate.py`'s full suite passes, including
+  the new flag test.
+- `docs/DEFECT_LEDGER.md` has a `BUG-040` entry marked resolved.
