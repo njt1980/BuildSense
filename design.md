@@ -1,224 +1,157 @@
-# System Design: Real Approval Evidence + Checkpoint Archive for the Phase Gate
+# System Design: Scope Approval-Evidence Check to Local-Only Enforcement
 
-Implements `spec.md` (`BS-001` / `BUG-037`, commit `b6cbe85`). Resolves both
-of that spec's Open Questions (section 7) below, in 4.4 and 4.5.
+Implements `spec.md` (`BS-1` / `BUG-040`, commit `3802d59`).
 
 ## 1. Architecture Overview
 
-Two independent extensions to `scripts/check_phase_gate.py`'s existing
-check-list pattern (`main()` runs a list of `check_*` functions, first
-non-empty result wins and aborts the commit), plus one new standalone script:
+One CLI flag on the existing `check_phase_gate.py`, consumed by exactly one
+caller (the CI workflow). No new files, no change to the local hook.
 
-- **`check_utf8_encoding()`** — new check function. Rejects a staged
-  `spec.md`/`design.md` blob that isn't valid UTF-8.
-- **`check_approval_evidence()`** — new check function. Rejects a
-  `design.md` commit lacking a `refs/notes/approvals` note on the current
-  `spec.md` checkpoint commit, and rejects a source commit lacking a note on
-  the current `design.md` checkpoint commit.
-- **`scripts/archive_checkpoint.py`** — new, separate script (not part of the
-  git hook — spec 4.2 requires archiving to stay a visible, deliberate step,
-  not silent hook behavior). Run explicitly by the agent right after each
-  finalize commit succeeds. Maintains `docs/tickets/.next_id`, writes
-  `docs/cycles/BS-<N>-<slug>/{spec,design}.md`, and updates
-  `docs/cycles/index.json` (machine-readable source of truth) plus a
-  regenerated `docs/cycles/INDEX.md` (human-readable table, fully rewritten
-  from `index.json` each run — never hand-edited).
+- **`--skip-approval-evidence`** — new `argparse` boolean flag. When passed,
+  `main()` builds its check list without `check_approval_evidence`; every
+  other check runs unchanged, in the same order as today.
+- `.githooks/pre-commit` keeps calling `check_phase_gate.py` with no flags
+  — full enforcement, unchanged.
+- `.github/workflows/reliability-phase1.yml`'s phase-gate step adds the flag
+  to its existing invocation.
 
-Data flow for one cycle:
 ```
-git commit "docs: finalize specification"
-  -> python scripts/archive_checkpoint.py --phase spec
-       -> reads docs/tickets/.next_id, allocates BS-<N>, increments it
-       -> writes docs/cycles/BS-<N>-<slug>/spec.md (copy of committed spec.md)
-       -> appends row {ticket, slug, spec_commit, design_commit: null, date} to index.json
-       -> regenerates INDEX.md from index.json
-  -> agent tells user: `git notes --ref=approvals add -m approved <spec-commit>`
-  -> user runs it (human-only action)
+Local commit:  .githooks/pre-commit -> check_phase_gate.py
+                 (no flag: check_approval_evidence runs, as today)
 
-git commit "docs: finalize system design"   (hook now checks check_approval_evidence)
-  -> python scripts/archive_checkpoint.py --phase design
-       -> finds the index.json row with this ticket's slug and null design_commit
-       -> writes docs/cycles/BS-<N>-<slug>/design.md
-       -> fills in that row's design_commit, regenerates INDEX.md
-  -> agent tells user: `git notes --ref=approvals add -m approved <design-commit>`
-  -> user runs it
-
-git commit <source change>   (hook now checks check_approval_evidence again)
+CI push/PR:    reliability-phase1.yml -> check_phase_gate.py
+                 --skip-approval-evidence --staged-files $CHANGED
+                 (check_approval_evidence excluded; every other check runs)
 ```
 
-## 2. `check_approval_evidence()` design
+`--skip-approval-evidence` is placed *before* `--staged-files` in the CI
+invocation specifically so `--staged-files`'s `nargs="*"` has no ambiguity
+about where its value list ends.
+
+## 2. `check_phase_gate.py` changes
 
 ```python
-NOTES_REF = "refs/notes/approvals"
-APPROVAL_TEXT = "approved"
-
-def get_note(commit: str) -> str | None:
-    result = run_git(["notes", f"--ref={NOTES_REF}", "show", commit])
-    return result.stdout.strip() if result.returncode == 0 else None
-
-def check_approval_evidence(staged: list[str]) -> list[str]:
-    doc_files = [f for f in staged if is_doc_checkpoint_file(f)]
-    source_files = [f for f in staged if is_source_file(f)]
-    errors = []
-
-    if "design.md" in doc_files:
-        spec_commit = find_most_recent_commit_by_grep(SPEC_GREP)
-        if spec_commit and get_note(spec_commit) != APPROVAL_TEXT:
-            errors.append(
-                f"spec.md checkpoint ({spec_commit[:7]}) has no approval note. "
-                f"Run: git notes --ref={NOTES_REF} add -m {APPROVAL_TEXT} {spec_commit}"
-            )
-    if source_files:
-        design_commit = find_most_recent_commit_by_grep(DESIGN_GREP)
-        if design_commit and get_note(design_commit) != APPROVAL_TEXT:
-            errors.append(
-                f"design.md checkpoint ({design_commit[:7]}) has no approval note. "
-                f"Run: git notes --ref={NOTES_REF} add -m {APPROVAL_TEXT} {design_commit}"
-            )
-    if not errors:
-        return []
-    return ["PHASE GATE: missing human approval evidence."] + [f"  - {e}" for e in errors]
+parser.add_argument(
+    "--skip-approval-evidence",
+    action="store_true",
+    help=(
+        "Skip check_approval_evidence(). Git notes (refs/notes/approvals) "
+        "are not transferred by a plain 'git push' or fetched by a default "
+        "clone/checkout, so this check can only be meaningfully evaluated "
+        "in the same local clone where the approval command ran. Pass this "
+        "flag in CI, where that is never true (BUG-040)."
+    ),
+)
 ```
 
-Deliberately mirrors `check_checkpoint_recency()`'s existing shape (same
-`find_most_recent_commit_by_grep` helper, same staged-file gating) so it
-reads as a natural extension, not a bolt-on. Runs as an added entry in
-`main()`'s check list, after `check_checkpoint_recency`.
-
-**Note on the current cycle**: `check_approval_evidence` does not exist yet
-when this cycle's own `spec.md`/`design.md` commits happen — nothing enforces
-the note on `b6cbe85` or this design commit. Spec section 6.2 (dogfooding)
-covers why the user applies the notes anyway: it gives Step 1's tests below a
-real fixture, and the notes remain on those commits permanently as the
-correct historical record once the check goes live in Step 6's own commit.
-
-## 3. `check_utf8_encoding()` design
+`main()`'s check-list construction changes from a fixed tuple to a list
+built conditionally:
 
 ```python
-def check_utf8_encoding(staged: list[str]) -> list[str]:
-    bad = []
-    for path in staged:
-        if not is_doc_checkpoint_file(path):
-            continue
-        blob = run_git(["show", f":{path}"])
-        try:
-            blob.stdout.encode("utf-8") if isinstance(blob.stdout, str) else None
-            raw = subprocess.run(["git", "show", f":{path}"], capture_output=True).stdout
-            raw.decode("utf-8")
-        except UnicodeDecodeError:
-            bad.append(path)
-    if not bad:
-        return []
-    return ["PHASE GATE: checkpoint file is not valid UTF-8:"] + [f"  {p}" for p in bad]
+checks = [check_utf8_encoding, check_mixed_staging, check_checkpoint_recency]
+if not args.skip_approval_evidence:
+    checks.append(check_approval_evidence)
+checks += [check_threshold_regression, check_agents_md_coupling]
+
+for check in checks:
+    messages = check(staged)
+    if messages:
+        for line in messages:
+            print(line, file=sys.stderr)
+        return 1
+return 0
 ```
 
-(Exact subprocess plumbing to be written for real against raw bytes, not
-`text=True` `run_git`, since decoding must happen after retrieval, not during
-— `run_git`'s existing `text=True` would itself raise/mangle on bad bytes
-before the check gets to run. Implementer note, not a design ambiguity.)
+Check order relative to each other is unchanged from today (`check_approval_evidence`
+still runs immediately after `check_checkpoint_recency` when it runs at all)
+— only its presence/absence changes.
 
-## 4. `scripts/archive_checkpoint.py` design
+## 3. `.github/workflows/reliability-phase1.yml` change
 
+The existing phase-gate step's `run:` block changes one line:
+
+```diff
+-          python scripts/check_phase_gate.py --staged-files $CHANGED
++          # check_approval_evidence() cannot pass here: git notes are not
++          # transferred by a plain push or fetched by a default checkout,
++          # so this fresh actions/checkout@v4 clone will never have
++          # refs/notes/approvals. Do NOT "fix" this by trying to push/fetch
++          # notes into CI without re-reading spec.md/design.md for BS-1
++          # (BUG-040) first -- that tradeoff was deliberately declined.
++          python scripts/check_phase_gate.py --skip-approval-evidence --staged-files $CHANGED
 ```
-usage: archive_checkpoint.py --phase {spec,design}
+
+No other step in the job changes.
+
+## 4. Test changes
+
+`scripts/tests/test_check_phase_gate.py`'s `run_phase_gate()` helper gains
+an `*extra_args` passthrough so a test can invoke the script with flags:
+
+```python
+def run_phase_gate(repo: Path, *extra_args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, SCRIPT, *extra_args], cwd=repo, capture_output=True, text=True
+    )
 ```
 
-- `--phase spec`: reads `docs/tickets/.next_id` (creates it seeded at `1` if
-  absent), takes `N`, writes back `N+1`. Derives `<slug>` per 4.5 below from
-  `spec.md`'s first `#` heading. Creates `docs/cycles/BS-<N>-<slug>/`, copies
-  the just-committed `spec.md` into it (read via `git show HEAD:spec.md`, not
-  the working-tree file, so the archived copy matches exactly what was
-  committed). Appends a row to `docs/cycles/index.json`:
-  `{"ticket": "BS-<N>", "slug": "<slug>", "spec_commit": "<HEAD sha>", "design_commit": null, "source_commits": [], "date": "<UTC date>"}`.
-  Regenerates `docs/cycles/INDEX.md` as a markdown table from the full JSON
-  array.
-- `--phase design`: loads `docs/cycles/index.json`, finds the **last** entry
-  with `design_commit: null` (there should be exactly one — the just-created
-  ticket; if none is found, hard error rather than guessing which ticket this
-  design belongs to). Copies `design.md` (via `git show HEAD:design.md`) into
-  that ticket's existing folder, fills in `design_commit`, regenerates
-  `INDEX.md`.
-- Never touches `source_commits` — populating that retroactively from the
-  eventual code commit is explicitly out of scope for this cycle (spec's
-  Non-Goals: no UI, minimal viable index); leaving it an empty list is
-  acceptable and matches spec 4.2's "once known" phrasing.
+Existing call sites (`run_phase_gate(repo)`) are unaffected since
+`extra_args` defaults to empty.
 
-## 4.4 Resolving Open Question 1 (invocation point)
+New test, placed after the existing `test_approval_evidence_*` tests:
 
-Not wrapped into the git hook or into `git commit` itself. `AGENTS.md`'s
-Phase 1 step 3 and Phase 2 step 3 are updated (Step 4 below) to add one
-explicit line each: run `python scripts/archive_checkpoint.py --phase spec`
-(or `--phase design`) immediately after the finalize commit succeeds, before
-telling the user the approval-note command. Keeping it a separate,
-visible CLI invocation — not hook magic — matches spec 4.2's explicit
-rationale (a step nobody can silently forget to have happened, and one that
-fails loudly and separately from the commit itself if it breaks).
+```python
+def test_skip_approval_evidence_flag_bypasses_check(repo: Path) -> None:
+    write(repo, "spec.md", "spec\n")
+    commit(repo, "docs: finalize specification", ["spec.md"])
+    # deliberately no approval note on the spec commit
 
-## 4.5 Resolving Open Question 2 (slug rule)
+    write(repo, "design.md", "design\n")
+    run_git(repo, "add", "design.md")
 
-`slugify(first_heading: str) -> str`: strip a leading `Specification:` or
-`System Design:` prefix (case-insensitive), lowercase, replace any run of
-non-alphanumeric characters with a single `-`, strip leading/trailing `-`,
-truncate to the first 5 hyphen-separated words. Example: `"Specification:
-Real Approval Evidence + Checkpoint Archive for the Phase Gate"` ->
-`real-approval-evidence-checkpoint-archive`. Deterministic, no external
-dependency, good enough for a directory name — not trying to be a perfect
-title-to-slug library.
+    result = run_phase_gate(repo, "--skip-approval-evidence")
+    assert result.returncode == 0, result.stderr
+
+    result = run_phase_gate(repo)
+    assert result.returncode == 1
+    assert "missing human approval evidence" in result.stderr
+```
+
+The second half of that test (no flag -> still rejected) is redundant with
+`test_approval_evidence_rejects_design_without_spec_note` but is kept
+inline so this one test alone proves the flag's effect in both directions
+without relying on test ordering/isolation assumptions.
 
 ## 5. Atomic Implementation Steps
 
-1. **UTF-8 checkpoint validation.**
+1. **`--skip-approval-evidence` flag.**
    Reads: `scripts/check_phase_gate.py`.
    Modifies: `scripts/check_phase_gate.py`, `scripts/tests/test_check_phase_gate.py`.
-   Add `check_utf8_encoding()` per section 3, wire into `main()`'s check
-   list. Add test cases: UTF-16LE-encoded staged `spec.md` is rejected;
-   valid UTF-8 `spec.md` passes.
+   Implements section 2 (flag + conditional check list) and section 4
+   (`run_phase_gate` passthrough + new test).
 
-2. **Approval evidence gate.**
-   Reads: `scripts/check_phase_gate.py` (post-step-1 state).
-   Modifies: `scripts/check_phase_gate.py`, `scripts/tests/test_check_phase_gate.py`.
-   Add `NOTES_REF`/`APPROVAL_TEXT` constants, `get_note()`, and
-   `check_approval_evidence()` per section 2, wired into `main()` after
-   `check_checkpoint_recency`. Add test cases: design commit with no note on
-   spec commit rejected; design commit with note accepted; source commit
-   gated the same way against the design commit's note; note on the wrong
-   commit still rejected. (Same two files as Step 1 — will land in the same
-   commit per the one-source-commit-per-checkpoint convention from `BUG-032`.)
+2. **CI workflow wiring.**
+   Reads: `.github/workflows/reliability-phase1.yml`.
+   Modifies: `.github/workflows/reliability-phase1.yml`.
+   Implements section 3 exactly (one-line change plus the explanatory
+   comment guarding against a future "just push the notes" regression).
 
-3. **Ticket counter and archive script.**
-   Reads: none (all new files).
-   Modifies (creates): `scripts/archive_checkpoint.py`,
-   `docs/tickets/.next_id` (seeded `1`), `docs/cycles/index.json` (seeded
-   `[]`), `scripts/tests/test_archive_checkpoint.py`.
-   Implements section 4 in full, including `slugify()` from 4.5. Tests cover:
-   first `--phase spec` call creates `BS-1`, increments the counter to `2`,
-   and produces a correct `INDEX.md`; a following `--phase design` call fills
-   in the same ticket rather than creating a new one; `--phase design` with
-   no open ticket errors clearly.
+3. **Verification and single commit.**
+   Reads/modifies: `docs/DEFECT_LEDGER.md` (mark `BUG-040` resolved), plus
+   everything from Steps 1-2 already staged.
+   Run `pytest scripts/tests/ -q` (new test green, full suite green).
+   `apps/api` is untouched by this cycle, so `pytest apps/api/tests/ -q`
+   and `mypy app/` are not required for this cycle's own change (BUG-039's
+   pre-existing, unrelated `mypy` failure remains open, untouched).
+   Then one commit covering Steps 1-2's files plus the ledger update,
+   matching the established one-source-commit-per-checkpoint convention.
+   This commit is itself gated by `check_approval_evidence()` against this
+   cycle's own `design.md` approval note — the same mechanism BS-1 is
+   fixing the CI-side blast radius of, still fully enforced locally.
 
-4. **AGENTS.md wiring.**
-   Reads: `AGENTS.md`.
-   Modifies: `AGENTS.md`.
-   Phase 1 step 3 gains: run `archive_checkpoint.py --phase spec`, then state
-   the exact `git notes` approval command and wait for the user to confirm
-   they ran it, before attempting to move on. Phase 2 step 3 gains the
-   `--phase design` equivalent. No change to the two literal checkpoint
-   commit-message strings, so `check_agents_md_coupling()` is unaffected.
+## 6. Non-Functional Requirements Recap (from spec.md section 6)
 
-5. **Verification and single commit.**
-   Reads/modifies: `docs/DEFECT_LEDGER.md` (mark `BUG-037` resolved,
-   referencing this commit), plus everything from Steps 1-4 already staged.
-   Run `pytest scripts/tests/ -q` (new tests green), `pytest apps/api/tests/ -q`
-   (unaffected, still green), `mypy app/` from `apps/api` (unaffected — no
-   `apps/api` files touched). Then one commit covering Steps 1-4's files plus
-   the ledger update, matching the established convention that multiple
-   atomic steps under one checkpoint land as a single source-touching commit.
-   This is the commit that `check_approval_evidence()` (from Step 2, now
-   live) will itself gate on this cycle's own `design.md` approval note —
-   the first real enforcement of the mechanism this cycle built.
-
-## 6. Non-Functional Requirements Recap (from spec.md section 5)
-
-All five spec acceptance-criteria bullets map onto the steps above: rejection
-behavior -> Steps 1-2; archive population -> Step 3; `AGENTS.md` drift check
--> Step 4; existing checks unaffected -> verified in Step 5.
+All six spec acceptance-criteria bullets map onto the steps above: flag
+behavior (both directions) -> Step 1; CI wiring -> Step 2; hook file
+untouched -> verified in Step 2 (no edit to `.githooks/pre-commit`); test
+suite green -> Step 3; ledger entry -> Step 3.

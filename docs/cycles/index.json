@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "ticket": "BS-1",
+    "slug": "scope-approval-evidence-check-to",
+    "spec_commit": "3802d59613f472bc7e504f3402da6996bbe39177",
+    "design_commit": null,
+    "source_commits": [],
+    "date": "2026-08-21"
+  }
+]
