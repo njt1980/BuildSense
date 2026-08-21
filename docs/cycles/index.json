@@ -3,7 +3,7 @@
     "ticket": "BS-1",
     "slug": "scope-approval-evidence-check-to",
     "spec_commit": "3802d59613f472bc7e504f3402da6996bbe39177",
-    "design_commit": null,
+    "design_commit": "2f8ec2810a6ff4b336fa2d9ec18eeb57693129df",
     "source_commits": [],
     "date": "2026-08-21"
   }
