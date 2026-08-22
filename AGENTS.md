@@ -108,7 +108,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 - Do not reintroduce `SUGGESTER` or `EVALUATOR` modes in prompts, eval fixtures, schema comments, frontend copy, or agent instructions unless a documented product decision and defect/change-ledger entry explicitly approves that architecture change.
 
 **Abuse Protection (No-Auth Environment)**:
-- Enforce IP rate-limiting via `slowapi` (Max 3 full runs per IP per 24 hours).
+- Enforce IP rate-limiting via Redis (Max 3 *new sessions* per IP per 24 hours). This exempts BYOK users (`x-user-anthropic-key`).
 - Enforce a global Redis kill-switch (`MAX_GLOBAL_DAILY_SPEND = $10.00`). Reject new runs with HTTP 503 if cap is reached.
 
 **Dual Vector Namespaces**:

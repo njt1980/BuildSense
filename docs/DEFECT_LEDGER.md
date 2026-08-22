@@ -298,3 +298,9 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** `apps/api/app/main.py`'s startup handler calls `logging.info(...)`/`logging.warning(...)` (lines 640, 643) but the module never imports the `logging` stdlib module.
 * **Resolution:** Not fixed in this cycle. BS-001's spec.md explicitly scopes this cycle to phase-gate tooling only ("It does not touch product code (`apps/api`, `apps/web`)"), and no `apps/api` file was read or modified while implementing it, so this pre-existing, unrelated failure is logged per the Defect Tracking directive rather than fixed here. Needs its own fix (add `import logging` to `apps/api/app/main.py`) in a future cycle.
 * **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only; `apps/api/app/main.py` untouched, fix pending).
+
+## [CHANGE-005] - Date: 2026-08-22
+* **Issue:** The `slowapi` rate-limiter strict 5/day limit on `/api/v1/orchestrate` restricted legitimate, multi-turn "Progressive Discovery" intra-session conversations, and penalized users who brought their own API keys (BYOK).
+* **Root Cause:** A single endpoint handles both new session creation and in-session follow-up turns, and `slowapi` was applied uniformly to all requests hitting that path regardless of payload content or session status.
+* **Resolution:** Removed the `@limiter.limit("5/day")` blanket decorator from `/api/v1/orchestrate`. Implemented conditional IP rate limiting via `redis_client.check_ip_rate_limit(client_ip, max_allowed_runs=3)` applied strictly to new session creation (when `session_id` is missing) and only when a BYOK (`x-user-anthropic-key`) is not provided. Applied a 3/day `slowapi` limit to the standalone `/api/v1/projects` creation endpoint for parity.
+* **Files Touched:** `apps/api/app/main.py`, `AGENTS.MD`, `docs/DEFECT_LEDGER.md`
