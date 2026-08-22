@@ -304,3 +304,9 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** A single endpoint handles both new session creation and in-session follow-up turns, and `slowapi` was applied uniformly to all requests hitting that path regardless of payload content or session status.
 * **Resolution:** Removed the `@limiter.limit("5/day")` blanket decorator from `/api/v1/orchestrate`. Implemented conditional IP rate limiting via `redis_client.check_ip_rate_limit(client_ip, max_allowed_runs=3)` applied strictly to new session creation (when `session_id` is missing) and only when a BYOK (`x-user-anthropic-key`) is not provided. Applied a 3/day `slowapi` limit to the standalone `/api/v1/projects` creation endpoint for parity.
 * **Files Touched:** `apps/api/app/main.py`, `AGENTS.MD`, `docs/DEFECT_LEDGER.md`
+
+## [BUG-041] - Date: 2026-08-22 - OPEN
+* **Issue:** After completing all six pillars in the dialogue panel, the backend completes orchestration successfully but no visible concluding message (e.g., "BUILDSENSE INTELLIGENCE") is sent to the chat panel. The top status control silently changes from "Evaluating..." to "Run Analysis", forcing the user to notice the change, switch to the Executive Report tab, and click the button themselves.
+* **Root Cause:** The transition-out-of-dialogue UX has no explicit conversational handoff or auto-navigation mechanism once coverage is complete, leaving a gap where the app appears to stop responding.
+* **Resolution:** Logged as a UX/product defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
