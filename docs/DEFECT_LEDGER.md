@@ -310,3 +310,27 @@ This ledger records defects discovered during development, their root causes, an
 * **Root Cause:** The transition-out-of-dialogue UX has no explicit conversational handoff or auto-navigation mechanism once coverage is complete, leaving a gap where the app appears to stop responding.
 * **Resolution:** Logged as a UX/product defect. Fix pending in a future cycle.
 * **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-042] - Date: 2026-08-22 - OPEN
+* **Issue:** The consultative intake process over-indexes on operational pain points while leaving other required pillars (budget/financial constraints, personnel/key-person dependencies, market positioning) dangerously shallow before transitioning to recommendations.
+* **Root Cause:** The orchestrator's missing-information detection or iterative discovery prompts lack strict gating to ensure all six pillars (market, operations, financials, personnel, technology, risk) are genuinely explored before the handoff.
+* **Resolution:** Logged as a product/prompt defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-043] - Date: 2026-08-22 - OPEN
+* **Issue:** There is no substantive cross-project memory for a single company. A second project asks foundational questions (e.g., location) already answered in the first project. Additionally, the intake-cleaning step silently drops meta-questions (e.g., "do you remember what I said last time?") before they reach the model.
+* **Root Cause:** The orchestration context is scoped purely to the current `SessionState` without hydrating established company facts from a shared profile. The text extraction/cleaning prompt is also overly aggressive in discarding non-workflow conversational text.
+* **Resolution:** Logged as a feature/architecture gap. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-044] - Date: 2026-08-22 - OPEN
+* **Issue:** The Interactive Graph / Flowchart View renders four static, unclickable cards with no connecting lines. The content uses hardcoded, generic SaaS boilerplate (e.g., "LTV:CAC ratio > 3x") that completely contradicts the actual generated session data (e.g., custom woodworking cash jobs).
+* **Root Cause:** The UI component for the flowchart view is a static, templated mockup rather than being bound to the dynamically generated `SessionState` or synthesis report.
+* **Resolution:** Logged as a UI implementation defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-045] - Date: 2026-08-22 - OPEN
+* **Issue:** Project titles in the dashboard list and navigation breadcrumbs are automatically derived from the raw text of the most recent user message (e.g., "Yes, that's exactly right. So...") rather than a summarized topic or business name.
+* **Root Cause:** The project naming logic naively uses raw user messages as a display title instead of synthesizing a semantic label for the session.
+* **Resolution:** Logged as a UI/data-model defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
