@@ -1,19 +1,32 @@
-# Specification: Resolve BUG-050, BUG-046, and BUG-047 (Orchestration & Prompts)
+# Specification: Persona Testing Bug Fixes (BS-6)
 
 ## 1. Overview
-This specification addresses three related defects in the orchestration layer:
-- **BUG-050:** The Evidence Ladder attributes claims to a hardcoded "Staff / Dispatch Manager" even when inapplicable.
-- **BUG-046:** The `sanitize_input` node hallucinated a business category ("Catering business") for a flower shop.
-- **BUG-047:** The system exhibits same-session fact amnesia, dropping previously established facts (like location or meta-questions) from the conversation history.
+This specification details the resolution for six bugs identified during the 2026-08-22 India Scenarios Persona Testing session. The primary goal is to address critical UX/security defects, including raw data leakage in the Evidence Ladder and user-speech fabrication in the sanitizer, as well as fixing UI inconsistencies and cross-project memory gaps.
 
-## 2. Requirements & Scope
-- **Evidence Ladder (BUG-050):** The hardcoded string "Dispatch Manager" must be removed. The matching logic for Level 2 must not misclassify owner statements as employee statements simply because the word "stated" was used.
-- **Fact Preservation & Hallucination (BUG-046 & BUG-047):** The LLM prompt in the `sanitize_input` node must be rewritten to strictly preserve factual details (locations, tools, quantities), conversational context (meta-questions), and must never infer or fabricate business categories. Its sole job is removing conversational filler and adversarial text.
+## 2. Scope
+The scope includes fixing the following bugs in priority order:
 
-## 3. Out of Scope
-- Major architectural changes to the Evidence Ladder beyond fixing the hardcoded actor and keyword misclassification.
-- Total removal of the LLM `sanitize_input` node; we will only correct its prompt instructions.
+1. **BUG-053 (Critical)**: Prevent raw internal orchestration artifacts (tool calls, thinking signatures, untrusted tool wrappers) from leaking into the customer-facing Evidence Ladder Audit Log.
+2. **BUG-052 (Critical)**: Prevent `_node_sanitize_input` from fabricating user speech (e.g., answering meta-questions on behalf of the user).
+3. **BUG-043**: Enable cross-project memory by hydrating established company facts into the session context.
+4. **BUG-054 & BUG-045**: Fix "Vertical Focus: GENERIC" display in Execution Dossier headers and align project title generation to use summarized semantic labels instead of raw user messages.
+5. **BUG-055**: Add markdown rendering support to Quick Insights and Deep Dive report views to correctly parse `**bold**` and `### Header` syntax.
 
-## 4. Acceptance Criteria
-- Conversations mentioning "stated" by an owner do not incorrectly get labeled as "Staff / Dispatch Manager".
-- The `sanitize_input` node correctly preserves locations, meta-questions, and does not inject hallucinated industry categories.
+## 3. Acceptance Criteria
+1. **Evidence Ladder (BUG-053)**: Only human-readable claim text is rendered in the Evidence Ladder. Tool use JSON, base64 thinking blocks, and `<untrusted_tool_output>` XML are stripped or skipped.
+2. **Sanitizer Fidelity (BUG-052)**: Meta-questions are preserved or ignored, but the model never generates first-person user statements that do not appear in the original input.
+3. **Cross-Project Memory (BUG-043)**: Subsequent projects under the same company successfully reference facts (e.g., location, business category) established in previous projects.
+4. **Header & Title UI (BUG-054/045)**: 
+    - The Execution Dossier displays the correct Industry Vertical associated with the company, rather than "GENERIC".
+    - Project cards and headers display a consistent, semantically derived project title.
+5. **Markdown Rendering (BUG-055)**: All report tabs render standard Markdown elements (bolding, headers, lists) cleanly as HTML.
+
+## 4. Out of Scope
+Fixing mock research tools (BUG-056), unit economics SaaS logic (BUG-057), report generation UX overrides (BUG-058), and Industry Vertical onboarding consistency (BUG-059). These will be batched into a future cycle.
+
+## 5. Implementation Approach
+- Update `extract_evidence_ledger_from_messages` in `orchestrator.py` to filter out tool use, internal tags, and thinking blocks.
+- Strengthen the `_node_sanitize_input` prompt to explicitly forbid first-person speech generation.
+- Integrate company context into the orchestrator initialization.
+- Fix UI data binding for `company.industry_vertical` and `project.title`.
+- Wrap relevant UI report sections in a `ReactMarkdown` component.
