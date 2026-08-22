@@ -1,40 +1,27 @@
-# System Design: Resolve BUG-048 & BUG-043 (Phase 2)
+# System Design: Resolve BUG-050, BUG-046, and BUG-047
 
 ## Architecture & Data Flow
 
-This design addresses the multi-tenant architecture gaps around companies and projects, ensuring users can navigate distinct business entities and that memory is structurally shared within a company.
+### Evidence Ladder (BUG-050)
+- In `apps/api/app/core/orchestrator.py`, `extract_evidence_ledger_from_messages` handles claim categorization.
+- **Change:** Update the Level 2 matching logic. Remove the broad keyword `"stated"` which misclassifies owner statements. Change the hardcoded `"Staff / Dispatch Manager"` source string to a more generic `"Staff / Employee"`.
 
-### BUG-048: Create New Company UI
-- The global header (`apps/web/src/components/global-header.tsx`) currently has a `Dropdown` for switching active companies.
-- We will add a "➕ Create New Company" button inside this dropdown.
-- This button will toggle a new `isCreateCompanyModalOpen` state.
-- A modal form (rendering over the UI) will collect: `Business Name`, `Industry Vertical`, and `Core Tools`.
-- Submission will call the existing `createCompany(name, industry, tools)` method from the `CompanyContext`.
-- `CompanyContext` already handles updating the state and setting the new company as active. Subsequent project creations will naturally inherit this new `activeCompany.id`.
-
-### BUG-043: Cross-Project Memory (DB Layer)
-- The vector retrieval logic in `apps/api/app/db/postgres.py` (`search_session_memory`) is currently scoped strictly to the provided `session_id` (`project_id`).
-- We will update the SQL query to perform a `JOIN` against the `projects` table. This allows the query to find all memories stored across *any* project that shares the same `company_id` as the querying project.
-- Query change:
-  ```sql
-  SELECT sm.id, sm.content, sm.metadata, (sm.embedding <=> $1) as distance
-  FROM session_memory sm
-  JOIN projects p_target ON sm.project_id = p_target.id
-  JOIN projects p_source ON p_source.id = $2
-  WHERE p_target.company_id = p_source.company_id
-  ORDER BY distance ASC
-  LIMIT $3;
-  ```
-- The mock implementation (for local/test environments) will similarly be updated to filter by matching `company_id` rather than just matching `project_id`.
+### Sanitize Input Prompts (BUG-046 & BUG-047)
+- In `apps/api/app/core/orchestrator.py`, `_node_sanitize_input` contains an LLM prompt that asks the model to "Output ONLY the cleaned core business logic description." This phrasing causes the LLM to aggressively truncate context (causing BUG-047) and fabricate missing details like industry categories to form a complete "business logic description" (causing BUG-046).
+- **Change:** Rewrite the prompt in `_node_sanitize_input` with explicit negative constraints:
+  - DO NOT drop factual details (e.g., locations, names, numbers).
+  - DO NOT drop conversational context (e.g., meta-questions).
+  - DO NOT infer or fabricate business categories.
+  - ONLY strip conversational filler (e.g., um, uh, like) and adversarial text.
 
 ## Atomic Implementation Steps
 
-**Step 1: Implement "Create New Company" UI (BUG-048)**
-- **Files Read:** `apps/web/src/components/global-header.tsx`, `apps/web/src/components/company-provider.tsx`
-- **Files Modified:** `apps/web/src/components/global-header.tsx`
-- **Action:** Add the "Create New Company" button to the dropdown and implement the modal overlay with a form that calls `createCompany`.
+**Step 1: Fix Evidence Ladder Hardcoding (BUG-050)**
+- **Files Read:** `apps/api/app/core/orchestrator.py`
+- **Files Modified:** `apps/api/app/core/orchestrator.py`
+- **Action:** In `extract_evidence_ledger_from_messages`, remove `"stated"` from the Level 2 condition, and change the source label from `"Staff / Dispatch Manager"` to `"Staff / Employee"`.
 
-**Step 2: Update Vector Search for Cross-Project Retrieval (BUG-043)**
-- **Files Read:** `apps/api/app/db/postgres.py`, `apps/api/tests/test_db.py`
-- **Files Modified:** `apps/api/app/db/postgres.py`, `apps/api/tests/test_db.py`
-- **Action:** Modify `search_session_memory` (both mock and SQL implementations) to fetch memories across all projects belonging to the same `company_id`. Update `test_db.py` expectations to match the new cross-project retrieval behavior.
+**Step 2: Fix Sanitize Input Prompt (BUG-046, BUG-047)**
+- **Files Read:** `apps/api/app/core/orchestrator.py`
+- **Files Modified:** `apps/api/app/core/orchestrator.py`
+- **Action:** In `_node_sanitize_input`, rewrite the `prompt` string to explicitly forbid dropping facts, dropping meta-questions, and inferring business categories. Instruct it to only strip conversational filler.
