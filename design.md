@@ -1,39 +1,40 @@
-# System Design: Persona Testing UX and Orchestration Fixes (BS-UX-ORCHESTRATION)
+# System Design: Resolve BUG-048 & BUG-043 (Phase 2)
 
 ## Architecture & Data Flow
 
-This cycle introduces refinements across the orchestration engine (backend) and React application (frontend) to address gaps discovered during persona testing.
+This design addresses the multi-tenant architecture gaps around companies and projects, ensuring users can navigate distinct business entities and that memory is structurally shared within a company.
 
-1.  **Dialogue Transition (BUG-041):** The orchestrator's final node, `_node_synthesize_report`, will now explicitly append an assistant message to `state["messages"]`. This message acts as a conversational capstone, directing the user to the Executive Report tab, thereby avoiding a silent UX failure.
-2.  **Intake Gating (BUG-042):** To ensure a well-rounded business audit, `build_iterative_discovery_metadata` and the surrounding routing logic will integrate a Six-Pillar completeness check. The `confidence` score generation will be penalized if the accumulated evidence ledger lacks representation in key pillars (e.g., Financials/Budget, Risk, Personnel), ensuring the bot asks about these before `should_synthesize_now` becomes true.
-3.  **Cross-Project Memory (BUG-043):**
-    *   **Context Hydration:** When a new project session is created in `/api/v1/projects` or `/api/v1/orchestrate`, we will extract existing firmographic baseline details (like location, company name, domain) from the user's previously saved company profile and inject them into the initial `SessionState.messages` as a system context primer or directly into `SessionState.metadata`.
-    *   **Meta-Question Protection:** The regex/LLM prompt in `_node_sanitize_input` (or text extraction) will be tuned to stop discarding meta-conversational text (e.g., "do you remember what I said last time?") so the orchestrator can answer these accurately.
-4.  **Dynamic Flowchart View (BUG-044):** The React Flow visual graph generation in `_node_synthesize_report` (which hardcodes SaaS strings like "LTV:CAC ratio > 3x") will be rewritten to extract insights from the dynamically generated `roi_economics`, `friction_analysis`, and `as_is_workflow` metadata.
-5.  **Semantic Project Titles (BUG-045):** In `apps/web` or the `/api/v1/projects` creation route, we will replace the raw `message[:50]` fallback with a lightweight semantic naming function.
+### BUG-048: Create New Company UI
+- The global header (`apps/web/src/components/global-header.tsx`) currently has a `Dropdown` for switching active companies.
+- We will add a "➕ Create New Company" button inside this dropdown.
+- This button will toggle a new `isCreateCompanyModalOpen` state.
+- A modal form (rendering over the UI) will collect: `Business Name`, `Industry Vertical`, and `Core Tools`.
+- Submission will call the existing `createCompany(name, industry, tools)` method from the `CompanyContext`.
+- `CompanyContext` already handles updating the state and setting the new company as active. Subsequent project creations will naturally inherit this new `activeCompany.id`.
+
+### BUG-043: Cross-Project Memory (DB Layer)
+- The vector retrieval logic in `apps/api/app/db/postgres.py` (`search_session_memory`) is currently scoped strictly to the provided `session_id` (`project_id`).
+- We will update the SQL query to perform a `JOIN` against the `projects` table. This allows the query to find all memories stored across *any* project that shares the same `company_id` as the querying project.
+- Query change:
+  ```sql
+  SELECT sm.id, sm.content, sm.metadata, (sm.embedding <=> $1) as distance
+  FROM session_memory sm
+  JOIN projects p_target ON sm.project_id = p_target.id
+  JOIN projects p_source ON p_source.id = $2
+  WHERE p_target.company_id = p_source.company_id
+  ORDER BY distance ASC
+  LIMIT $3;
+  ```
+- The mock implementation (for local/test environments) will similarly be updated to filter by matching `company_id` rather than just matching `project_id`.
 
 ## Atomic Implementation Steps
 
-### Step 1: Dialogue Transition (BUG-041) & Dynamic Flowchart (BUG-044)
-*   **Target Files to Read:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_orchestrator.py`
-*   **Target Files to Modify:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_orchestrator.py`
-*   **Action:** 
-    1. In `_node_synthesize_report`, map the `nodes` and `edges` definition for the visual graph to actual session metadata (`state_metadata['as_is_workflow']`, `state_metadata['roi_economics']`, etc.) instead of hardcoded SaaS boilerplate strings. Ensure edges have valid source/target mapping to render correctly.
-    2. At the end of `_node_synthesize_report`, append a new HumanMessage/AIMessage to `state["messages"]` (e.g., `"I have completed my analysis. Your Executive Report is ready..."`) and save it to the intermediate state so the frontend displays a concluding conversational turn.
+**Step 1: Implement "Create New Company" UI (BUG-048)**
+- **Files Read:** `apps/web/src/components/global-header.tsx`, `apps/web/src/components/company-provider.tsx`
+- **Files Modified:** `apps/web/src/components/global-header.tsx`
+- **Action:** Add the "Create New Company" button to the dropdown and implement the modal overlay with a form that calls `createCompany`.
 
-### Step 2: Intake Gating & Six-Pillar Depth (BUG-042)
-*   **Target Files to Read:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_interview.py`
-*   **Target Files to Modify:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_interview.py`
-*   **Action:** In `build_iterative_discovery_metadata` and `build_six_pillar_coverage`, adjust the confidence scoring logic to require active coverage in Financials, Risk, and Personnel pillars. The `should_synthesize_now` flag should remain false if these pillars are empty, pushing the agent to ask follow-up questions about budget and key-person risk.
-
-### Step 3: Cross-Project Memory & Context Preservation (BUG-043)
-*   **Target Files to Read:** `apps/api/app/core/orchestrator.py`, `apps/api/app/main.py`
-*   **Target Files to Modify:** `apps/api/app/core/orchestrator.py`, `apps/api/tests/test_orchestrator.py`
-*   **Action:**
-    1. Pass existing company facts (like location and business type) into the initial session state or context architect so the model has awareness of the parent company across projects.
-    2. Adjust the system prompt for extraction/sanitization to explicitly instruct the model to preserve user meta-questions (e.g., references to past memory or context) in the sanitized output.
-
-### Step 4: Semantic Project Titles (BUG-045)
-*   **Target Files to Read:** `apps/web/src/app/[lang]/page.tsx`, `apps/api/app/main.py`
-*   **Target Files to Modify:** `apps/api/app/main.py`, `apps/api/app/db/postgres.py` (if necessary)
-*   **Action:** Update the `/api/v1/projects` POST route or equivalent project creation logic. If the user payload provides a raw chat message as a title, apply a lightweight regex, heuristic, or LLM call to synthesize a concise, semantic project title (e.g., "Woodworking Quote Workflow") before persisting it to the database.
+**Step 2: Update Vector Search for Cross-Project Retrieval (BUG-043)**
+- **Files Read:** `apps/api/app/db/postgres.py`, `apps/api/tests/test_db.py`
+- **Files Modified:** `apps/api/app/db/postgres.py`, `apps/api/tests/test_db.py`
+- **Action:** Modify `search_session_memory` (both mock and SQL implementations) to fetch memories across all projects belonging to the same `company_id`. Update `test_db.py` expectations to match the new cross-project retrieval behavior.
