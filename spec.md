@@ -1,19 +1,28 @@
-# Rate Limiting Enhancement Specification (BS-RATE-LIMIT)
+# Persona Testing UX and Orchestration Fixes (BS-UX-ORCHESTRATION)
 
 ## Problem Statement
-The current rate-limiting implementation on the `/api/v1/orchestrate` endpoint enforces a strict limit of `5/day` using `slowapi`. Because this endpoint handles both new session creation and in-session conversational turns (e.g., answering clarification questions), the current architecture restricts users to merely 5 individual chat messages per day. This severely hinders the "Progressive Discovery" workflow, where users are expected to have an extended back-and-forth conversation. Additionally, users supplying their own API keys (BYOK) are still penalized by budget-focused constraints.
+During a persona testing session, several significant UX and orchestration gaps were discovered:
+1. **BUG-041 (Missing Handoff):** The transition from dialogue to the final report lacks a conversational conclusion message, making the app appear unresponsive when orchestration finishes.
+2. **BUG-042 (Intake Shallowness):** The consultative intake over-indexes on operations and fails to deeply explore other pillars (budget, risk, market) before handing off to recommendations.
+3. **BUG-043 (No Cross-Project Memory):** Foundational company knowledge (like location) is not shared across projects for the same company, leading to redundant questions. The intake text extraction also silently drops meta-questions.
+4. **BUG-044 (Static Flowchart):** The Interactive Graph / Flowchart UI renders generic, hardcoded SaaS boilerplate instead of actual session-driven data.
+5. **BUG-045 (Raw Project Titles):** Project titles in the dashboard are naively derived from raw user messages rather than semantic summaries.
 
 ## Goal
-Revise the rate-limiting architecture to limit the creation of *new sessions* per day while allowing a reasonable number of intra-session interactions, and appropriately exempt BYOK users from restrictive cost-based limits.
+To resolve these UX and orchestration gaps to provide a seamless, robust, and intelligent user experience that correctly leverages context and provides clear transitions.
 
 ## Scope of Changes
-1. **Targeting New Sessions**: Apply the strict daily rate limit (`3/day`) to new project/session creation, rather than individual orchestration turns, to align with the intent of `AGENTS.MD`'s "Max 3 full runs per IP per 24 hours".
-2. **Intra-Session Limits**: Allow orchestrator resume requests (where `session_id` is present) to bypass the strict daily IP limit, instead relying on existing cost controls (`max_budget_usd`, `max_steps`).
-3. **BYOK Exemption**: Update the rate limit application to exempt requests containing a valid `x-user-anthropic-key` from the standard 3/day IP limit, as these requests do not impact the system's global spend budget.
-4. **Documentation Sync**: Update `AGENTS.MD` and `docs/DEFECT_LEDGER.md` to clarify that the "Max 3 full runs" rule applies strictly to new session instantiations.
+1. **Dialogue Transition (BUG-041):** Add an explicit "completion" or "handoff" message from the agent when all required pillars are covered, auto-navigating or clearly instructing the user to view the Executive Report.
+2. **Intake Gating (BUG-042):** Update the orchestrator's missing-information prompt or gating logic to enforce exploration of all six pillars (market, operations, financials, personnel, technology, risk) before concluding discovery.
+3. **Cross-Project Memory (BUG-043):**
+    *   Hydrate basic company profile information into the `SessionState` context upon session creation so the agent avoids redundant questions.
+    *   Adjust the intake text cleaner prompt to preserve user meta-questions (e.g., "do you remember what I said last time?") rather than aggressively filtering them.
+4. **Dynamic Flowchart View (BUG-044):** Update the Interactive Graph UI component to consume actual `SessionState` or synthesis report metrics rather than rendering static boilerplate.
+5. **Semantic Project Titles (BUG-045):** Implement a lightweight LLM call or semantic summarization step during session creation or post-intake to generate a concise, relevant project title instead of using raw message text.
 
 ## Acceptance Criteria
-- [ ] Users can send more than 5 messages in a single ongoing session without encountering a `429 Too Many Requests` error.
-- [ ] Users without a BYOK key are restricted to creating a maximum of 3 new sessions/projects per IP per 24 hours.
-- [ ] Users with a BYOK key (`x-user-anthropic-key` present) can create more than 3 sessions/projects without hitting the `429` error.
-- [ ] The codebase documentation (`AGENTS.MD`, `docs/DEFECT_LEDGER.md`) explicitly details this refined abuse-protection logic.
+- [ ] **BUG-041:** The agent emits a final concluding message in the chat upon completing the six pillars, and the UI provides clear transition signaling.
+- [ ] **BUG-042:** Evaluators/Tests confirm the agent will ask questions spanning multiple pillars (e.g., budget, risk) before entering confirmation/synthesis.
+- [ ] **BUG-043:** A second project under the same company does not ask for the company location if it was established in the first project. Meta-questions are not silently dropped.
+- [ ] **BUG-044:** The Interactive Graph view displays business-specific context (e.g., specific margins or operational details) derived from the current session instead of generic SaaS metrics.
+- [ ] **BUG-045:** Dashboard project titles display contextual summaries (e.g., "Woodworking quoting process") instead of raw user dialogue.
