@@ -720,4 +720,53 @@ async def test_deterministic_confirmation_gate_integration() -> None:
         # Verify that playback_confirmed was set to True
         assert res.get("playback_confirmed") is True
 
+@pytest.mark.asyncio
+async def test_synthesis_flowchart_and_transition() -> None:
+    """Verifies BUG-041 (transition message) and BUG-044 (dynamic React Flow nodes)."""
+    orchestrator = Orchestrator()
+    state = SessionState(
+        session_id="test-session-flowchart",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.SYNTHESIZING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Workflow info")],
+        playback_confirmed=True
+    )
+    from app.core.config import settings
+    with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic, \
+         patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch.object(settings, "anthropic_api_key", "mock-api-key"), \
+         patch.object(orchestrator.db, "save_session_state", AsyncMock()), \
+         patch("app.core.orchestrator.postgres_client.save_graph", AsyncMock()) as mock_save_graph:
+        
+        mock_client = AsyncMock()
+        mock_anthropic.return_value = mock_client
+        mock_response = make_mock_response(
+            '{"as_is_workflow": "Mapped step 1", "friction_analysis": "Delay in step 1", "technology_neutral_recommendations": "Recs", "roi_economics": "High ROI"}'
+        )
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        
+        agent_state = state.model_dump()
+        result = await orchestrator._node_synthesize_report(agent_state)
+        
+        # Verify graph nodes and edges were updated dynamically
+        assert mock_save_graph.called
+        nodes_arg = mock_save_graph.call_args[0][1]
+        
+        market_node = next(n for n in nodes_arg if n["type"] == "MarketNode")
+        assert "Mapped step 1" in market_node["data"]["details"]
+        
+        econ_node = next(n for n in nodes_arg if n["type"] == "EconomicsNode")
+        assert "High ROI" in econ_node["data"]["details"]
+        
+        # Verify transition message appended (BUG-041)
+        assert len(result["messages"]) == 2
+        last_msg = result["messages"][-1]
+        role = last_msg.role if hasattr(last_msg, "role") else last_msg.get("role")
+        content = last_msg.content if hasattr(last_msg, "content") else last_msg.get("content")
+        assert role == "assistant"
+        assert "completed my analysis" in content
+
+
 

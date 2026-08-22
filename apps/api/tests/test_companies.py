@@ -144,3 +144,60 @@ async def test_company_ownership_validation_security() -> None:
 
     finally:
         app.dependency_overrides.clear()
+
+@pytest.mark.asyncio
+async def test_run_pipeline_loads_cross_project_memory() -> None:
+    """
+    Verifies BUG-043: Cross-Project Memory and Context Preservation.
+    Ensures that when a project has a company_id, run_pipeline fetches
+    the company industry and core tools from Postgres and injects them into the state.
+    """
+    from app.core.orchestrator import Orchestrator
+    from app.models.state import SessionState, SessionMode, SessionStatus
+    from unittest.mock import patch, AsyncMock
+    from app.db.postgres import postgres_client
+    
+    postgres_client.is_mock = True
+    user_id = "test-cross-project-user"
+    
+    # Create company
+    company_id = await postgres_client.create_company(
+        user_id=user_id,
+        name="Global Freight Co",
+        industry="Logistics",
+        core_tools="SAP, Geotab"
+    )
+    
+    # Create project linked to company
+    project_id = await postgres_client.create_project(
+        user_id=user_id,
+        title="Fleet Tracking",
+        description="Improve tracking",
+        mode="OPTIMIZER",
+        motivation="EFFICIENCY",
+        user_persona="Operator",
+        company_id=company_id
+    )
+    
+    # Initialize state (without company details)
+    state = SessionState(
+        session_id=project_id,
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[]
+    )
+    
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_route_intent", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+         
+         orchestrator = Orchestrator()
+         # Run pipeline will fetch project by state.session_id (which is project_id)
+         await orchestrator.run_pipeline(state)
+         
+         # The orchestrator should have mutated the state with the company context
+         assert state.company_name == "Global Freight Co"
+         assert state.company_industry == "Logistics"
+         assert state.company_core_tools == "SAP, Geotab"

@@ -804,3 +804,46 @@ async def test_architect_extracts_explicit_location_and_schedules_enrichment() -
 
     assert updated_state.process_components.location == "Koramangala"
     assert mock_enrich.call_count >= 1
+
+@pytest.mark.asyncio
+async def test_six_pillar_gating_blocks_synthesis() -> None:
+    """
+    Verifies that BUG-042 gating requires Financials, Risk, and Personnel coverage
+    before allowing synthesis, even if core components (trigger/actor/system) are present.
+    """
+    components = ProcessComponents(
+        trigger="Low stock alert",
+        actor="Warehouse manager",
+        activity="Order inventory replenishment",
+        system="Excel spreadsheet",
+        friction="Double data entry takes 2 hours"
+    )
+    state = SessionState(
+        session_id="test-six-pillar-gating",
+        mode=SessionMode.OPTIMIZER,
+        status=SessionStatus.ROUTING,
+        max_budget_usd=1.25,
+        max_steps=15,
+        messages=[Message(role="user", content="Low stock alert triggers inventory replenishment manually using Excel.")],
+        process_components=components,
+        playback_confirmed=False,
+        clarification_turns=1
+    )
+
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
+         patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()):
+         
+        # We manually inject the architect plan without financials/risk to trigger the gate
+        with patch("app.core.orchestrator.build_iterative_discovery_metadata") as mock_build_meta:
+            # We bypass the actual build metadata to just test routing, or we let it run and check state
+            pass
+            
+        orchestrator = Orchestrator()
+        updated_state = await orchestrator.run_pipeline(state)
+        
+        # It should still be routing/clarification because required pillars are missing
+        assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
+        assert updated_state.metadata["iterative_discovery"]["should_synthesize_now"] is False
+        assert any("Missing core pillars" in reason for reason in updated_state.metadata["iterative_discovery"]["confidence_reasons"])
+

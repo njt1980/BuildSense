@@ -1,3 +1,4 @@
+import re
 """Main application module for BuildSense FastAPI backend.
 
 Initializes the FastAPI application, wires up CORS, Slowapi rate-limiting,
@@ -212,9 +213,22 @@ async def create_project(
                 detail="Access denied to specified company."
             )
 
+    raw_title = payload.title.strip()
+    # BUG-045: Semantic Project Titles heuristic
+    if len(raw_title) > 35 or bool(re.search(r'\b(i want to|can you|help me|we need to|please|i need to)\b', raw_title, re.IGNORECASE)):
+        clean = re.sub(r'^(?i).*(i want to|can you|help me|we need to|please|i need to)\s+', '', raw_title).strip()
+        clean = clean.split('.')[0].split('\n')[0].split(' and ')[0]
+        clean = clean[:45].strip()
+        if clean:
+            semantic_title = clean.title() + " Workflow"
+        else:
+            semantic_title = "Workflow Optimization"
+    else:
+        semantic_title = raw_title
+
     project_id = await postgres_client.create_project(
         user_id=current_user.id,
-        title=payload.title,
+        title=semantic_title,
         description=payload.description or "",
         mode=payload.mode.value,
         motivation=payload.motivation or "EFFICIENCY",

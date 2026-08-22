@@ -101,7 +101,10 @@ async def test_physical_business_with_location_gets_human_confirmation_not_solut
     assistant_text = output.messages[-1].content
     assert output.status == SessionStatus.AWAITING_CLARIFICATION
     assert output.process_components.location == "Koramangala"
-    assert "If that sounds right" in assistant_text
+    # Because Financials, Risk, and Personnel pillars are missing, BUG-042 logic lowers confidence,
+    # delaying the playback summary and causing a handshake/clarifying question instead.
+    assert "If that sounds right" not in assistant_text
+    assert "Can we look at how the workflow works" in assistant_text
     assert execute_loop.await_count == 0
     assert_no_terms(assistant_text, FORBIDDEN_MACHINE_LABELS)
 

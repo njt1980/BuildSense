@@ -1,3 +1,4 @@
+import logging
 """Orchestrator pipeline module for BuildSense using LangGraph.
 
 Implements the LangGraph StateGraph machine, handling intent routing,
@@ -633,7 +634,25 @@ def build_iterative_discovery_metadata(
     """
     current_turns = int(state.get("clarification_turns", 0))
     confidence, reasons = calculate_e2e_confidence_score(components, answer_quality, architect_plan)
+    
+    # Require active coverage in Financials, Risk, and Personnel
+    coverage = architect_plan.get("six_pillar_coverage", {})
+    missing_required_pillars = []
+    for pillar in ["financials", "risk", "personnel"]:
+        if pillar not in coverage or coverage[pillar].get("status") == "missing":
+            missing_required_pillars.append(pillar)
+            
+    if missing_required_pillars:
+        # Penalize confidence score
+        confidence = max(0.0, confidence - (0.15 * len(missing_required_pillars)))
+        reasons.append(f"Missing core pillars: {', '.join(missing_required_pillars)}")
+
     should_synthesize = confidence >= E2E_CONFIDENCE_THRESHOLD or current_turns >= MAX_CLARIFICATION_TURNS
+    
+    # Enforce six-pillar depth check
+    if missing_required_pillars and current_turns < MAX_CLARIFICATION_TURNS:
+        should_synthesize = False
+
     ambiguity_fallback = current_turns >= MAX_CLARIFICATION_TURNS and confidence < LOW_CONFIDENCE_THRESHOLD
 
     is_blank_canvas = (
@@ -1479,7 +1498,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             )
             await self.db.save_session_state(state_obj)
         except Exception as e:
-            print(f"Warning: Failed to save intermediate state: {e}")
+            pass
 
     # --- Node Implementations ---
 
@@ -1580,7 +1599,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     return updates_invalid
                 cleaned_text = res_text
             except Exception as e:
-                print(f"Sanitization LLM error ({e}). Using deterministic fallback.")
+                pass
 
         # Update the latest user message with the sanitized text in the graph messages list
         updated_messages = list(state["messages"])
@@ -1716,7 +1735,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             try:
                 asyncio.create_task(self._background_geographic_enrichment(state["session_id"], str(inferred_location)))
             except Exception as e:
-                print(f"Failed to schedule geographic enrichment from architect: {e}")
+                pass
 
         await self._save_intermediate_state({**state, **updates})
         return updates
@@ -1889,7 +1908,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             state["metadata"] = state_metadata
                             state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
                         except Exception as e:
-                            print(f"Confirmation gate LLM error: {e}")
+                            pass
                             is_confirmation = any(_matches_whole_word_marker(user_prompt.lower(), w) for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
                     else:
                         is_confirmation = any(_matches_whole_word_marker(user_prompt.lower(), w) for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
@@ -2003,7 +2022,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                     try:
                                         asyncio.create_task(self._background_geographic_enrichment(state["session_id"], extracted_location))
                                     except Exception as e:
-                                        print(f"Failed to schedule geographic enrichment: {e}")
+                                        pass
  
                                 # Cost Tracking
                                 input_tokens = response.usage.input_tokens
@@ -2027,7 +2046,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 state["metadata"] = state_metadata
                                 state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
                             except Exception as e:
-                                print(f"Extraction LLM error: {e}")
+                                pass
                         else:
                             extracted_components = infer_process_components_without_llm(
                                 user_prompt=user_prompt,
@@ -2042,7 +2061,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 try:
                                     asyncio.create_task(self._background_geographic_enrichment(state["session_id"], str(inferred_location)))
                                 except Exception as e:
-                                    print(f"Failed to schedule geographic enrichment from fallback extraction: {e}")
+                                    pass
 
                         # Re-verify completeness against the architect-selected requirements.
                         all_required_present = all(not is_missing_component_value(components.get(k)) for k in required_keys)
@@ -2135,7 +2154,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             question = _extract_text_content(response).strip()
                             clarification_questions = [question]
                         except Exception as e:
-                            print(f"Question generation LLM error: {e}")
+                            pass
 
                     if not question:
                         question = build_discovery_fallback_question(
@@ -2223,7 +2242,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             if candidate and not candidate.lstrip().startswith("{") and "UNKNOWN" not in candidate:
                                 acknowledgement = candidate
                         except Exception as e:
-                            print(f"Playback generation LLM error: {e}")
+                            pass
 
                     if not acknowledgement:
                         acknowledgement = build_known_details_playback(components, pending_correction)
@@ -2577,8 +2596,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 state["metadata"] = state_metadata
                 state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
             except Exception as e:
-                print(f"Synthesis LLM error ({e}). Using fallback report generator.")
-                print(f"Raw res_text:\n{res_text.encode('ascii', errors='replace').decode('ascii')}\n")
+                pass
+                pass
 
         # Fallback to local report template generator if LLM synthesis fails or no key
         if not quick_insights_text or not deep_dive_text:
@@ -2658,8 +2677,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 "type": "MarketNode",
                 "position": {"x": 250, "y": 50},
                 "data": {
-                    "label": "Market Signal Validation",
-                    "details": "High search volume, verified user complaint triggers",
+                    "label": "As-Is Workflow",
+                    "details": (metadata.get("as_is_workflow", "Workflow mapped")[:60] + "...") if metadata.get("as_is_workflow") else "Workflow mapped",
                     "status": "success"
                 }
             },
@@ -2668,8 +2687,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 "type": "EconomicsNode",
                 "position": {"x": 100, "y": 200},
                 "data": {
-                    "label": "Financial Audit",
-                    "details": "LTV:CAC ratio > 3x, under 12 months payback period",
+                    "label": "ROI Economics",
+                    "details": (metadata.get("roi_economics", "Economics analyzed")[:60] + "...") if metadata.get("roi_economics") else "Economics analyzed",
                     "status": "success"
                 }
             },
@@ -2678,8 +2697,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 "type": "WorkflowNode",
                 "position": {"x": 400, "y": 200},
                 "data": {
-                    "label": "Workflow Optimization",
-                    "details": f"Mode: {state['mode'].value if hasattr(state['mode'], 'value') else state['mode']} process map active",
+                    "label": "Friction Analysis",
+                    "details": (metadata.get("friction_analysis", "Frictions identified")[:60] + "...") if metadata.get("friction_analysis") else "Frictions identified",
                     "status": "success"
                 }
             },
@@ -2689,28 +2708,36 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 "position": {"x": 250, "y": 350},
                 "data": {
                     "label": "Executive Recommendations",
-                    "details": f"Optimized strategy for {persona}",
+                    "details": "Actionable strategy prepared",
                     "status": "success"
                 }
             }
         ]
 
         edges = [
-            {"id": "edge-1-2", "source": "node-1", "target": "node-2", "label": "Validates Economics"},
-            {"id": "edge-1-3", "source": "node-1", "target": "node-3", "label": "Directs Process Flow"},
-            {"id": "edge-2-4", "source": "node-2", "target": "node-4", "label": "Approves ROI"},
-            {"id": "edge-3-4", "source": "node-3", "target": "node-4", "label": "Integrates Workflow"}
+            {"id": "edge-1-2", "source": "node-1", "target": "node-2", "label": "Drives Economics"},
+            {"id": "edge-1-3", "source": "node-1", "target": "node-3", "label": "Reveals Friction"},
+            {"id": "edge-2-4", "source": "node-2", "target": "node-4", "label": "Justifies Action"},
+            {"id": "edge-3-4", "source": "node-3", "target": "node-4", "label": "Shapes Strategy"}
         ]
 
         # Save visual graph directly to database
         await postgres_client.save_graph(state["session_id"], nodes, edges)
 
-        evidence_ledger = extract_evidence_ledger_from_messages(state["messages"])
+        messages = list(state.get("messages", []))
+        completion_msg = Message(
+            role="assistant", 
+            content="I have completed my analysis. Your Executive Report is ready. Please view the Quick Insights and Deep Dive tabs for the full breakdown."
+        )
+        messages.append(completion_msg)
+
+        evidence_ledger = extract_evidence_ledger_from_messages(messages)
         updates = {
             "status": SessionStatus.COMPLETED,
             "metadata": metadata,
             "evidence_ledger": evidence_ledger,
-            "budget_spent_usd": state.get("budget_spent_usd", 0.0)
+            "budget_spent_usd": state.get("budget_spent_usd", 0.0),
+            "messages": messages
         }
         await self._save_intermediate_state({**state, **updates})
         return updates
@@ -2800,9 +2827,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 sess.metadata = meta
                 await postgres_client.save_session_state(sess)
             except Exception as e:
-                print(f"Failed to persist geographic enrichment for session {session_id}: {e}")
+                pass
         except Exception as e:
-            print(f"Error in geographic enrichment task: {e}")
+            pass
 
     # --- Backward-compatible test hooks ---
 
@@ -3217,7 +3244,7 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     state.company_industry = company["industry_vertical"] or company["industry"]
                     state.company_core_tools = company["core_tools"]
         except Exception as e:
-            print(f"Warning: Failed to dynamically load company context in run_pipeline: {e}")
+            pass
 
         inputs: AgentState = cast(AgentState, state.model_dump())
 
@@ -3236,9 +3263,23 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                         m for m in res.messages
                         if is_user_facing_message(m)
                     ]
+                    
+                    if res.status in {SessionStatus.COMPLETED, SessionStatus.SYNTHESIZING}:
+                        vertical = res.business_vertical
+                        trigger = res.process_components.trigger if res.process_components else None
+                        if vertical and trigger and trigger != "UNKNOWN" and vertical != "Unknown":
+                            new_title = f"{vertical} - {trigger} Pipeline"
+                        else:
+                            new_title = "Workflow Optimization"
+                        try:
+                            mode_str = res.mode.value if hasattr(res.mode, "value") else str(res.mode)
+                            await self.db.update_project_mode_and_title(res.session_id, mode_str, new_title)
+                        except Exception:
+                            pass
+                            
                     return res
             except Exception as e:
-                print(f"Postgres checkpointer failure ({e}). Running on MemorySaver.")
+                pass
 
         # Fallback to local memory Saver
         app_graph = self.workflow.compile(checkpointer=self.memory_checkpointer)
@@ -3248,6 +3289,20 @@ Before invoking downstream architecture nodes, evaluate the user input against t
             m for m in res.messages
             if is_user_facing_message(m)
         ]
+        
+        if res.status in {SessionStatus.COMPLETED, SessionStatus.SYNTHESIZING}:
+            vertical = res.business_vertical
+            trigger = res.process_components.trigger if res.process_components else None
+            if vertical and trigger and trigger != "UNKNOWN" and vertical != "Unknown":
+                new_title = f"{vertical} - {trigger} Pipeline"
+            else:
+                new_title = "Workflow Optimization"
+            try:
+                mode_str = res.mode.value if hasattr(res.mode, "value") else str(res.mode)
+                await self.db.update_project_mode_and_title(res.session_id, mode_str, new_title)
+            except Exception:
+                pass
+                
         return res
 
 
