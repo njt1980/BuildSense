@@ -1,30 +1,19 @@
-# Specification: Resolve BUG-048 (Company Binding) & BUG-043 (Cross-Project Memory)
+# Specification: Resolve BUG-050, BUG-046, and BUG-047 (Orchestration & Prompts)
 
 ## 1. Overview
-Currently, the application suffers from two critical architectural gaps regarding companies and projects:
-1. **Wrong Company Binding (BUG-048):** There is no UI to create a second company. New projects are forced onto whichever company is currently active, mixing data.
-2. **Fact Amnesia / No Cross-Project Memory (BUG-043):** The `session_memory` (RAG) feature exists in the database schema but is not fully wired into the orchestrator, and it isolates memory strictly by `project_id`. This causes the system to forget foundational facts (like location) between projects within the same company.
-
-We will resolve both issues to establish a robust multi-project, multi-company architecture.
+This specification addresses three related defects in the orchestration layer:
+- **BUG-050:** The Evidence Ladder attributes claims to a hardcoded "Staff / Dispatch Manager" even when inapplicable.
+- **BUG-046:** The `sanitize_input` node hallucinated a business category ("Catering business") for a flower shop.
+- **BUG-047:** The system exhibits same-session fact amnesia, dropping previously established facts (like location or meta-questions) from the conversation history.
 
 ## 2. Requirements & Scope
-
-### 2.1 UI Addition: Create New Company (BUG-048)
-- Add a "➕ Create New Company" option to the company switcher dropdown in the global header (`apps/web/src/components/global-header.tsx`).
-- Clicking this opens a modal that collects: Business Name, Industry Vertical, Core Tools.
-- Upon creation, the application automatically sets the new company as the `activeCompany`. Subsequent project creations will bind to this new company.
-
-### 2.2 Cross-Project Memory Sharing (BUG-043)
-- **Database Query Update:** Update the vector search logic (`search_session_memory` in `apps/api/app/db/postgres.py`) to query all memories across all projects that belong to the current project's `company_id`.
-- **Orchestrator Wiring:** Integrate `add_session_memory` and `search_session_memory` into the orchestrator (`apps/api/app/core/orchestrator.py`):
-  - *Retrieval:* During intake (or architect planning), search the company's memory for relevant facts and inject them into the system prompt.
-  - *Storage:* When the session successfully synthesizes or confirms a new fact (or upon completion), store key findings in `session_memory`.
+- **Evidence Ladder (BUG-050):** The hardcoded string "Dispatch Manager" must be removed. The matching logic for Level 2 must not misclassify owner statements as employee statements simply because the word "stated" was used.
+- **Fact Preservation & Hallucination (BUG-046 & BUG-047):** The LLM prompt in the `sanitize_input` node must be rewritten to strictly preserve factual details (locations, tools, quantities), conversational context (meta-questions), and must never infer or fabricate business categories. Its sole job is removing conversational filler and adversarial text.
 
 ## 3. Out of Scope
-- Full user management or login page rewrites (the mock auth remains in place; the UI addition solves the structural issue).
-- Changing the underlying vector database technology (we will continue using `pgvector`).
+- Major architectural changes to the Evidence Ladder beyond fixing the hardcoded actor and keyword misclassification.
+- Total removal of the LLM `sanitize_input` node; we will only correct its prompt instructions.
 
 ## 4. Acceptance Criteria
-- A user can create a new company via the global header dropdown.
-- Creating a new project immediately after binds it to the newly created company.
-- Facts stated in Project A (e.g., "We are located in Portland, OR") are remembered in Project B (assuming both belong to the same company) without the user having to repeat them.
+- Conversations mentioning "stated" by an owner do not incorrectly get labeled as "Staff / Dispatch Manager".
+- The `sanitize_input` node correctly preserves locations, meta-questions, and does not inject hallucinated industry categories.
