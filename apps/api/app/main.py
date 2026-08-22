@@ -6,6 +6,7 @@ and registers multi-tenant project and orchestrator routes with JWT authenticati
 
 import os
 import uuid
+import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request, Response, status, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -191,7 +192,9 @@ async def list_companies_endpoint(
 # --- Multi-Tenant Projects Router Endpoints ---
 
 @app.post("/api/v1/projects")
+@limiter.limit("3/day")
 async def create_project(
+    request: Request,
     payload: ProjectCreate,
     current_user: AuthenticatedUser = Depends(get_current_user)
 ) -> Dict[str, Any]:
@@ -325,7 +328,6 @@ async def get_project_graph(
 # --- Mapped /orchestrate endpoints (handles backward compatibility) ---
 
 @app.post("/api/v1/orchestrate")
-@limiter.limit("5/day")
 async def orchestrate(
     request: Request, 
     payload: OrchestrationRequest,
@@ -354,6 +356,16 @@ async def orchestrate(
                 detail="Access denied to requested project session."
             )
     else:
+        # Enforce IP rate limiting for new sessions, exempting BYOK
+        if not x_user_anthropic_key:
+            client_ip = get_remote_address(request)
+            is_allowed = await redis_client.check_ip_rate_limit(client_ip, max_allowed_runs=3)
+            if not is_allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Rate limit exceeded: Maximum 3 new sessions per IP per 24 hours."
+                )
+
         # Create a new project corresponding to this request run
         prompt_text = payload.raw_input_text_or_audio or payload.prompt or ""
         title = prompt_text[:30] + "..." if prompt_text else "New Discovery Run"
