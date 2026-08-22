@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import ReactMarkdown from "react-markdown";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -97,7 +98,7 @@ export function ReportView({ sessionState }: ReportViewProps) {
           <TabsContent value="quick" className="space-y-4 outline-none focus:ring-0">
             <div className="bg-[#03060d]/30 border border-slate-900/60 rounded-xl p-5 shadow-inner">
               <div className="prose prose-invert max-w-none text-slate-300 whitespace-pre-wrap leading-relaxed">
-                {quickInsights}
+                <ReactMarkdown>{quickInsights}</ReactMarkdown>
               </div>
             </div>
           </TabsContent>
@@ -105,7 +106,7 @@ export function ReportView({ sessionState }: ReportViewProps) {
           <TabsContent value="deep" className="space-y-4 outline-none focus:ring-0">
             <div className="bg-[#03060d]/30 border border-slate-900/60 rounded-xl p-5 shadow-inner">
               <div className="prose prose-invert max-w-none text-slate-300 whitespace-pre-wrap leading-relaxed">
-                {deepDive}
+                <ReactMarkdown>{deepDive}</ReactMarkdown>
               </div>
             </div>
           </TabsContent>

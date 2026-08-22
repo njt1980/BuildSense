@@ -453,10 +453,10 @@ async def orchestrate(
         max_budget = 1.25
         max_steps = 15
 
-        # Fetch company info for injection
         company_name = None
         company_industry = None
         company_tools = None
+        company_context = ""
         p_company_id = project.get("company_id")
         if p_company_id:
             company = await postgres_client.get_company(str(p_company_id))
@@ -464,6 +464,22 @@ async def orchestrate(
                 company_name = company["name"]
                 company_industry = company["industry_vertical"] or company["industry"]
                 company_tools = company["core_tools"]
+                
+                # BUG-043: Cross-Project Memory Hydration
+                user_projects = await postgres_client.get_user_projects(current_user.id)
+                prior_projects = [p for p in user_projects if p.get("company_id") == p_company_id and p.get("id") != project_id]
+                
+                context_lines = []
+                for pp in prior_projects:
+                    p_state = await postgres_client.get_session_state(pp["id"])
+                    if p_state and p_state.process_components:
+                        pc = p_state.process_components
+                        loc = pc.get("location")
+                        sys = pc.get("system")
+                        if loc or sys:
+                            context_lines.append(f"Project '{pp['title']}': location={loc or 'unknown'}, system={sys or 'unknown'}")
+                if context_lines:
+                    company_context = " | ".join(context_lines)
 
         state = SessionState(
             session_id=project_id,
@@ -485,7 +501,8 @@ async def orchestrate(
                 "industry_vertical": company_industry or payload.industry_vertical or "GENERIC",
                 "company_name": company_name,
                 "company_industry": company_industry,
-                "company_core_tools": company_tools
+                "company_core_tools": company_tools,
+                "company_context": company_context
             },
             file_name=payload.file_name,
             file_content=payload.file_content,

@@ -65,6 +65,9 @@ Conversation discipline:
 - You may offer a tiny example only as an optional possibility, never as a presumed fact.
 - Do not summarize all known fields. Just acknowledge the previous statement and pull one thread forward.
 
+Company Context, for cross-project memory:
+{company_context}
+
 Known workflow details, for grounding only:
 {components_json}
 

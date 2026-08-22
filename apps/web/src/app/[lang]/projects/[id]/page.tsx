@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ReportView } from "@/components/report-view";
 import { StrategicProgress } from "@/components/strategic-progress";
 import { useOrchestratorStream } from "@/lib/useOrchestratorStream";
+import ReactMarkdown from "react-markdown";
 
 import { getDictionary } from "@/lib/dictionaries";
 import { getApiBaseUrl } from "@/lib/api";
@@ -533,7 +534,7 @@ export default function ProjectWorkspacePage() {
                       <p className="font-bold text-[9px] uppercase tracking-wider text-slate-500 mb-1">
                         {isUser ? dict.userInput : msg.name || "BuildSense Intelligence"}
                       </p>
-                      <p className="whitespace-pre-wrap break-words max-w-full">{msg.content}</p>
+                      <div className="prose prose-invert prose-xs max-w-full break-words whitespace-pre-wrap"><ReactMarkdown>{msg.content}</ReactMarkdown></div>
                     </div>
                   </div>
                 );

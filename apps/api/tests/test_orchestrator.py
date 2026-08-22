@@ -549,6 +549,7 @@ def test_fourth_wall_metadata_leakage_checks() -> None:
         iterative_discovery_json="",
         history="",
         latest_user_message="",
+        company_context="",
     )
     rendered_playback = CONSULTANT_PLAYBACK_PROMPT.format(
         fourth_wall_rule=FOURTH_WALL_RULE,
