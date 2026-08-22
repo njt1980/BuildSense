@@ -305,11 +305,11 @@ This ledger records defects discovered during development, their root causes, an
 * **Resolution:** Removed the `@limiter.limit("5/day")` blanket decorator from `/api/v1/orchestrate`. Implemented conditional IP rate limiting via `redis_client.check_ip_rate_limit(client_ip, max_allowed_runs=3)` applied strictly to new session creation (when `session_id` is missing) and only when a BYOK (`x-user-anthropic-key`) is not provided. Applied a 3/day `slowapi` limit to the standalone `/api/v1/projects` creation endpoint for parity.
 * **Files Touched:** `apps/api/app/main.py`, `AGENTS.MD`, `docs/DEFECT_LEDGER.md`
 
-## [BUG-041] - Date: 2026-08-22 - OPEN
+## [BUG-041] - Date: 2026-08-22 - RESOLVED (Pending Final Verification)
 * **Issue:** After completing all six pillars in the dialogue panel, the backend completes orchestration successfully but no visible concluding message (e.g., "BUILDSENSE INTELLIGENCE") is sent to the chat panel. The top status control silently changes from "Evaluating..." to "Run Analysis", forcing the user to notice the change, switch to the Executive Report tab, and click the button themselves.
 * **Root Cause:** The transition-out-of-dialogue UX has no explicit conversational handoff or auto-navigation mechanism once coverage is complete, leaving a gap where the app appears to stop responding.
-* **Resolution:** Logged as a UX/product defect. Fix pending in a future cycle.
-* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+* **Resolution:** In recent testing (2026-08-22), an explicit closing message ("I have completed my analysis... Executive Report is ready") was successfully generated and observed for multiple personas. This appears to have been resolved, potentially by a recent prompt/model shift. Marked as tentatively resolved.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only).
 
 ## [BUG-042] - Date: 2026-08-22 - OPEN
 * **Issue:** The consultative intake process over-indexes on operational pain points while leaving other required pillars (budget/financial constraints, personnel/key-person dependencies, market positioning) dangerously shallow before transitioning to recommendations.
@@ -323,14 +323,63 @@ This ledger records defects discovered during development, their root causes, an
 * **Resolution:** Logged as a feature/architecture gap. Fix pending in a future cycle.
 * **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
 
-## [BUG-044] - Date: 2026-08-22 - OPEN
+## [BUG-044] - Date: 2026-08-22 - RESOLVED (Pending Final Verification)
 * **Issue:** The Interactive Graph / Flowchart View renders four static, unclickable cards with no connecting lines. The content uses hardcoded, generic SaaS boilerplate (e.g., "LTV:CAC ratio > 3x") that completely contradicts the actual generated session data (e.g., custom woodworking cash jobs).
 * **Root Cause:** The UI component for the flowchart view is a static, templated mockup rather than being bound to the dynamically generated `SessionState` or synthesis report.
-* **Resolution:** Logged as a UI implementation defect. Fix pending in a future cycle.
-* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+* **Resolution:** In recent testing (2026-08-22), the Interactive Graph view showed genuinely dynamic, business-specific content (e.g., Torres Auto and Tire's cards referenced actual repair-intake process). This appears to have been resolved, potentially by a recent commit not yet logged or a model shift. Marked as tentatively resolved.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only).
 
 ## [BUG-045] - Date: 2026-08-22 - OPEN
 * **Issue:** Project titles in the dashboard list and navigation breadcrumbs are automatically derived from the raw text of the most recent user message (e.g., "Yes, that's exactly right. So...") rather than a summarized topic or business name.
 * **Root Cause:** The project naming logic naively uses raw user messages as a display title instead of synthesizing a semantic label for the session.
 * **Resolution:** Logged as a UI/data-model defect. Fix pending in a future cycle.
 * **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-046] - Date: 2026-08-22 - OPEN
+* **Issue:** The intake-cleaning step hallucinated "Catering business" as the business category for a flower shop, and only self-corrected after the user explicitly stated "we're a flower shop, not catering".
+* **Root Cause:** The orchestrator or LLM extraction step is hallucinating a business category when it should infer from user input or ask for clarification.
+* **Resolution:** Logged as a hallucination/prompt defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-047] - Date: 2026-08-22 - OPEN
+* **Issue:** The system exhibits same-session fact amnesia. It re-asked the user "where is your flower shop located?" even after the user explicitly stated Portland, OR in their very first message.
+* **Root Cause:** Fact extraction or context management is dropping previously established facts from the current session state.
+* **Resolution:** Logged as a memory/context-management defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-048] - Date: 2026-08-22 - OPEN
+* **Issue:** Wrong company binding on new projects. When a new project is created, there's no UI path to specify a new company. The new project attaches to whichever company is currently active (e.g., "Bloom & Petal Florals"). The greeting and top-nav stayed on the old company despite the user describing a completely different business (auto shop), leading to data being filed under the wrong business entity.
+* **Root Cause:** The system lacks proper multi-company support in the UI for project creation, and/or defaults to the active company without allowing the user to select or create a new one. The mock auth system might be exacerbating this.
+* **Resolution:** Logged as a structural UI/data-model defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-049] - Date: 2026-08-22 - OPEN
+* **Issue:** Message history persistence glitch. An assistant reply vanished entirely from the visible transcript on a later read, resulting in two user messages appearing back-to-back.
+* **Root Cause:** Potential issue with how the frontend state syncs with the backend, or how messages are persisted in the database/session storage.
+* **Resolution:** Logged as a persistence/UI defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-050] - Date: 2026-08-22 - OPEN
+* **Issue:** The Evidence Ladder audit log attributes claims to a hardcoded label "Staff / Dispatch Manager Employee Stated", even when the business has no dispatch manager and the user explicitly speaks as the owner.
+* **Root Cause:** The actor label in the evidence ladder is likely hardcoded rather than dynamically derived from the conversation or persona.
+* **Resolution:** Logged as a data-binding/UI defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-051] - Date: 2026-08-22 - OPEN
+* **Issue:** A vague budget statement ("however much it costs is however much, I don't got a real budget for this kind of thing") was initially misread as a customer-pricing philosophy rather than a software-spending constraint.
+* **Root Cause:** The extraction prompt is misclassifying ambiguous user statements regarding budget constraints.
+* **Resolution:** Logged as an extraction accuracy defect. Fix pending in a future cycle.
+* **Files Touched:** `docs/DEFECT_LEDGER.md` (this entry only, fix pending).
+
+## [BUG-050, BUG-046, BUG-047] - Date: 2026-08-22
+* **Issue:** 
+  - BUG-050: The Evidence Ladder attributes claims to a hardcoded "Staff / Dispatch Manager" even when inapplicable.
+  - BUG-046: The `sanitize_input` node hallucinated a business category ("Catering business") for a flower shop.
+  - BUG-047: The system exhibits same-session fact amnesia, dropping previously established facts from the conversation history.
+* **Root Cause:** 
+  - BUG-050: The keyword "stated" incorrectly matched generic owner statements, and the source string was hardcoded to a specific industry role.
+  - BUG-046 & BUG-047: The `_node_sanitize_input` LLM prompt instructed the model to output a complete "business logic description," which led it to hallucinate categories to fill gaps and truncate conversational facts (meta-questions, details).
+* **Resolution:** 
+  - Fixed BUG-050 by removing the keyword "stated" and updating the hardcoded string to a generic "Staff / Employee" in `extract_evidence_ledger_from_messages`.
+  - Fixed BUG-046 and BUG-047 by rewriting the `_node_sanitize_input` prompt to strictly forbid dropping factual details, dropping conversational context, and inferring business categories, explicitly scoping it to only strip conversational filler.
+* **Files Touched:** `apps/api/app/core/orchestrator.py`
