@@ -2747,7 +2747,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
         messages = list(state.get("messages", []))
         completion_msg = Message(
             role="assistant", 
-            content="I have completed my analysis. Your Executive Report is ready. Please view the Quick Insights and Deep Dive tabs for the full breakdown."
+            content="I have completed my analysis. Your Executive Report is ready. Please view the Quick Insights and Deep Dive tabs for the full breakdown.",
+            name=None,
+            tool_call_id=None
         )
         messages.append(completion_msg)
 

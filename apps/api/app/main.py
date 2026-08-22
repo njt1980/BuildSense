@@ -9,6 +9,7 @@ import os
 import uuid
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response, status, Header, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -29,11 +30,38 @@ from app.telemetry.ids import generate_run_id
 from app.telemetry.logging import log_event
 from app.telemetry.middleware import telemetry_context_middleware
 
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    """
+    Connects pool resources for Postgres/Redis and runs tables migrations on startup.
+    """
+    log_event("app_startup_started")
+    await redis_client.connect()
+    await postgres_client.connect()
+    
+    # Run SQL migration setup
+    schema_path = os.path.join(os.path.dirname(__file__), "db", "schema.sql")
+    if os.path.exists(schema_path):
+        try:
+            await postgres_client.init_db(schema_path)
+            logging.info("Successfully verified PostgreSQL schema tables and RLS configurations.")
+            log_event("app_startup_completed", schema_verified=True)
+        except Exception as e:
+            logging.warning(f"Warning: PostgreSQL migrations setup aborted ({e})")
+            log_event("app_startup_completed", level="warning", schema_verified=False, error_type=type(e).__name__)
+            
+    yield
+    
+    log_event("app_shutdown_started")
+    await redis_client.disconnect()
+    await postgres_client.disconnect()
+
 # Initialize FastAPI App
 app = FastAPI(
     title="BuildSense API Engine",
     description="Agentic Intelligence Engine for Idea Suggestion, Evaluation, and SMB Process Optimization.",
     version="2.0.0",
+    lifespan=app_lifespan,
 )
 
 app.middleware("http")(telemetry_context_middleware)
@@ -190,6 +218,19 @@ async def list_companies_endpoint(
     return await postgres_client.get_user_companies(current_user.id)
 
 
+def _generate_semantic_title(raw_title: str) -> str:
+    """Applies a semantic heuristic to generate a clean project title from raw input."""
+    raw_title = raw_title.strip()
+    if len(raw_title) > 35 or bool(re.search(r'\b(i want to|can you|help me|we need to|please|i need to)\b', raw_title, re.IGNORECASE)):
+        clean = re.sub(r'^(?i).*(i want to|can you|help me|we need to|please|i need to)\s+', '', raw_title).strip()
+        clean = clean.split('.')[0].split('\n')[0].split(' and ')[0]
+        clean = clean[:45].strip()
+        if clean:
+            return clean.title() + " Workflow"
+        else:
+            return "Workflow Optimization"
+    return raw_title
+
 # --- Multi-Tenant Projects Router Endpoints ---
 
 @app.post("/api/v1/projects")
@@ -213,18 +254,7 @@ async def create_project(
                 detail="Access denied to specified company."
             )
 
-    raw_title = payload.title.strip()
-    # BUG-045: Semantic Project Titles heuristic
-    if len(raw_title) > 35 or bool(re.search(r'\b(i want to|can you|help me|we need to|please|i need to)\b', raw_title, re.IGNORECASE)):
-        clean = re.sub(r'^(?i).*(i want to|can you|help me|we need to|please|i need to)\s+', '', raw_title).strip()
-        clean = clean.split('.')[0].split('\n')[0].split(' and ')[0]
-        clean = clean[:45].strip()
-        if clean:
-            semantic_title = clean.title() + " Workflow"
-        else:
-            semantic_title = "Workflow Optimization"
-    else:
-        semantic_title = raw_title
+    semantic_title = _generate_semantic_title(payload.title)
 
     project_id = await postgres_client.create_project(
         user_id=current_user.id,
@@ -382,7 +412,7 @@ async def orchestrate(
 
         # Create a new project corresponding to this request run
         prompt_text = payload.raw_input_text_or_audio or payload.prompt or ""
-        title = prompt_text[:30] + "..." if prompt_text else "New Discovery Run"
+        title = _generate_semantic_title(prompt_text) if prompt_text else "New Discovery Run"
         
         # Determine the company_id and company context
         company_id = payload.company_id
@@ -474,8 +504,8 @@ async def orchestrate(
                     p_state = await postgres_client.get_session_state(pp["id"])
                     if p_state and p_state.process_components:
                         pc = p_state.process_components
-                        loc = pc.get("location")
-                        sys = pc.get("system")
+                        loc = getattr(pc, "location", None)
+                        sys = getattr(pc, "system", None)
                         if loc or sys:
                             context_lines.append(f"Project '{pp['title']}': location={loc or 'unknown'}, system={sys or 'unknown'}")
                 if context_lines:
@@ -648,7 +678,7 @@ async def get_session(
             },
             file_name=None,
             file_content=None,
-            business_vertical="GENERIC",
+            business_vertical=company_industry or "GENERIC",
             evidence_ledger=[],
             company_name=company_name,
             company_industry=company_industry,
@@ -666,28 +696,4 @@ async def get_session(
     return state
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
-    """
-    Connects pool resources for Postgres/Redis and runs tables migrations on startup.
-    """
-    log_event("app_startup_started")
-    await redis_client.connect()
-    await postgres_client.connect()
-    
-    # Run SQL migration setup
-    schema_path = os.path.join(os.path.dirname(__file__), "db", "schema.sql")
-    if os.path.exists(schema_path):
-        try:
-            await postgres_client.init_db(schema_path)
-            logging.info("Successfully verified PostgreSQL schema tables and RLS configurations.")
-            log_event("app_startup_completed", schema_verified=True)
-        except Exception as e:
-            logging.warning(f"Warning: PostgreSQL migrations setup aborted ({e})")
-            log_event("app_startup_completed", level="warning", schema_verified=False, error_type=type(e).__name__)
-            
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    log_event("app_shutdown_started")
-    await redis_client.disconnect()
-    await postgres_client.disconnect()
+
