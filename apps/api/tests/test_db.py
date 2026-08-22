@@ -173,3 +173,29 @@ async def test_redis_client_check_ip_rate_limit() -> None:
     redis_client.client.incr.return_value = 4
     allowed = await redis_client.check_ip_rate_limit("127.0.0.1", max_allowed_runs=3)
     assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_postgres_client_cross_project_memory_mock() -> None:
+    """
+    Verifies that search_session_memory retrieves facts across projects sharing a company_id.
+    """
+    postgres_client = PostgresClient()
+    postgres_client.is_mock = True
+    
+    postgres_client.mock_store["projects"] = {
+        "proj_1": {"id": "proj_1", "company_id": "comp_1"},
+        "proj_2": {"id": "proj_2", "company_id": "comp_1"},
+        "proj_3": {"id": "proj_3", "company_id": "other_comp"}
+    }
+    
+    postgres_client.mock_store["session_memory"] = [
+        {"id": 1, "project_id": "proj_1", "content": "Company is in Seattle", "embedding": [0.1], "metadata": {}},
+        {"id": 2, "project_id": "proj_3", "content": "Other company fact", "embedding": [0.2], "metadata": {}}
+    ]
+    
+    # Search from proj_2 should retrieve proj_1's memory because of shared comp_1
+    results = await postgres_client.search_session_memory(session_id="proj_2", query_embedding=[0.1])
+    
+    assert len(results) == 1
+    assert results[0]["content"] == "Company is in Seattle"

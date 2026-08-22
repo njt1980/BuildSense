@@ -11,10 +11,37 @@ export function GlobalHeader({ lang }: { lang: string }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, signOut } = useAuth();
-  const { companies, activeCompany, setActiveCompany } = useCompany();
+  const { companies, activeCompany, setActiveCompany, createCompany } = useCompany();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [devDropdownOpen, setDevDropdownOpen] = useState(false);
+  
+  // Modal states
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [newCompanyName, setNewCompanyName] = useState("");
+  const [newCompanyIndustry, setNewCompanyIndustry] = useState("");
+  const [newCompanyTools, setNewCompanyTools] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+
   const dict = getDictionary(lang);
+
+  const handleCreateCompany = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreateError("");
+    setIsCreating(true);
+    try {
+      await createCompany(newCompanyName, newCompanyIndustry, newCompanyTools);
+      setIsCreateModalOpen(false);
+      setNewCompanyName("");
+      setNewCompanyIndustry("");
+      setNewCompanyTools("");
+      setDropdownOpen(false);
+    } catch (err: any) {
+      setCreateError(err.message || "Failed to create company");
+    } finally {
+      setIsCreating(false);
+    }
+  };
 
   // Do not render the header on login page
   if (pathname?.includes("/login")) {
@@ -80,6 +107,17 @@ export function GlobalHeader({ lang }: { lang: string }) {
                       <span className="text-[9px] text-slate-500 font-medium tracking-wide uppercase">{c.industry_vertical || c.industry}</span>
                     </button>
                   ))}
+                </div>
+                <div className="border-t border-slate-800 p-1.5">
+                  <button
+                    onClick={() => {
+                      setDropdownOpen(false);
+                      setIsCreateModalOpen(true);
+                    }}
+                    className="w-full text-left px-3.5 py-2 text-xs text-emerald-400 hover:bg-slate-900/50 hover:text-emerald-300 font-medium transition-all rounded-md flex items-center gap-1.5"
+                  >
+                    <span>➕</span> Create New Company
+                  </button>
                 </div>
               </div>
             )}
@@ -161,6 +199,74 @@ export function GlobalHeader({ lang }: { lang: string }) {
           <span className="text-[11px] text-slate-300 font-medium tracking-wide">{dict.enterpriseOnline || "Online"}</span>
         </div>
       </div>
+      
+      {/* Create Company Modal */}
+      {isCreateModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-[#0b0f19] border border-slate-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-800">
+              <h2 className="text-lg font-semibold text-slate-200">Create New Company</h2>
+              <p className="text-xs text-slate-400 mt-1">Establish a new business entity for project workspaces.</p>
+            </div>
+            <form onSubmit={handleCreateCompany} className="p-5 flex flex-col gap-4 text-left">
+              {createError && (
+                <div className="bg-rose-950/40 border border-rose-900/50 text-rose-400 text-xs p-3 rounded-lg">
+                  {createError}
+                </div>
+              )}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-300">Business Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={newCompanyName}
+                  onChange={(e) => setNewCompanyName(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all placeholder:text-slate-600"
+                  placeholder="e.g. Acme Corp"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-300">Industry Vertical *</label>
+                <input
+                  type="text"
+                  required
+                  value={newCompanyIndustry}
+                  onChange={(e) => setNewCompanyIndustry(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all placeholder:text-slate-600"
+                  placeholder="e.g. E-commerce, Real Estate"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-300">Core Tools</label>
+                <input
+                  type="text"
+                  value={newCompanyTools}
+                  onChange={(e) => setNewCompanyTools(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all placeholder:text-slate-600"
+                  placeholder="e.g. Shopify, Salesforce"
+                />
+              </div>
+              <div className="flex justify-end gap-3 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsCreateModalOpen(false)}
+                  disabled={isCreating}
+                  className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreating || !newCompanyName.trim() || !newCompanyIndustry.trim()}
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 text-sm font-bold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {isCreating ? "Creating..." : "Create Company"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

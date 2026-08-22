@@ -821,6 +821,15 @@ class PostgresClient:
             self.is_mock = True
 
         if self.is_mock:
+            target_project = self.mock_store["projects"].get(session_id)
+            target_company_id = target_project.get("company_id") if target_project else None
+
+            valid_project_ids = {session_id}
+            if target_company_id:
+                for pid, proj in self.mock_store["projects"].items():
+                    if proj.get("company_id") == target_company_id:
+                        valid_project_ids.add(pid)
+
             return [
                 {
                     "id": item["id"],
@@ -829,16 +838,18 @@ class PostgresClient:
                     "distance": 0.15
                 }
                 for item in self.mock_store["session_memory"]
-                if item["project_id"] == session_id
+                if item["project_id"] in valid_project_ids
             ][:limit]
 
         assert self.pool is not None
         async with self.pool.acquire() as connection:
             records = await connection.fetch(
                 """
-                SELECT id, content, metadata, (embedding <=> $1) as distance
-                FROM session_memory
-                WHERE project_id = $2
+                SELECT sm.id, sm.content, sm.metadata, (sm.embedding <=> $1) as distance
+                FROM session_memory sm
+                JOIN projects p_target ON sm.project_id = p_target.id
+                JOIN projects p_source ON p_source.id = $2
+                WHERE p_target.company_id = p_source.company_id
                 ORDER BY distance ASC
                 LIMIT $3;
                 """,
