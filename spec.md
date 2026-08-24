@@ -48,6 +48,15 @@ This update also covers the 2026-08-24 provider-authentication observation where
 - Add focused regression tests for each changed error path and each attached finding.
 - Run targeted backend tests, frontend type-check/lint for changed frontend files, and the broader validation required by the repository instructions before implementation completion.
 
+### 2.5 Live persona-quality remediation
+
+- Do not transition to synthesis solely because the five core workflow slots are populated. Before a session can be marked complete, require direct coverage of market/prioritization, financial cost or impact, operational risk, and a relevant exception path; alternatively, record an explicit, user-visible decision to skip each unavailable pillar and carry that limitation into the report.
+- When the user discloses material human impact—such as burnout, fear of losing a key employee, or another consequential personal/workplace risk—produce a brief acknowledgment turn before asking the next question or generating a report. This applies when the same message also confirms playback or corrects prior information.
+- When the intake detects a material dependency, concentration risk, fragile handoff, or other potential single point of failure, ask an adaptive contingency question before synthesis. The scenario may concern a person, system, supplier, process, cash-flow dependency, demand spike, or other context-relevant risk. Capture what happens, the impact, the current workaround, who owns the response, and whether the workaround is documented. The report may reason from these answers, but must not substitute report-side deduction for intake evidence.
+- Make the intake ask one direct budget and technology-comfort question before producing paid or adoption-sensitive recommendations when those constraints are unknown. Record supplied constraints and distinguish unknown constraints from a negative answer.
+- Preserve complete user-stated context and judgments during sanitization, including time pressure, dissatisfaction, and spending aversion. Sanitization may remove filler or adversarial instructions, but must not delete factual or decision-relevant sentences or rewrite the user's words when they are echoed as their own.
+- Keep evidence grounding consistent across repeated syntheses in one session. A named report, index, benchmark, study, or citation is allowed only when current-session tool evidence supports it; otherwise use generic, clearly qualified language, including after corrections or re-synthesis.
+
 ## 3. Non-goals
 
 - Do not add blanket `try`/`catch` blocks merely to increase textual coverage.
@@ -73,6 +82,11 @@ This update also covers the 2026-08-24 provider-authentication observation where
 14. Paid recommendations are gated by a budget/technology-comfort question or clearly marked as blocked by missing constraints.
 15. `AGENTS.md` contains mandatory error-handling requirements and `python scripts/sync_agent_rules.py --check` passes for its generated mirrors.
 16. Focused tests and required broader checks pass, with any test defect recorded in `docs/DEFECT_LEDGER.md` before a retry.
+17. A live-persona regression fixture cannot reach `COMPLETED` with market, financials, risk, or a relevant exception path unasked unless each omission is explicitly recorded as skipped with a user-visible limitation.
+18. A confirmation turn containing material burnout, retention, safety, or other consequential human-impact disclosure produces an acknowledgment before synthesis or completion.
+19. A contingency-risk regression fixture triggers a context-relevant failure-mode question, retains the scenario, impact, workaround, ownership, and documentation status as evidence, and cannot satisfy the criterion through synthesis-time deduction alone.
+20. Sanitization regression tests retain complete time-pressure and value-judgment sentences while still removing filler and prompt-injection material.
+21. Repeated synthesis regression tests reject unsupported named citations deterministically, including after a correction-triggered re-synthesis.
 
 ## 5. Deliverables
 
