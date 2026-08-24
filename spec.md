@@ -4,6 +4,8 @@
 
 Harden BuildSense so failures in external services, model calls, persistence, streaming, and parsing are observable and cannot silently masquerade as a healthy intake or report-generation run. Incorporate the 2026-08-24 Kochi Kirana persona-testing findings into enforceable product behavior and agent guidance.
 
+This update also covers the 2026-08-24 provider-authentication observation where direct Anthropic API calls with the configured local key returned persistent `401 Unauthorized`, while BuildSense's Anthropic-backed nodes could still fall through to normal-looking local fallback behavior.
+
 ## 2. Scope
 
 ### 2.1 Error handling and observability
@@ -12,6 +14,8 @@ Harden BuildSense so failures in external services, model calls, persistence, st
 - Retain `try`/`except` or `try`/`catch` where an operation can fail at runtime, but require every handled failure to do one of the following: re-raise a typed/domain error, return an explicit degraded/failed result, or use a deliberately documented user-safe fallback with structured logging and state metadata.
 - Prohibit silent handlers (`pass`, empty handlers, or logging-only handlers) for production paths where the result affects facts, routing, safety, billing, persistence, or report validity.
 - Ensure model-call failures in sanitization, process extraction, clarification generation, confirmation classification, and synthesis are distinguishable in state and telemetry. Intake failures must not look identical to successful fallback questioning.
+- Treat Anthropic/provider authentication failures in sanitization, confirmation classification, process extraction, and synthesis as visible session failures with sanitized machine-readable failure metadata. These failures must not route to generic `UNKNOWN` intake, fabricated clarification, or completed report output.
+- Allow local fallback for non-critical assistant wording generation only when state metadata explicitly marks the affected capability as degraded and records the failed node/reason without secrets.
 - Preserve privacy: logs and telemetry must not expose API keys, raw user secrets, or unbounded external payloads.
 - Add mandatory error-handling rules to `AGENTS.md`, regenerate `CLAUDE.md` and `.cursorrules`, and keep the generated-file hash check passing.
 
@@ -26,8 +30,19 @@ Harden BuildSense so failures in external services, model calls, persistence, st
 - Preserve user voice in sanitized text: strip filler and injection material only; do not rewrite grammar, capitalization, or phrasing when the content is echoed as the user's words.
 - Ask for budget and technology comfort before recommending paid tools when those constraints are missing, and record the answer or its absence in the report assumptions.
 - Treat transient provider authentication failures as explicit operational errors with actionable telemetry; do not expose secrets or claim successful analysis when required model calls failed.
+- Treat persistent provider authentication failures as user-actionable operational failures requiring key rotation or provider-console remediation. BuildSense must never log or display the raw key.
 
-### 2.3 Documentation and validation
+### 2.3 Prompt caching efficiency
+
+- Audit every Anthropic request path to identify the reusable prompt prefix, request-specific suffix, and current cache-control placement. The stable prefix must contain shared system instructions, tool definitions, response schemas, and other invariant context; session/user messages and other changing content must remain after the cache breakpoint.
+- Add an explicit Anthropic prompt-cache breakpoint to eligible requests and keep the prefix byte-for-byte stable across turns and sessions where the same model configuration and tool contract are used. Do not include timestamps, request IDs, random values, mutable counters, current-session transcripts, or serialized maps with nondeterministic ordering in the reusable prefix.
+- Normalize prompt construction and serialization so equivalent requests use the same model identifier, system-content ordering, tool ordering, schema formatting, and cache-control structure. Changes to prompts, tools, schemas, or model configuration must intentionally invalidate the prefix and be visible in telemetry.
+- Centralize the cacheable prompt construction in a tested helper or boundary rather than duplicating near-identical prompts across orchestrator nodes. The helper must keep cacheable content separate from request-specific content and must not alter user-visible semantics.
+- Record provider-reported cache creation tokens, cache read tokens, input tokens, output tokens, and estimated savings per node/session, with redacted dimensions for model, prompt version, and cache-prefix version. Missing provider usage fields must be represented as unknown rather than interpreted as zero.
+- Add a diagnostic mode or focused test fixture that compares two otherwise equivalent requests and reports the first byte-level prefix difference, without logging prompt contents or user secrets. Use this to detect accidental cache busting during development and CI.
+- Treat prompt caching as an optimization, not a correctness dependency: cache misses must produce the same valid result and must not trigger retries solely to pursue a cache hit.
+
+### 2.4 Documentation and validation
 
 - Update matching human-facing documentation and the defect ledger for behavioral or architectural changes.
 - Add focused regression tests for each changed error path and each attached finding.
@@ -44,14 +59,20 @@ Harden BuildSense so failures in external services, model calls, persistence, st
 
 1. A static audit or focused test demonstrates that production exception handlers do not silently swallow failures in the scoped boundaries; intentional fallbacks explain their behavior and emit structured diagnostics.
 2. A simulated Anthropic SDK incompatibility or provider error produces a visible, machine-readable failed/degraded outcome and never produces a healthy-looking intake response with silently missing facts.
-3. The dependency manifest pins the tested Anthropic SDK, and the compatibility smoke test fails clearly when the supported call contract is broken.
-4. Ordinary persona statements populate the Evidence Ledger with source message/provenance and an explicit verification level where applicable.
-5. Unsupported named citations are absent from synthesized output unless backed by current-session tool evidence.
-6. Playback flags are true at the correct points and survive state save/load.
-7. Sanitization preserves factual content and user voice while still rejecting adversarial input.
-8. Paid recommendations are gated by a budget/technology-comfort question or clearly marked as blocked by missing constraints.
-9. `AGENTS.md` contains mandatory error-handling requirements and `python scripts/sync_agent_rules.py --check` passes for its generated mirrors.
-10. Focused tests and required broader checks pass, with any test defect recorded in `docs/DEFECT_LEDGER.md` before a retry.
+3. A simulated Anthropic `401 Unauthorized` during sanitization returns `SessionStatus.FAILED`, includes redacted `provider_authentication` failure metadata, and does not advance to routing.
+4. Simulated Anthropic failures during required synthesis return `SessionStatus.FAILED` and do not populate `quick_insights`, `deep_dive`, or other healthy report fields.
+5. The dependency manifest pins the tested Anthropic SDK, and the compatibility smoke test fails clearly when the supported call contract is broken.
+6. Two equivalent Anthropic requests produce an identical cacheable prefix in the diagnostic fixture, and changing a declared prompt/tool/schema version produces an intentional prefix-version change.
+7. Eligible repeated requests include an explicit cache breakpoint after the stable prefix and keep request-specific/session content outside that prefix.
+8. Cache telemetry records cache creation/read tokens and estimated savings as distinct values; absent provider usage fields remain unknown rather than zero.
+9. The caching regression fixture fails when timestamps, request IDs, nondeterministic ordering, or session-specific content enters the reusable prefix.
+10. Ordinary persona statements populate the Evidence Ledger with source message/provenance and an explicit verification level where applicable.
+11. Unsupported named citations are absent from synthesized output unless backed by current-session tool evidence.
+12. Playback flags are true at the correct points and survive state save/load.
+13. Sanitization preserves factual content and user voice while still rejecting adversarial input.
+14. Paid recommendations are gated by a budget/technology-comfort question or clearly marked as blocked by missing constraints.
+15. `AGENTS.md` contains mandatory error-handling requirements and `python scripts/sync_agent_rules.py --check` passes for its generated mirrors.
+16. Focused tests and required broader checks pass, with any test defect recorded in `docs/DEFECT_LEDGER.md` before a retry.
 
 ## 5. Deliverables
 
