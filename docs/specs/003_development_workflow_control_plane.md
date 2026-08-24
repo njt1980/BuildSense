@@ -33,6 +33,7 @@ The platform must let a user answer, at any time:
 - Track a standard workflow: intake, specification, design, implementation, validation, review, and delivery.
 - Store phase status, timestamps, owners, dependencies, blockers, and human decisions.
 - Link phases to durable artifacts, Git commits, branches, diffs, test runs, evaluation results, and defect records.
+- Define required validation before implementation and capture test cases, test implementations, executions, and results linked to acceptance criteria.
 - Provide a web interface with a work-item list, detail page, phase timeline, artifact viewer, activity history, and approval controls.
 - Import and reconcile existing Git history, root/cycle specification files, archived cycles, test results, and defect-ledger entries.
 - Stream agent execution events and show captured stdout/stderr summaries, changed files, proposed diffs, costs, and stop reasons.
@@ -122,6 +123,9 @@ The system must provide durable records for:
 - **Atomic step** — a narrowly scoped implementation unit with declared input and output files.
 - **Artifact** — specification, design, diff, report, log summary, test result, evaluation, or other evidence.
 - **Execution** — one agent, test, import, or validation run with status, limits, costs, and captured evidence.
+- **Test case** — a planned verification with purpose, type, expected outcome, provenance, and linked acceptance criteria.
+- **Test execution** — one invocation of a test case or validation command at a specific repository revision and environment.
+- **Validation policy** — project or workspace rules defining required test categories, approval requirements, and completion gates.
 - **Approval** — a human decision tied to an exact artifact version or commit.
 - **Defect** — a failure, regression, policy issue, or discovered gap linked to requirements and evidence.
 - **Event** — append-only lifecycle record used for audit, activity history, and live updates.
@@ -187,6 +191,8 @@ The tracker must distinguish:
 - completed work versus work that only has a passing local check;
 - current repository state versus historical execution state.
 
+Tests are part of delivery, not merely reporting. Required test cases must be derived from approved acceptance criteria or explicit invariants. Test provenance must identify whether a test was pre-existing, developer-authored, agent-authored, generated from the specification, or independently reviewed. Completion gates must support unit, integration, API, UI, security, performance, and evaluation categories.
+
 ## 11. Security and governance
 
 - Multi-tenant records must be isolated by organization, workspace, project, and user according to the access-control model.
@@ -225,6 +231,9 @@ The MVP is acceptable when:
 19. A project can contain multiple independently tracked requirements.
 20. Direct execution provides a complete, clearly labeled developer handoff and supports evidence import.
 21. Headless execution is represented in the data model without being falsely presented as available or executed in the MVP.
+22. Each acceptance criterion can be linked to one or more planned test cases or an approved validation exception.
+23. Test executions record repository revision, command, environment, result, duration, provenance, and evidence.
+24. A requirement cannot be marked complete when required validation is missing, failing, or only represented by an unreviewed agent-authored test.
 
 ## 13. Initial implementation boundary
 
@@ -236,6 +245,8 @@ The first implementation should deliver a read/write workflow tracker and import
 - Whether the first release supports invitations by email and organization-level role management, or uses pre-provisioned users.
 - Whether authentication begins with Supabase Auth or an identity-provider-neutral interface.
 - Whether workspace-level approval policies are sufficient initially or team-specific policies are needed.
+- Whether required validation policies are inherited from the organization, workspace, project, or a combination with explicit precedence.
+- Whether test execution is initially imported from CI/local reports or also run by a platform-owned worker.
 - Whether approvals use application identity, Git notes, pull-request reviews, or both.
 - Whether the first agent adapter invokes a local CLI or a remote execution service.
 - Which repository provider is supported after local Git.
