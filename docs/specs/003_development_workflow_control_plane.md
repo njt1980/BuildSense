@@ -236,12 +236,16 @@ The MVP is acceptable when:
 22. Each acceptance criterion can be linked to one or more planned test cases or an approved validation exception.
 23. Test executions record repository revision, command, environment, result, duration, provenance, and evidence.
 24. A requirement cannot be marked complete when required validation is missing, failing, or only represented by an unreviewed agent-authored test.
+25. The standalone control-plane repository passes its own unit, API, authorization, workflow, synchronization, frontend, security, migration, and end-to-end test suites without BuildSense being available.
+26. BuildSense integration is verified through connector and contract tests that do not become a substitute for testing the control plane itself.
 
 ## 13. Initial implementation boundary
 
 The first implementation should be delivered in a separate control-plane repository. It should provide a read/write workflow tracker and importer that can connect to the existing BuildSense repository through a versioned adapter or integration API. It should support one organization with multiple users, teams, projects, and requirements, plus direct developer execution handoff and evidence import. It should not begin with autonomous code modification. Headless execution should remain an adapter placeholder until requirement, artifact, approval, event, and traceability records are working and reviewable.
 
 BuildSense may retain its existing domain workflow, telemetry, and product-specific tests. Only the generic integration adapter, contract fixtures, and connection configuration should be added to BuildSense when needed.
+
+The standalone control-plane repository must contain its own test harness and test fixtures. Its test suite must cover the product’s core workflow, tenancy, permissions, persistence, Git reconciliation, test evidence, direct execution, headless capability boundaries, frontend behavior, security controls, and end-to-end delivery flow. BuildSense is an external integration fixture for this suite, not a required runtime dependency.
 
 ## 14. Open product decisions
 
