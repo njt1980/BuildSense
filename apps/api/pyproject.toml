@@ -4,7 +4,8 @@ python_files = ["test_*.py", "eval_*.py"]
 asyncio_mode = "auto"
 addopts = "-v --strict-markers"
 markers = [
-    "evals: mark a test as an agentic evaluation (run-evals)"
+    "evals: mark a test as an agentic evaluation (run-evals)",
+    "anthropic_compat: mark an offline Anthropic SDK contract test"
 ]
 
 [tool.mypy]
