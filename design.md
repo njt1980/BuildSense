@@ -32,6 +32,12 @@ Pin the Anthropic SDK to the version validated by the repository and add a mocke
 
 Construct Anthropic requests from a deterministic reusable prefix and a request-specific suffix. The prefix will contain versioned system instructions, tool definitions, and response-schema material, ending at an explicit cache breakpoint. Session content, timestamps, request identifiers, mutable counters, and other per-request values will remain outside that boundary. Cache usage will be recorded from provider response metadata without treating missing fields as zero.
 
+### 2.6 Adaptive diagnostic and contingency gate
+
+Represent diagnostic coverage as explicit state rather than inferring completion from the five workflow slots alone. The intake planner will identify missing dimensions and material risk signals, then select one context-specific follow-up at a time. A risk signal can indicate a dependency on a person, system, supplier, process, cash position, demand pattern, or another domain-relevant condition; the implementation must not encode a single fixed key-person question.
+
+For a material contingency signal, the follow-up evidence will capture the scenario, expected impact, current workaround, response owner, and whether the workaround is documented. Synthesis may proceed only when the required coverage is satisfied or an explicit skip decision and user-visible report limitation are recorded. A message that combines confirmation/correction with consequential human-impact information will first produce an acknowledgment event before the planner advances or synthesis begins.
+
 ## 3. Data Flow
 
 ```text
@@ -105,7 +111,7 @@ Modify:
 
 Replace silent catches around sanitization, process extraction, clarification generation, confirmation classification, and required synthesis calls with typed handling. Intentional question fallbacks must carry explicit degraded metadata; integrity-critical extraction/synthesis failures must prevent a healthy-looking report.
 
-### Step 4: Repair evidence, playback, and constraint capture
+### Step 4: Repair evidence, playback, constraints, and adaptive contingency capture
 
 Read:
 
@@ -123,7 +129,9 @@ Modify:
 
 Replace the eight-word evidence trigger with ordinary-claim extraction and provenance, reconcile playback flag transitions and persistence, preserve the user's original voice during sanitization, and require budget/technology-comfort capture before paid recommendations.
 
-### Step 5: Add synthesis citation and recommendation guardrails
+Add risk-signal and coverage tracking that selects context-relevant contingency questions, records scenario/impact/workaround/owner/documentation evidence, and prevents report completion when a material failure mode is neither explored nor explicitly skipped. Add a pre-synthesis acknowledgment path for consequential disclosures bundled with confirmation or correction.
+
+### Step 5: Add synthesis citation, recommendation, and completion guardrails
 
 Read:
 
@@ -137,7 +145,7 @@ Modify:
 - `apps/api/app/core/prompts.py`
 - `apps/api/tests/test_eval_guardrails.py`
 
-Require current-session tool evidence for named studies, reports, indexes, or citations. Add deterministic guardrail tests for unsupported named citations and for paid recommendations when constraints are missing.
+Require current-session tool evidence for named studies, reports, indexes, or citations. Add deterministic guardrail tests for unsupported named citations, including correction-triggered re-synthesis; paid recommendations when constraints are missing; incomplete pillar/contingency coverage; and missing acknowledgment turns before synthesis.
 
 ### Step 6: Harden API, audio, MCP, and infrastructure boundaries
 
@@ -262,6 +270,8 @@ Introduce a deterministic cache-prefix builder and request assembly boundary for
 | Playback persistence | State save/load and multi-turn interview tests |
 | Voice preservation | Sanitization tests comparing factual and stylistic content |
 | Paid recommendation constraints | Interview/synthesis tests with missing and supplied budget answers |
+| Adaptive contingency probing | Risk-signal fixtures covering person, system, supplier, and process dependencies; assert structured evidence and completion gating |
+| Consequential disclosure acknowledgment | Mixed confirmation/disclosure interview fixture asserting acknowledgment precedes synthesis |
 | Prompt-cache reuse and savings | Deterministic request-fixture tests, explicit cache breakpoint assertions, and cache usage telemetry tests |
 | Frontend handling | `npm run type-check`, `npm run lint`, and SSE integration verification |
 | Rule synchronization | `python scripts/sync_agent_rules.py --check` |
