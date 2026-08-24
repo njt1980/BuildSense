@@ -45,6 +45,15 @@ def test_failure_metadata_is_typed_and_bounded() -> None:
             retryable=True,
             reason="x" * 241,
         )
+    sanitized = FailureMetadata(
+        node="sanitize_input",
+        category="provider_authentication",
+        severity=FailureSeverity.USER_ACTIONABLE,
+        retryable=True,
+        reason="secret-key=sk-test-secret\nprovider rejected request",
+    )
+    assert "sk-test-secret" not in sanitized.reason
+    assert "[REDACTED_KEY]" in sanitized.reason
 
 
 @pytest.mark.asyncio

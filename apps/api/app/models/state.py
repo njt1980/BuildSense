@@ -6,8 +6,9 @@ and conversation histories.
 """
 
 from enum import Enum
+import re
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SessionMode(str, Enum):
@@ -66,6 +67,31 @@ class FailureMetadata(BaseModel):
     severity: FailureSeverity = Field(..., description="User-visible impact classification.")
     retryable: bool = Field(..., description="Whether the operation can be retried safely.")
     reason: str = Field(..., max_length=240, description="Bounded, sanitized diagnostic reason.")
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def sanitize_reason(cls, value: object) -> str:
+        """Redact provider keys and bound failure reasons before persistence.
+
+        Args:
+            value: Candidate diagnostic reason supplied by an integration boundary.
+
+        Returns:
+            A single-line, secret-free reason suitable for session state.
+
+        Raises:
+            ValueError: If the reason is not a string or is empty after sanitization.
+        """
+        if not isinstance(value, str):
+            raise ValueError("failure reason must be a string")
+        sanitized = re.sub(r"(?i)\bsk-[a-z0-9_-]+\b", "[REDACTED_KEY]", value)
+        sanitized = re.sub(r"(?i)(secret|api[_ -]?key)\s*[:=]\s*\S+", r"\1=[REDACTED]", sanitized)
+        sanitized = " ".join(sanitized.split())
+        if not sanitized:
+            raise ValueError("failure reason must not be empty")
+        if len(sanitized) > 240:
+            raise ValueError("failure reason must be at most 240 characters")
+        return sanitized
 
 
 class Message(BaseModel):
