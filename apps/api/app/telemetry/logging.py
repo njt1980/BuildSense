@@ -24,4 +24,4 @@ def log_event(event: str, level: str = "info", message: str | None = None, **att
     log_message = message or event
     log_level = getattr(logging, level.upper(), logging.INFO)
     logger.log(log_level, log_message, extra=extra)
-    record_event(event, level=level, **safe_attributes)
+    record_event(event, level=level, **attributes)

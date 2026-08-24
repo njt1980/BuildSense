@@ -22,7 +22,7 @@ from app.core.prompts import (
 )
 from app.db.postgres import postgres_client
 from app.db.redis import redis_client
-from app.models.state import SessionState, SessionMode, SessionStatus, Message, ProcessComponents
+from app.models.state import FailureMetadata, FailureSeverity, SessionState, SessionMode, SessionStatus, Message, ProcessComponents
 from app.mcp.tools import web_search_mcp, calculator_mcp, document_parser_mcp, market_signal_mcp, geographic_market_mapping
 from app.telemetry.llm import traced_anthropic_messages_create
 from app.telemetry.nodes import instrument_node
@@ -111,6 +111,49 @@ class AgentState(TypedDict):
     playback_shown: bool
     clarification_turns: int
     geographic_context: Optional[Dict[str, Any]]
+    failure: Optional[Dict[str, Any]]
+
+
+def _provider_failure_metadata(node: str, error: Exception) -> Dict[str, Any]:
+    """Build sanitized provider failure metadata for state and UI surfaces."""
+    raw_reason = re.sub(r"(?i)\bsk-[a-z0-9_-]+\b", "[REDACTED_KEY]", str(error))
+    bounded_reason = raw_reason.replace("\n", " ").strip()[:240] or "AI provider call failed."
+    lower_reason = bounded_reason.lower()
+    is_auth_failure = any(marker in lower_reason for marker in ["401", "unauthorized", "authentication", "api key"])
+    return FailureMetadata(
+        node=node,
+        category="provider_authentication" if is_auth_failure else "provider_call_failed",
+        severity=FailureSeverity.USER_ACTIONABLE if is_auth_failure else FailureSeverity.INTEGRITY_CRITICAL,
+        retryable=not is_auth_failure,
+        reason=bounded_reason,
+    ).model_dump(mode="json")
+
+
+def _provider_failure_updates(state: Dict[str, Any], node: str, error: Exception) -> Dict[str, Any]:
+    """Return a failed session update for integrity-critical provider failures."""
+    failure = _provider_failure_metadata(node, error)
+    metadata = dict(state.get("metadata", {}))
+    metadata["failure"] = failure
+    metadata["failure_reason"] = (
+        "AI provider authentication failed. Check the configured provider key."
+        if failure["category"] == "provider_authentication"
+        else "AI provider call failed before BuildSense could safely continue."
+    )
+    return {
+        "status": SessionStatus.FAILED,
+        "metadata": metadata,
+        "failure": failure,
+        "budget_spent_usd": state.get("budget_spent_usd", 0.0),
+    }
+
+
+def _mark_provider_degraded(metadata: Dict[str, Any], node: str, error: Exception) -> Dict[str, Any]:
+    """Record a provider failure when a local fallback is intentionally safe."""
+    updated = dict(metadata)
+    degraded = list(updated.get("degraded_capabilities", []))
+    degraded.append(_provider_failure_metadata(node, error))
+    updated["degraded_capabilities"] = degraded
+    return updated
 
 
 def classify_vertical(prompt: str) -> str:
@@ -1508,7 +1551,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 playback_confirmed=bool(state.get("playback_confirmed", False)),
                 playback_shown=bool(state.get("playback_shown", False)),
                 clarification_turns=int(state.get("clarification_turns", 0)),
-                geographic_context=state.get("geographic_context") or state.get("metadata", {}).get("geographic_context")
+                geographic_context=state.get("geographic_context") or state.get("metadata", {}).get("geographic_context"),
+                failure=FailureMetadata.model_validate(state["failure"]) if state.get("failure") else None,
             )
             await self.db.save_session_state(state_obj)
         except Exception as e:
@@ -1618,7 +1662,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                     return updates_invalid
                 cleaned_text = res_text
             except Exception as e:
-                pass
+                updates_failure = _provider_failure_updates(state, "sanitize_input", e)
+                await self._save_intermediate_state({**state, **updates_failure})
+                return updates_failure
 
         # Update the latest user message with the sanitized text in the graph messages list
         updated_messages = list(state["messages"])
@@ -1927,8 +1973,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             state["metadata"] = state_metadata
                             state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
                         except Exception as e:
-                            pass
-                            is_confirmation = any(_matches_whole_word_marker(user_prompt.lower(), w) for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
+                            updates_failure = _provider_failure_updates(state, "confirmation_gate", e)
+                            await self._save_intermediate_state({**state, **updates_failure})
+                            return updates_failure
                     else:
                         is_confirmation = any(_matches_whole_word_marker(user_prompt.lower(), w) for w in ["yes", "confirm", "correct", "accurate", "accurate now"])
                         negative_correction_starts = ("no", "not ", "actually", "rather", "instead")
@@ -2065,7 +2112,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                                 state["metadata"] = state_metadata
                                 state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
                             except Exception as e:
-                                pass
+                                updates_failure = _provider_failure_updates(state, "extract_process_components", e)
+                                await self._save_intermediate_state({**state, **updates_failure})
+                                return updates_failure
                         else:
                             extracted_components = infer_process_components_without_llm(
                                 user_prompt=user_prompt,
@@ -2174,7 +2223,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             question = _extract_text_content(response).strip()
                             clarification_questions = [question]
                         except Exception as e:
-                            pass
+                            metadata = _mark_provider_degraded(dict(state.get("metadata", {})), "generate_clarification_question", e)
+                            state["metadata"] = metadata
 
                     if not question:
                         question = build_discovery_fallback_question(
@@ -2262,7 +2312,8 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                             if candidate and not candidate.lstrip().startswith("{") and "UNKNOWN" not in candidate:
                                 acknowledgement = candidate
                         except Exception as e:
-                            pass
+                            metadata = _mark_provider_degraded(dict(state.get("metadata", {})), "generate_playback_summary", e)
+                            state["metadata"] = metadata
 
                     if not acknowledgement:
                         acknowledgement = build_known_details_playback(components, pending_correction)
@@ -2616,8 +2667,9 @@ Before invoking downstream architecture nodes, evaluate the user input against t
                 state["metadata"] = state_metadata
                 state["budget_spent_usd"] = float(state.get("budget_spent_usd", 0.0)) + step_cost
             except Exception as e:
-                pass
-                pass
+                updates_failure = _provider_failure_updates(state, "synthesize_report", e)
+                await self._save_intermediate_state({**state, **updates_failure})
+                return updates_failure
 
         # Fallback to local report template generator if LLM synthesis fails or no key
         if not quick_insights_text or not deep_dive_text:

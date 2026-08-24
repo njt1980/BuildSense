@@ -496,3 +496,25 @@ A second pass was run the same day against a live local rebuild that had picked 
 * **Issue:** The first Step 1 resilience test showed that free-form provider exception text containing a key-like value (for example, `secret-key=sk-test`) was not redacted by the generic telemetry sanitizer.
 * **Impact:** Persisting the raw exception reason could expose a credential-like substring in operational telemetry.
 * **Remediation:** Add explicit key-like token redaction in the bounded LLM error-reason helper and retain a regression assertion before retrying the checkpoint.
+
+### [BUG-057] - 2026-08-24 - OPEN
+* **Issue:** The first telemetry-mirror implementation passed the logger's fully sanitized mapping into the local event store, unexpectedly removing allowed prompt, message, and tool-input fields.
+* **Impact:** Existing telemetry consumers and regression tests lost diagnostic context needed for local development and cost/debug inspection.
+* **Remediation:** Restore the established `record_event` input contract; keep provider-error redaction in the LLM helper and logger sanitization at the boundary.
+
+### [BUG-058] - 2026-08-24 - OPEN
+* **Issue:** A new regression test mocked `record_event` while asserting that its inputs were sanitized, conflating the logging boundary with the local store's own sanitization behavior.
+* **Impact:** The test failed despite the existing telemetry-store sanitization tests passing.
+* **Remediation:** Assert the sanitized logger payload directly and retain the existing store integration coverage.
+
+## [BUG-060] - Date: 2026-08-24
+* **Issue:** `tests/test_resilience.py::test_hitl_pause_serializes_state_and_resumes_cleanly` attempted to increment global spend against `localhost:6379` during the resumed mock-execution path, causing a Redis connection-refused failure in local validation.
+* **Root Cause:** The test patched persistence but did not install the existing `MockRedis` fixture, so the resumed run could escape into the real Redis client when the mock execution loop recorded spend.
+* **Resolution:** Update the HITL resume test to request the existing `mock_redis_client` fixture, keeping the test deterministic and offline.
+* **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/tests/test_resilience.py`.
+
+## [BUG-061] - Date: 2026-08-24
+* **Issue:** Focused Step 3/4 validation exposed stale interview-test mocks: confirmation returned a classifier-shaped response for the later synthesis call, and the clarification prompt test never supplied a valid extraction response before question generation.
+* **Root Cause:** New provider-failure handling correctly treats malformed required synthesis and extraction responses as visible failures, while the older tests assumed broad fallback behavior or ignored the first LLM boundary.
+* **Resolution:** Update the interview fixtures to provide synthesis-shaped report JSON after confirmation and an extraction-shaped JSON response before clarification-question generation.
+* **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/tests/test_interview.py`.

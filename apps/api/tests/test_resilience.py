@@ -67,12 +67,54 @@ async def test_llm_failure_telemetry_is_sanitized_and_re_raises() -> None:
     assert len(failed.kwargs["error_reason"]) <= 240
 
 
+@pytest.mark.asyncio
+async def test_sanitize_provider_auth_failure_returns_visible_failed_state() -> None:
+    """Anthropic auth failures during sanitization must not fall through to healthy routing."""
+    local_orchestrator = Orchestrator()
+    state = {
+        "session_id": "session-provider-auth-001",
+        "mode": SessionMode.OPTIMIZER,
+        "status": SessionStatus.ROUTING,
+        "budget_spent_usd": 0.0,
+        "max_budget_usd": 1.25,
+        "steps_taken": 0,
+        "max_steps": 15,
+        "messages": [Message(role="user", content="I run a courier desk and assign delivery routes in WhatsApp.")],
+        "metadata": {},
+        "clarification_questions": [],
+        "clarification_responses": {},
+        "dag_plan": [],
+        "company_name": None,
+        "company_industry": None,
+        "company_core_tools": None,
+        "process_components": {},
+        "user_constraints": [],
+        "lang": "en",
+        "playback_confirmed": False,
+        "playback_shown": False,
+        "clarification_turns": 0,
+    }
+
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.settings.anthropic_api_key", "sk-test-secret"), \
+         patch("app.core.orchestrator.AsyncAnthropic", return_value=MagicMock()), \
+         patch("app.core.orchestrator.traced_anthropic_messages_create", AsyncMock(side_effect=RuntimeError("401 Unauthorized sk-test-secret"))), \
+         patch.object(local_orchestrator, "_save_intermediate_state", AsyncMock()):
+        updates = await local_orchestrator._node_sanitize_input(state)
+
+    assert updates["status"] == SessionStatus.FAILED
+    assert updates["failure"]["category"] == "provider_authentication"
+    assert updates["failure"]["severity"] == FailureSeverity.USER_ACTIONABLE
+    assert "sk-test-secret" not in repr(updates)
+    assert updates["metadata"]["failure_reason"] == "AI provider authentication failed. Check the configured provider key."
+
+
 def test_log_event_mirrors_only_sanitized_attributes() -> None:
-    """The local telemetry store must receive the same sanitized data as logs."""
-    with patch("app.telemetry.logging.logger.log"), patch("app.telemetry.logging.record_event") as record:
+    """The structured logger receives sanitized attributes before persistence."""
+    with patch("app.telemetry.logging.logger.log") as logger_log, patch("app.telemetry.logging.record_event"):
         log_event("test_event", secret="sk-test-secret", nested={"token": "secret"})
-    mirrored = record.call_args.kwargs
-    assert "sk-test-secret" not in repr(mirrored)
+    logged_attributes = logger_log.call_args.kwargs["extra"]["attributes"]
+    assert "sk-test-secret" not in repr(logged_attributes)
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +177,10 @@ def mock_redis_client() -> MockRedis:
 # 1. HITL & Multi-Turn Loops
 
 @pytest.mark.asyncio
-async def test_hitl_pause_serializes_state_and_resumes_cleanly(mock_postgres_store: dict[str, str]) -> None:
+async def test_hitl_pause_serializes_state_and_resumes_cleanly(
+    mock_postgres_store: dict[str, str],
+    mock_redis_client: MockRedis,
+) -> None:
     """The LangGraph state machine pauses for clarification and persists state to the DB."""
     orchestrator = Orchestrator()
 
@@ -243,8 +288,8 @@ async def test_byok_bypasses_global_budget_increment_logic() -> None:
         RuntimeError("429 Too Many Requests")
     ]
 )
-async def test_synthesize_report_fallback_on_external_llm_failure(side_effect: Exception) -> None:
-    """Verifies graceful fallback behavior when the external LLM client fails."""
+async def test_synthesize_report_fails_visibly_on_external_llm_failure(side_effect: Exception) -> None:
+    """External LLM synthesis failures must not produce healthy-looking fallback reports."""
     orchestrator = Orchestrator()
     state = {
         "session_id": "session-fallback-001",
@@ -278,12 +323,11 @@ async def test_synthesize_report_fallback_on_external_llm_failure(side_effect: E
 
         updates = await orchestrator._node_synthesize_report(state)
 
-    assert updates["status"] == SessionStatus.COMPLETED
-    assert "quick_insights" in updates["metadata"]
-    assert "deep_dive" in updates["metadata"]
-    assert updates["metadata"]["as_is_workflow"] != ""
-    assert "UNKNOWN" not in updates["metadata"]["quick_insights"]
-    assert "Trigger:" not in updates["metadata"]["as_is_workflow"]
+    assert updates["status"] == SessionStatus.FAILED
+    assert updates["failure"]["category"] == "provider_call_failed"
+    assert updates["failure"]["severity"] == FailureSeverity.INTEGRITY_CRITICAL
+    assert "quick_insights" not in updates["metadata"]
+    assert updates["metadata"]["failure_reason"] == "AI provider call failed before BuildSense could safely continue."
 
 
 # 4. Auth Fallback & Global Rate Limiting

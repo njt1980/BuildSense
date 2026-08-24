@@ -133,22 +133,34 @@ async def test_playback_confirmation_gate_yes() -> None:
     mock_confirm_response.usage.output_tokens = 20
     mock_confirm_response.usage.cache_read_input_tokens = 0
     mock_confirm_response.usage.cache_creation_input_tokens = 0
+    mock_synthesis_response = make_mock_response(json.dumps({
+        "as_is_workflow": "Low stock alert leads the warehouse manager to reorder inventory in Excel.",
+        "friction_analysis": "Double data entry costs about 2 hours each cycle.",
+        "technology_neutral_recommendations": "Start with one shared replenishment sheet and a clear owner.",
+        "roi_economics": "Track time saved per replenishment run before buying new software."
+    }))
+    mock_synthesis_response.usage.input_tokens = 300
+    mock_synthesis_response.usage.output_tokens = 120
+    mock_synthesis_response.usage.cache_read_input_tokens = 0
+    mock_synthesis_response.usage.cache_creation_input_tokens = 0
 
-    # Mock tool execution loop to immediately complete planning
-    mock_execute_task_loop = AsyncMock()
+    async def mark_live_task_done(t_state: dict, api_key: str, is_byok: bool, task: dict) -> None:
+        """Complete one live execution task without making provider calls."""
+        task["done"] = True
+        t_state["steps_taken"] += 1
 
     with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic_class, \
          patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
          patch("app.core.orchestrator.Orchestrator._node_sanitize_input", AsyncMock(return_value={})), \
          patch("app.core.orchestrator.Orchestrator._save_intermediate_state", AsyncMock()), \
-         patch("app.core.orchestrator.Orchestrator._execute_task_loop", mock_execute_task_loop):
+         patch("app.core.orchestrator.Orchestrator._execute_live_sdk_loop", AsyncMock(side_effect=mark_live_task_done)):
 
         orchestrator = Orchestrator()
         
         # Patch cache globally or on instance
         with patch.object(orchestrator.cache, "increment_global_spend", AsyncMock(return_value=0.025)):
             mock_client = MagicMock()
-            mock_client.messages.create = AsyncMock(return_value=mock_confirm_response)
+            mock_client.messages.create = AsyncMock(side_effect=[mock_confirm_response, mock_synthesis_response])
             mock_anthropic_class.return_value = mock_client
 
             updated_state = await orchestrator.run_pipeline(state, user_key="mock-key")
@@ -425,12 +437,10 @@ async def test_frictionless_intake_completeness_no_friction() -> None:
         orchestrator = Orchestrator()
         updated_state = await orchestrator.run_pipeline(state)
 
-        # Intake is complete, should transition to AWAITING_CLARIFICATION to present Playback Summary
+        # Intake missing financials/risk/personnel, so it asks handshake question
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
         summary = updated_state.messages[-1].content
-        assert "Warehouse manager" in summary
-        assert "Order inventory replenishment" in summary
-        assert "UNKNOWN" not in summary
+        assert "Can we look at how the workflow works" in summary
         assert "Trigger:" not in summary
         assert "Actor:" not in summary
         assert "Friction:" not in summary
@@ -455,7 +465,16 @@ async def test_clarification_does_not_ask_about_bottlenecks() -> None:
     )
 
     mock_client = MagicMock()
-    mock_messages_create = AsyncMock()
+    mock_extract = make_mock_response(json.dumps({
+        "trigger": "dispatch alert",
+        "actor": None,
+        "activity": "schedule truck runs",
+        "system": None,
+        "friction": None,
+        "location": None,
+    }))
+    mock_question = make_mock_response("Which location or market do those truck runs usually start from?")
+    mock_messages_create = AsyncMock(side_effect=[mock_extract, mock_question])
     mock_client.messages.create = mock_messages_create
 
     with patch("app.core.orchestrator.AsyncAnthropic", create=True) as mock_anthropic_class, \
