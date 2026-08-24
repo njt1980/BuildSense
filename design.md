@@ -28,6 +28,10 @@ Pin the Anthropic SDK to the version validated by the repository and add a mocke
 
 `AGENTS.md` remains the source of truth. Add the mandatory error-handling policy there, then regenerate `CLAUDE.md` and `.cursorrules` with `scripts/sync_agent_rules.py`. Do not hand-edit generated mirrors.
 
+### 2.5 Prompt-cache boundary
+
+Construct Anthropic requests from a deterministic reusable prefix and a request-specific suffix. The prefix will contain versioned system instructions, tool definitions, and response-schema material, ending at an explicit cache breakpoint. Session content, timestamps, request identifiers, mutable counters, and other per-request values will remain outside that boundary. Cache usage will be recorded from provider response metadata without treating missing fields as zero.
+
 ## 3. Data Flow
 
 ```text
@@ -228,6 +232,24 @@ Modify only when required by validation findings:
 
 Run targeted tests after each prior step, then backend tests/type checks, frontend type-check/lint, the phase-gate checks, and applicable evals. Record any failed-test defect before retrying a checkpoint. Produce the required test-results and code-diff artifacts before final completion.
 
+### Step 11: Improve Anthropic prompt-cache reuse and savings telemetry
+
+Read:
+
+- `apps/api/app/telemetry/llm.py`
+- `apps/api/app/core/orchestrator.py`
+- `apps/api/app/models/state.py`
+- `apps/api/tests/test_resilience.py`
+
+Modify:
+
+- `apps/api/app/telemetry/llm.py`
+- `apps/api/app/core/orchestrator.py`
+- `apps/api/app/models/state.py`
+- `apps/api/tests/test_resilience.py`
+
+Introduce a deterministic cache-prefix builder and request assembly boundary for eligible Anthropic calls. Add explicit cache-control metadata at the stable-prefix breakpoint, keep session-specific content in the uncached suffix, and version the prefix based on prompt/tool/schema configuration. Extend sanitized LLM usage telemetry with cache creation tokens, cache read tokens, and estimated savings while preserving unknown values when the provider omits usage fields. Add focused tests that compare equivalent requests byte-for-byte, detect dynamic or nondeterministically ordered prefix content, verify intentional version invalidation, and confirm that cache misses do not alter correctness or trigger cache-chasing retries.
+
 ## 5. Verification Matrix
 
 | Requirement | Verification |
@@ -240,6 +262,7 @@ Run targeted tests after each prior step, then backend tests/type checks, fronte
 | Playback persistence | State save/load and multi-turn interview tests |
 | Voice preservation | Sanitization tests comparing factual and stylistic content |
 | Paid recommendation constraints | Interview/synthesis tests with missing and supplied budget answers |
+| Prompt-cache reuse and savings | Deterministic request-fixture tests, explicit cache breakpoint assertions, and cache usage telemetry tests |
 | Frontend handling | `npm run type-check`, `npm run lint`, and SSE integration verification |
 | Rule synchronization | `python scripts/sync_agent_rules.py --check` |
 
