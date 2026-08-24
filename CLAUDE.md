@@ -111,7 +111,7 @@ When executing tasks in this repository, you must generate verifiable artifacts 
 - Do not reintroduce `SUGGESTER` or `EVALUATOR` modes in prompts, eval fixtures, schema comments, frontend copy, or agent instructions unless a documented product decision and defect/change-ledger entry explicitly approves that architecture change.
 
 **Abuse Protection (No-Auth Environment)**:
-- Enforce IP rate-limiting via `slowapi` (Max 3 full runs per IP per 24 hours).
+- Enforce IP rate-limiting via Redis (Max 3 *new sessions* per IP per 24 hours). This exempts BYOK users (`x-user-anthropic-key`).
 - Enforce a global Redis kill-switch (`MAX_GLOBAL_DAILY_SPEND = $10.00`). Reject new runs with HTTP 503 if cap is reached.
 
 **Dual Vector Namespaces**:
@@ -197,4 +197,4 @@ Before presenting a task as complete in Antigravity:
 - [ ] All changes have been committed to git with a descriptive conventional commit message.
 - [ ] All work has been committed using the `.antigravity/skills/secure-checkpoint.md` skill.
 
-<!-- AGENTS.md sha256: 3f2b235fd28734d418a24a098ab95a41cf01c42bbf7e59acfc582cfa9e8588e0 -->
+<!-- AGENTS.md sha256: 36bfdad751c9dae885942f054fef535b82a770e9ae8fe60cc722a8b21c87e39a -->

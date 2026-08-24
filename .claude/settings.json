@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status *)",
+      "Bash(python -m pytest tests/test_orchestrator.py -q)",
+      "Bash(python -m pytest evals/ tests/evals/ -v --run-evals --live)",
+      "Bash(tee \"C:\\\\Users\\\\NIMEL~1.THO\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-nimel-thomas-Desktop-BuildSense\\\\d5176f9b-8519-4861-966b-00f98871fcfb\\\\scratchpad\\\\live_eval_run.log\")",
+      "Bash(git commit --no-verify -m ' *)",
+      "Bash(python -m pytest tests/test_analyst_behavior.py -q)",
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/test_analyst_behavior.py tests/test_orchestrator.py -q)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(tee \"C:\\\\Users\\\\NIMEL~1.THO\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-nimel-thomas-Desktop-BuildSense\\\\d5176f9b-8519-4861-966b-00f98871fcfb\\\\scratchpad\\\\full_suite.log\")",
+      "Bash(python -m pytest tests/test_analyst_behavior.py tests/test_orchestrator.py tests/test_ontology.py -q)",
+      "Bash(git config *)",
+      "Bash(git commit *)",
+      "WebSearch",
+      "Bash(grep -i \"^agents.md$\")",
+      "Bash(git -C \"c:\\\\Users\\\\nimel.thomas\\\\Desktop\\\\BuildSense\" status --porcelain=v1)",
+      "Bash(git -C \"c:\\\\Users\\\\nimel.thomas\\\\Desktop\\\\BuildSense\" ls-files)",
+      "Bash(git mv *)",
+      "Bash(python -m pytest scripts/tests/ -q)",
+      "Bash(python scripts/check_phase_gate.py --staged-files apps/api/app/core/orchestrator.py)",
+      "Bash(python scripts/check_phase_gate.py --staged-files spec.md apps/api/app/core/orchestrator.py)",
+      "Bash(python scripts/sync_agent_rules.py --write)",
+      "Bash(python scripts/sync_agent_rules.py --check)",
+      "Bash(echo \"check exit=$?\")",
+      "Bash(echo \"# dry-run scenario A\")",
+      "Bash(echo \"COMMIT EXIT=$?\")",
+      "Bash(git restore *)",
+      "Bash(git branch *)",
+      "Bash(echo \"dry-run scenario B edit\")",
+      "Bash(echo \"# dry-run scenario B\")",
+      "Bash(echo \"# dry-run scenario A: second edit, no fresh checkpoint\")",
+      "Bash(python scripts/check_phase_gate.py)",
+      "Bash(echo \"phase_gate_exit=$?\")",
+      "Bash(echo \"sync_check_exit=$?\")"
+    ]
+  }
+}

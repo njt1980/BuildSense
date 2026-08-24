@@ -6,5 +6,61 @@
     "design_commit": "2f8ec2810a6ff4b336fa2d9ec18eeb57693129df",
     "source_commits": [],
     "date": "2026-08-21"
+  },
+  {
+    "ticket": "BS-2",
+    "slug": "rate-limiting-enhancement-specification-bs",
+    "spec_commit": "2c0cebfed620b3638c959e2d043f79b6fb02235f",
+    "design_commit": "58ac13b56fbbdde0dc0ca1092b661c974b01d43a",
+    "source_commits": [],
+    "date": "2026-08-22"
+  },
+  {
+    "ticket": "BS-3",
+    "slug": "persona-testing-ux-and-orchestration",
+    "spec_commit": "42e5e3c4e8fd4e6c8b7504d53e27baa9b7a9a27c",
+    "design_commit": "cb86f3ce71c81c7d8f7b54fb323a545ae6ba78bc",
+    "source_commits": [],
+    "date": "2026-08-22"
+  },
+  {
+    "ticket": "BS-4",
+    "slug": "resolve-bug-048-company-binding",
+    "spec_commit": "7af90eb89f4a342b366534997cc594c68977907a",
+    "design_commit": "2e907dac98d3de80b5e5254570bbb382e0a3f768",
+    "source_commits": [],
+    "date": "2026-08-22"
+  },
+  {
+    "ticket": "BS-5",
+    "slug": "resolve-bug-050-bug-046",
+    "spec_commit": "0ba26a0c4de896f8b59f87f94caef8b5b88910a4",
+    "design_commit": "4869c60cfdcdea63ff22f4d800b97d1807bf6994",
+    "source_commits": [],
+    "date": "2026-08-22"
+  },
+  {
+    "ticket": "BS-6",
+    "slug": "persona-testing-bug-fixes-bs",
+    "spec_commit": "1d7ff9c063c087fb502daaec2fb9e3e22d689db1",
+    "design_commit": "2d330986e1d64639d383e84d8f088f67d306c4c9",
+    "source_commits": [],
+    "date": "2026-08-22"
+  },
+  {
+    "ticket": "BS-7",
+    "slug": "persona-testing-bug-fixes-bs",
+    "spec_commit": "024b121b5de4d13417541c47b3d88fccb0c2b91d",
+    "design_commit": "27d96f1b02e297935e0f918ff919a670d27f94e3",
+    "source_commits": [],
+    "date": "2026-08-24"
+  },
+  {
+    "ticket": "BS-8",
+    "slug": "buildsense-reliability-and-persona-run",
+    "spec_commit": "9bfb5784d99e80c71622e0ad70c66d919a6e7558",
+    "design_commit": "2ca1427a1b936bea6564f180b96382cbbde50d85",
+    "source_commits": [],
+    "date": "2026-08-24"
   }
 ]
