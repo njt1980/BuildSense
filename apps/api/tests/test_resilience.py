@@ -20,8 +20,59 @@ from app.core.orchestrator import Orchestrator, orchestrator
 from app.db.postgres import postgres_client
 from app.db.redis import MockRedis, redis_client
 from app.models.state import Message, ProcessComponents, SessionMode, SessionState, SessionStatus
+from app.models.state import FailureMetadata, FailureSeverity
+from app.telemetry.llm import traced_anthropic_messages_create
+from app.telemetry.logging import log_event
 
 client = TestClient(app)
+
+
+def test_failure_metadata_is_typed_and_bounded() -> None:
+    """Failure metadata exposes stable semantics and rejects oversized reasons."""
+    failure = FailureMetadata(
+        node="sanitize_input",
+        category="provider_authentication",
+        severity=FailureSeverity.USER_ACTIONABLE,
+        retryable=True,
+        reason="Provider rejected the request",
+    )
+    assert failure.severity is FailureSeverity.USER_ACTIONABLE
+    with pytest.raises(ValueError):
+        FailureMetadata(
+            node="node",
+            category="provider",
+            severity=FailureSeverity.DEGRADED,
+            retryable=True,
+            reason="x" * 241,
+        )
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_telemetry_is_sanitized_and_re_raises() -> None:
+    """Provider failures are observable without persisting the raw exception payload."""
+    client_mock = MagicMock()
+    client_mock.messages.create = AsyncMock(side_effect=RuntimeError("secret-key=sk-test\nprovider unavailable"))
+    with patch("app.telemetry.llm.log_event") as emit:
+        with pytest.raises(RuntimeError):
+            await traced_anthropic_messages_create(
+                client_mock,
+                model="claude-3-haiku",
+                purpose="test",
+                is_byok=False,
+                messages=[{"role": "user", "content": "hello"}],
+            )
+    failed = next(call for call in emit.call_args_list if call.args[0] == "llm_call_failed")
+    assert failed.kwargs["error_type"] == "RuntimeError"
+    assert "sk-test" not in failed.kwargs["error_reason"]
+    assert len(failed.kwargs["error_reason"]) <= 240
+
+
+def test_log_event_mirrors_only_sanitized_attributes() -> None:
+    """The local telemetry store must receive the same sanitized data as logs."""
+    with patch("app.telemetry.logging.logger.log"), patch("app.telemetry.logging.record_event") as record:
+        log_event("test_event", secret="sk-test-secret", nested={"token": "secret"})
+    mirrored = record.call_args.kwargs
+    assert "sk-test-secret" not in repr(mirrored)
 
 
 @pytest.fixture(autouse=True)

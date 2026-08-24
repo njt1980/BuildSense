@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any
 
 from app.telemetry.ids import generate_id
 from app.telemetry.logging import log_event
-from app.telemetry.privacy import stable_hash
+from app.telemetry.privacy import sanitize_mapping, stable_hash
+
+
+def _safe_error_reason(error: Exception) -> str:
+    """Return a bounded provider error reason without retaining raw payloads."""
+    raw_reason = re.sub(r"(?i)\bsk-[a-z0-9_-]+\b", "[REDACTED_KEY]", str(error))
+    reason = str(sanitize_mapping({"reason": raw_reason}).get("reason", ""))
+    reason = reason.replace("\n", " ").strip()
+    return reason[:240] if reason else "provider call failed"
 
 
 def _estimate_cost(model: str, input_tokens: int, output_tokens: int, cache_read_tokens: int = 0, cache_creation_tokens: int = 0) -> float:
@@ -113,6 +122,6 @@ async def traced_anthropic_messages_create(
             is_byok=is_byok,
             duration_ms=duration_ms,
             error_type=type(exc).__name__,
+            error_reason=_safe_error_reason(exc),
         )
         raise
-

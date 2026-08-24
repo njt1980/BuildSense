@@ -42,6 +42,32 @@ class SessionStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class FailureSeverity(str, Enum):
+    """Classification of the user-visible impact of an operational failure."""
+
+    DEGRADED = "DEGRADED"
+    USER_ACTIONABLE = "USER_ACTIONABLE"
+    INTEGRITY_CRITICAL = "INTEGRITY_CRITICAL"
+
+
+class FailureMetadata(BaseModel):
+    """Sanitized metadata describing a failure that affected the session.
+
+    Attributes:
+        node: Orchestrator node or boundary where the failure occurred.
+        category: Stable failure category used for telemetry and UI handling.
+        severity: Whether the session is degraded, retryable by the user, or failed.
+        retryable: Whether retrying the affected operation may succeed.
+        reason: Short, secret-free diagnostic reason safe for persistence.
+    """
+
+    node: str = Field(..., description="Orchestrator node or integration boundary.")
+    category: str = Field(..., description="Stable operational failure category.")
+    severity: FailureSeverity = Field(..., description="User-visible impact classification.")
+    retryable: bool = Field(..., description="Whether the operation can be retried safely.")
+    reason: str = Field(..., max_length=240, description="Bounded, sanitized diagnostic reason.")
+
+
 class Message(BaseModel):
     """
     Pydantic schema representing a single conversation message in the orchestrator.
@@ -114,3 +140,4 @@ class SessionState(BaseModel):
     playback_shown: bool = Field(default=False, description="Whether a playback summary was shown to the user on the most recent non-confirmed turn.")
     clarification_turns: int = Field(default=0, description="Count of clarification turns taken during intake.")
     geographic_context: Optional[Dict[str, Any]] = Field(default=None, description="Optional enriched geographic payload (nearby hubs, arteries, constraints).")
+    failure: Optional[FailureMetadata] = Field(default=None, description="Sanitized failure or degraded-operation metadata.")
