@@ -282,3 +282,13 @@ Introduce a deterministic cache-prefix builder and request assembly boundary for
 - Some current fallback tests may encode silent behavior. Update them to assert explicit degraded metadata rather than removing intentional product fallbacks.
 - A live provider smoke test can be flaky and can spend money. Keep the default contract test offline and document live validation as separately gated.
 - The repository requires Phase 3 in a fresh chat. After design approval, verify both checkpoint commits and approval notes, then stop for the user to open a new task before source edits.
+
+## 7. Phase 3 Continuation Addendum — 2026-08-24
+
+The remaining implementation continues with the atomic steps already defined
+in Section 4. Step 2’s dependency and offline contract test are prepared but
+must be committed after this refreshed design checkpoint. Steps 3–11 then
+proceed in order, with no more than four source files in context per step,
+targeted validation before each micro-commit, and defect-ledger entries before
+retrying any failed checkpoint. Existing unrelated persona-report and cycle
+artifacts remain outside the implementation commits.
