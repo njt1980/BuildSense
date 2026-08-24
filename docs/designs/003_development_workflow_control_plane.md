@@ -80,7 +80,11 @@ Add control-plane tables to a dedicated migration or schema section:
 - `artifacts`: immutable version, type, content reference, hash, source, and linked Git revision.
 - `approvals`: artifact version, approval type, actor, role at approval time, decision, and reason.
 - `executions`: direct/headless/import/test execution metadata, limits, status, actor, and stop reason.
+- `validation_policies`: required test categories, completion rules, exception permissions, and inheritance scope.
+- `test_cases`: planned verification, linked acceptance criteria, type, expected outcome, author, provenance, and review state.
+- `requirement_test_links`: many-to-many links between requirements/criteria and test cases with required/optional status.
 - `test_runs`: command, revision, result summary, duration, and artifact reference.
+- `test_case_executions`: test-case-to-run mapping, status, environment, output artifact, and verification provenance.
 - `repository_connections`: provider, URL, default branch, tracked branches, sync cursor, webhook status, and adapter configuration.
 - `repository_commits`: repository-scoped SHA, branch/ref, author metadata, parent SHAs, message, timestamp, and imported source.
 - `commit_file_changes`: commit SHA, path, change type, and size metadata.
@@ -107,6 +111,8 @@ Phase-specific gates:
 - Design approval is required before implementation begins.
 - An implementation step cannot start unless its parent phase and repository revision are recorded.
 - Delivery cannot be marked complete without required validation evidence or an explicit approved exception.
+- A requirement cannot be marked complete when a required acceptance criterion has no linked test case or approved validation exception.
+- A passing test written only after implementation does not by itself count as independent validation; its provenance must be visible.
 - A failed or blocked execution never creates a completed phase implicitly.
 
 Every transition creates a `workflow_events` row with actor type, actor ID, prior state, new state, reason, and related artifact/execution IDs.
@@ -133,7 +139,8 @@ GET/POST   /api/v1/control/projects/{id}/repository/sync
 GET        /api/v1/control/projects/{id}/repository/commits
 POST       /api/v1/control/projects/{id}/repository/import
 POST       /api/v1/control/repository/webhooks/{provider}
-POST       /api/v1/control/executions/{id}/evidence
+GET/POST   /api/v1/control/requirements/{id}/test-cases
+POST       /api/v1/control/test-executions
 ```
 
 All endpoints resolve the current user server-side and validate organization, workspace, team, project, and work-item access. Client-provided tenant IDs are lookup hints only, never authorization evidence.
@@ -207,6 +214,12 @@ Every imported commit, test, pull request, and check records one of:
 - `agent_reported`.
 
 The UI must make this provenance visible and must not present user-reported direct-mode evidence as if the platform executed or independently verified it.
+
+### 7.6 Test and validation evidence
+
+Tests are part of delivery, not merely reporting. The system preserves the distinction between an acceptance criterion, a planned test case, the test implementation in source control, a test execution at a known revision, and an independent review or approved exception.
+
+Required test cases are derived from approved acceptance criteria or explicit invariants. Test provenance identifies whether a test was pre-existing, developer-authored, agent-authored, generated from the specification, or independently reviewed. A validation policy may require unit, integration, API, UI, security, performance, or evaluation categories. A requirement may only complete when all required links have passing evidence or an authorized exception.
 
 ## 8. Headless execution adapter
 
@@ -287,13 +300,13 @@ Modify: `apps/api/app/db/schema.sql`, `apps/api/app/core/auth.py`, `apps/api/app
 
 Create organizations, workspaces, memberships, teams, projects, requirements, cycles, phases, artifacts, approvals, executions, test runs, and events with tenant-safe constraints and policy configuration.
 
-### Step 2: Add typed control-plane models and repositories
+### Step 2: Add typed control-plane and validation models/repositories
 
 Read: `apps/api/app/models/state.py`, `apps/api/app/db/postgres.py`, `apps/api/app/db/schema.sql`.
 
 Modify: `apps/api/app/models/state.py`, `apps/api/app/db/postgres.py`, `apps/api/tests/test_db.py`, `apps/api/tests/test_ontology.py`.
 
-Add Pydantic contracts and repository methods for requirements, cycles, phases, artifacts, approvals, and executions.
+Add Pydantic contracts and repository methods for requirements, cycles, phases, artifacts, approvals, executions, validation policies, test cases, and test evidence.
 
 ### Step 3: Add centralized authorization policies
 
@@ -309,7 +322,7 @@ Read: `apps/api/app/models/state.py`, `apps/api/app/db/postgres.py`, `apps/api/a
 
 Modify: `apps/api/app/models/state.py`, `apps/api/app/db/postgres.py`, `apps/api/app/telemetry/logging.py`, `apps/api/tests/test_resilience.py`.
 
-Implement validated transitions, immutable approval links, append-only workflow events, and explicit blocked/failed states.
+Implement validated transitions, immutable approval links, append-only workflow events, explicit blocked/failed states, required-test gates, and approved validation exceptions.
 
 ### Step 5: Add control-plane API routes
 
@@ -335,7 +348,15 @@ Modify: `apps/api/app/main.py`, `apps/api/app/db/postgres.py`, `apps/api/app/mod
 
 Expose manual import and project sync endpoints, commit-to-requirement linking, unlinked-change handling, evidence provenance, and non-automatic completion status.
 
-### Step 8: Add direct execution handoff and evidence import
+### Step 8: Add test-plan and validation evidence APIs
+
+Read: `apps/api/app/main.py`, `apps/api/app/db/postgres.py`, `apps/api/app/models/state.py`, `apps/api/app/core/config.py`.
+
+Modify: `apps/api/app/main.py`, `apps/api/app/db/postgres.py`, `apps/api/app/models/state.py`, `apps/api/tests/test_resilience.py`.
+
+Expose test-case creation/linking, validation-policy lookup, test-result import, provenance recording, independent-review state, and completion-gate evaluation.
+
+### Step 9: Add direct execution handoff and evidence import
 
 Read: `apps/api/app/main.py`, `apps/api/app/db/postgres.py`, `apps/api/app/models/state.py`, `apps/api/app/core/config.py`.
 
@@ -343,7 +364,7 @@ Modify: `apps/api/app/main.py`, `apps/api/app/db/postgres.py`, `apps/api/app/mod
 
 Create direct-mode execution records, bounded handoffs, evidence submission, commit association, and explicit user-reported/imported provenance.
 
-### Step 9: Add headless adapter placeholder
+### Step 10: Add headless adapter placeholder
 
 Read: `apps/api/app/main.py`, `apps/api/app/models/state.py`, `apps/api/app/core/config.py`.
 
@@ -351,7 +372,7 @@ Modify: `apps/api/app/main.py`, `apps/api/app/models/state.py`, `apps/api/app/co
 
 Expose a capability-aware placeholder that cannot claim execution or completion while preserving the future adapter contract.
 
-### Step 10: Add workflow frontend shell and requirement detail view
+### Step 11: Add workflow frontend shell and requirement detail view
 
 Read: `apps/web/src/app/[lang]/layout.tsx`, `apps/web/src/lib/api.ts`, `apps/web/src/components/global-header.tsx`, `apps/web/src/components/ui/card.tsx`.
 
@@ -359,7 +380,7 @@ Modify: `apps/web/src/app/[lang]/layout.tsx`, `apps/web/src/lib/api.ts`, `apps/w
 
 Add navigation and shared UI primitives for workflow pages without changing the existing BuildSense product flow.
 
-### Step 11: Add project, requirement list, timeline, and repository evidence UI
+### Step 12: Add project, requirement list, timeline, repository, and test evidence UI
 
 Read: `apps/web/src/app/[lang]/projects/[id]/page.tsx`, `apps/web/src/components/strategic-progress.tsx`, `apps/web/src/components/report-view.tsx`, `apps/web/src/lib/api.ts`.
 
@@ -367,13 +388,13 @@ Modify: `apps/web/src/app/[lang]/projects/[id]/page.tsx`, `apps/web/src/componen
 
 Implement the first user-visible tracker views and direct handoff/evidence controls.
 
-### Step 12: Add independent validation and import verification
+### Step 13: Add independent validation and import verification
 
 Read: `apps/api/tests/test_db.py`, `apps/api/tests/test_resilience.py`, `apps/api/tests/test_telemetry.py`, `apps/web/package.json`.
 
 Modify: `apps/api/tests/test_db.py`, `apps/api/tests/test_resilience.py`, `apps/api/tests/test_telemetry.py`, `apps/web/package.json`.
 
-Cover multi-tenant authorization, phase gates, sync idempotency, commit linking, unlinked changes, provenance, importer behavior, direct/headless distinction, and frontend type/lint validation.
+Cover multi-tenant authorization, phase gates, required-test gates, test provenance, sync idempotency, commit linking, unlinked changes, importer behavior, direct/headless distinction, and frontend type/lint validation.
 
 ## 13. Verification matrix
 
@@ -382,6 +403,7 @@ Cover multi-tenant authorization, phase gates, sync idempotency, commit linking,
 | Multi-user isolation | API tests with two organizations and denied cross-tenant reads/writes |
 | Roles and approvals | Policy tests showing reviewer approval and viewer/contributor denial |
 | Workflow state | Transition tests for approval gates, blocked, failed, paused, and completed states |
+| Test traceability | Acceptance-criterion links, required/optional policies, provenance, result import, and independent-review tests |
 | Traceability | Requirement-to-commit and commit-to-requirement importer tests |
 | Repository sync | Idempotent polling/import tests, commit-link provenance, check-run reconciliation, and unlinked-change visibility |
 | Direct execution | Handoff and evidence provenance tests |
