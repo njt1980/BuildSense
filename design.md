@@ -292,3 +292,14 @@ proceed in order, with no more than four source files in context per step,
 targeted validation before each micro-commit, and defect-ledger entries before
 retrying any failed checkpoint. Existing unrelated persona-report and cycle
 artifacts remain outside the implementation commits.
+
+## 8. Phase 3 Gate Refresh — 2026-08-24
+
+Atomic Step 2 is committed as `14c620d`. The next Step 3 checkpoint adds
+focused resilience coverage for both process extraction and confirmation
+classification failures. The implementation continues to use the existing
+typed `_provider_failure_updates` contract: these integrity-critical model
+failures return `FAILED`, preserve bounded failure metadata, and do not permit
+generic clarification or completed-report fallbacks. This refresh only
+re-baselines the phase gate after the Step 2 commit; it does not expand the
+approved architecture or alter the Step 3 file scope.
