@@ -118,6 +118,63 @@ async def test_sanitize_provider_auth_failure_returns_visible_failed_state() -> 
     assert updates["metadata"]["failure_reason"] == "AI provider authentication failed. Check the configured provider key."
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("playback_shown", "components", "node_name"),
+    [
+        (False, {"trigger": None, "actor": None, "activity": None, "system": None}, "extract_process_components"),
+        (
+            True,
+            {"trigger": "A new order arrives", "actor": "Dispatcher", "activity": "Assign routes", "system": "WhatsApp"},
+            "confirmation_gate",
+        ),
+    ],
+)
+async def test_required_intake_model_failures_stop_routing(
+    playback_shown: bool,
+    components: dict[str, str | None],
+    node_name: str,
+) -> None:
+    """Extraction and confirmation failures must not become healthy intake fallbacks."""
+    local_orchestrator = Orchestrator()
+    state = {
+        "session_id": f"session-{node_name}",
+        "mode": SessionMode.OPTIMIZER,
+        "status": SessionStatus.ROUTING,
+        "budget_spent_usd": 0.0,
+        "max_budget_usd": 1.25,
+        "steps_taken": 0,
+        "max_steps": 15,
+        "messages": [Message(role="user", content="I assign courier routes in WhatsApp for each new order.")],
+        "metadata": {},
+        "clarification_questions": [],
+        "clarification_responses": {},
+        "dag_plan": [],
+        "company_name": None,
+        "company_industry": "LOGISTICS",
+        "company_core_tools": "WhatsApp",
+        "process_components": components,
+        "user_constraints": [],
+        "lang": "en",
+        "playback_confirmed": False,
+        "playback_shown": playback_shown,
+        "clarification_turns": 0,
+    }
+
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", True), \
+         patch("app.core.orchestrator.settings.anthropic_api_key", "sk-test-secret"), \
+         patch("app.core.orchestrator.AsyncAnthropic", return_value=MagicMock()), \
+         patch("app.core.orchestrator.traced_anthropic_messages_create", AsyncMock(side_effect=RuntimeError("provider unavailable"))), \
+         patch.object(local_orchestrator.db, "update_project_mode_and_title", AsyncMock()), \
+         patch.object(local_orchestrator, "_save_intermediate_state", AsyncMock()):
+        updates = await local_orchestrator._node_route_intent(state)
+
+    assert updates["status"] == SessionStatus.FAILED
+    assert updates["failure"]["node"] == node_name
+    assert updates["failure"]["severity"] == FailureSeverity.INTEGRITY_CRITICAL
+    assert updates["metadata"]["failure_reason"] == "AI provider call failed before BuildSense could safely continue."
+
+
 def test_log_event_mirrors_only_sanitized_attributes() -> None:
     """The structured logger receives sanitized attributes before persistence."""
     with patch("app.telemetry.logging.logger.log") as logger_log, patch("app.telemetry.logging.record_event"):

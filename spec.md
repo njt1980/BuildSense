@@ -108,3 +108,14 @@ backend persistence/integration boundaries, make frontend degraded states
 actionable, synchronize agent policies, and implement deterministic Anthropic
 prompt-cache construction and telemetry. Each step remains subject to targeted
 tests, the repository’s defect-ledger rule, and an isolated micro-commit.
+
+## 7. Phase 3 Gate Refresh — 2026-08-24
+
+The first continuation checkpoint committed Atomic Step 2 as `14c620d`.
+Before the next source/test micro-commit, this specification is refreshed so
+the phase gate records that Step 3 covers explicit regression protection for
+process-extraction and confirmation-classification provider failures. Those
+failures must remain integrity-critical, produce `SessionStatus.FAILED`, and
+retain sanitized failure metadata without routing into a healthy intake
+fallback. No product requirement or scope changes are introduced by this
+refresh.
