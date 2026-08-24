@@ -2,22 +2,24 @@
 
 ## 1. Design goals
 
-This design adds a reusable workflow control plane around the existing BuildSense repository without replacing the current BuildSense domain workflow. The control plane owns requirements, collaboration, phases, artifacts, approvals, executions, evidence, and audit history. BuildSense-specific orchestration remains an adapter or project integration.
+This design defines a reusable workflow control plane in a separate repository and service. The control plane owns requirements, collaboration, phases, artifacts, approvals, executions, evidence, and audit history. BuildSense remains a separate domain application and the first integration client; its domain workflow is not moved into the control-plane codebase.
 
 The first release supports multiple users, teams, projects, and requirements, with direct developer execution as the usable path. Headless execution is represented by a stable adapter boundary but remains disabled until a secure worker exists.
 
 ## 2. Architecture
 
 ```text
-Next.js workflow UI
+Standalone control-plane Next.js UI
         |
-FastAPI control-plane API
+Standalone control-plane FastAPI API
         |
 Workflow service + authorization policy
    |            |              |
 PostgreSQL   Artifact store   Event stream
    |            |              |
 Git/import adapters       Direct/headless execution adapters
+
+BuildSense connector  ───── versioned API/webhook contract ─────┘
 ```
 
 ### 2.1 Source-of-truth boundaries
@@ -26,6 +28,8 @@ Git/import adapters       Direct/headless execution adapters
 - Git remains the source of truth for source files, branches, commits, and diffs.
 - Artifact storage holds bounded snapshots, reports, logs, and imported result files; database rows hold hashes, metadata, and references.
 - The existing BuildSense telemetry store remains useful for local diagnostics but is not the durable control-plane event store.
+- The control plane must not import BuildSense internals directly. BuildSense integration uses versioned API contracts, webhooks, or a small connector package with explicit domain metadata.
+- Generic control-plane migrations, routes, UI, workers, and adapters live in the standalone control-plane repository. BuildSense changes are limited to integration configuration, connector code, and contract tests.
 
 ### 2.3 Synchronization boundary
 
@@ -145,6 +149,16 @@ POST       /api/v1/control/test-executions
 
 All endpoints resolve the current user server-side and validate organization, workspace, team, project, and work-item access. Client-provided tenant IDs are lookup hints only, never authorization evidence.
 
+BuildSense integration uses a separate connector surface, for example:
+
+```text
+POST /api/v1/integrations/buildsense/projects
+POST /api/v1/integrations/buildsense/events
+POST /api/v1/integrations/buildsense/evidence
+```
+
+The connector translates BuildSense-specific project/session/evaluation concepts into generic project, requirement, execution, artifact, and test evidence contracts. It must not expose BuildSense database credentials or require the control plane to query BuildSense tables directly.
+
 ## 6. Direct execution design
 
 Direct execution is a guided handoff, not remote command execution.
@@ -248,6 +262,8 @@ The importer reads existing BuildSense evidence and creates traceable records:
 
 The same reconciliation code handles ongoing repository sync. Historical cycle import and live commit sync must produce the same normalized artifact and link shapes.
 
+The initial BuildSense import may be run from the control-plane repository against an explicitly selected BuildSense checkout, but the resulting integration must be replaceable by the versioned connector. This prevents the generic product from becoming coupled to BuildSense’s filesystem layout or internal schema.
+
 Importer decisions must be recorded as events. Unknown mappings remain unknown instead of being guessed as completed implementation steps.
 
 ## 10. Frontend information architecture
@@ -294,9 +310,9 @@ Each step is intentionally limited to at most four source files in context. Path
 
 ### Step 1: Add control-plane schema and tenant primitives
 
-Read: `apps/api/app/db/schema.sql`, `apps/api/app/core/auth.py`, `apps/api/app/core/config.py`.
+Read: `apps/api/app/db/schema.sql`, `apps/api/app/core/auth.py`, `apps/api/app/core/config.py` in the new control-plane repository.
 
-Modify: `apps/api/app/db/schema.sql`, `apps/api/app/core/auth.py`, `apps/api/app/core/config.py`, `apps/api/tests/test_db.py`.
+Modify: `apps/api/app/db/schema.sql`, `apps/api/app/core/auth.py`, `apps/api/app/core/config.py`, `apps/api/tests/test_db.py` in the new control-plane repository.
 
 Create organizations, workspaces, memberships, teams, projects, requirements, cycles, phases, artifacts, approvals, executions, test runs, and events with tenant-safe constraints and policy configuration.
 
@@ -334,9 +350,9 @@ Expose organization, team, project, requirement, artifact, approval, execution, 
 
 ### Step 6: Add repository connection and Git synchronization primitives
 
-Read: `scripts/archive_checkpoint.py`, `docs/cycles/index.json`, `apps/api/app/db/postgres.py`, `apps/api/app/core/config.py`.
+Read: `scripts/archive_checkpoint.py`, `docs/cycles/index.json`, `apps/api/app/db/postgres.py`, `apps/api/app/core/config.py` in the control-plane repository, plus the selected BuildSense archive through the importer boundary.
 
-Modify: `scripts/archive_checkpoint.py`, `apps/api/app/db/postgres.py`, `apps/api/app/core/config.py`, `apps/api/tests/test_db.py`.
+Modify: `scripts/archive_checkpoint.py`, `apps/api/app/db/postgres.py`, `apps/api/app/core/config.py`, `apps/api/tests/test_db.py` in the control-plane repository.
 
 Add repository connections, idempotent commit/ref/check records, sync cursors, explicit commit-link provenance, and historical BuildSense cycle import without inventing missing source-commit relationships.
 
@@ -421,6 +437,7 @@ Cover multi-tenant authorization, phase gates, required-test gates, test provena
 - **Cross-tenant leakage:** centralize authorization, use database constraints/RLS, and test negative paths explicitly.
 - **Concurrent edits:** version requirements and artifacts; require conflict resolution before approval.
 - **Existing BuildSense coupling:** use control-plane adapters and separate routes/models rather than embedding generic entities in domain-specific state.
+- **Repository coupling:** keep the control plane in a standalone repository and validate the BuildSense connector through contract fixtures and integration tests.
 - **False completion from commits:** require test, review, acceptance, and delivery evidence; make inferred status explainable.
 - **Missed or duplicated repository events:** use sync cursors, provider event IDs, commit SHA uniqueness, retry-safe jobs, and visible sync freshness.
 - **Direct-mode reporting gap:** distinguish imported and user-reported evidence from platform-observed execution.

@@ -2,9 +2,9 @@
 
 ## 1. Objective
 
-Build a reusable, project-agnostic platform that captures a software or technical requirement and makes the full path from requirement through specification, design, implementation, testing, review, and delivery visible to a human user.
+Build a reusable, project-agnostic platform in a separate repository that captures a software or technical requirement and makes the full path from requirement through specification, design, implementation, testing, review, and delivery visible to a human user.
 
-BuildSense will be the first dogfooding project, but the platform must not depend on BuildSense-specific concepts such as SMB workflow optimization, LangGraph, or a particular agent prompt.
+BuildSense will be the first dogfooding project and integration client, but the platform must not depend on BuildSense-specific concepts such as SMB workflow optimization, LangGraph, or a particular agent prompt.
 
 ## 2. Product outcomes
 
@@ -52,6 +52,7 @@ The platform must let a user answer, at any time:
 - Test adapters beginning with shell commands, pytest, npm scripts, and CI result ingestion.
 - Project adapters that add domain-specific phases, prompts, fields, evaluators, and UI panels without modifying the core workflow engine.
 - Event and artifact schemas that remain stable across adapters.
+- A versioned integration contract that allows BuildSense and future projects to register repositories, requirements, domain metadata, validation policies, and execution evidence.
 
 ## 4. Explicit non-goals for the MVP
 
@@ -63,6 +64,7 @@ The platform must let a user answer, at any time:
 - Production-scale observability, billing, or enterprise identity management.
 - Enterprise SSO, SCIM provisioning, complex organizational hierarchies, and advanced compliance exports in the first release; the tenancy model must remain extensible for them.
 - Supporting every agent, repository host, or CI provider in the first release.
+- Embedding the generic control-plane source code inside the BuildSense application repository.
 
 ## 5. Canonical workflow
 
@@ -237,7 +239,9 @@ The MVP is acceptable when:
 
 ## 13. Initial implementation boundary
 
-The first implementation should deliver a read/write workflow tracker and importer over the existing BuildSense repository. It should support one organization with multiple users, teams, projects, and requirements, plus direct developer execution handoff and evidence import. It should not begin with autonomous code modification. Headless execution should remain an adapter placeholder until requirement, artifact, approval, event, and traceability records are working and reviewable.
+The first implementation should be delivered in a separate control-plane repository. It should provide a read/write workflow tracker and importer that can connect to the existing BuildSense repository through a versioned adapter or integration API. It should support one organization with multiple users, teams, projects, and requirements, plus direct developer execution handoff and evidence import. It should not begin with autonomous code modification. Headless execution should remain an adapter placeholder until requirement, artifact, approval, event, and traceability records are working and reviewable.
+
+BuildSense may retain its existing domain workflow, telemetry, and product-specific tests. Only the generic integration adapter, contract fixtures, and connection configuration should be added to BuildSense when needed.
 
 ## 14. Open product decisions
 
@@ -249,6 +253,8 @@ The first implementation should deliver a read/write workflow tracker and import
 - Whether test execution is initially imported from CI/local reports or also run by a platform-owned worker.
 - Whether approvals use application identity, Git notes, pull-request reviews, or both.
 - Whether the first agent adapter invokes a local CLI or a remote execution service.
+- Whether the control plane is hosted as a standalone service with a public API, a self-hosted deployment, or both.
+- Whether BuildSense integration begins through API calls, webhooks, a shared CLI, or a small connector package.
 - Which repository provider is supported after local Git.
 - Whether project-specific workflow definitions are configuration files, database records, or signed plugins.
 - Which evidence types are retained permanently versus summarized and expired.
