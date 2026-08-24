@@ -47,6 +47,27 @@ Requirement timeline and evidence status
 
 The first release supports manual commit/PR import and bounded polling. Webhooks and a local developer bridge are planned extensions. All synchronization paths write the same normalized commit, file-change, test-result, and event records.
 
+### 2.4 Standalone control-plane test boundary
+
+The control-plane repository owns the authoritative test suite for the control-plane product. BuildSense is not required to run those tests. The suite uses synthetic organizations, users, repositories, commits, agent events, test results, and artifacts by default, with external-provider contract tests isolated behind explicit fixtures.
+
+```text
+Control-plane repository
+  ├── unit/state-machine tests
+  ├── API and authorization tests
+  ├── database/migration tests
+  ├── Git/sync/import tests
+  ├── validation and evidence tests
+  ├── frontend/component/browser tests
+  ├── security and webhook tests
+  └── end-to-end delivery tests
+
+BuildSense repository
+  └── connector and contract tests only
+```
+
+No BuildSense-specific test result may be used as evidence that the generic control plane itself is correct. The control-plane CI must be able to run from a clean checkout with mocked or local dependencies and must publish a versioned test report.
+
 ### 2.2 Tenant hierarchy
 
 ```text
@@ -410,7 +431,7 @@ Read: `apps/api/tests/test_db.py`, `apps/api/tests/test_resilience.py`, `apps/ap
 
 Modify: `apps/api/tests/test_db.py`, `apps/api/tests/test_resilience.py`, `apps/api/tests/test_telemetry.py`, `apps/web/package.json`.
 
-Cover multi-tenant authorization, phase gates, required-test gates, test provenance, sync idempotency, commit linking, unlinked changes, importer behavior, direct/headless distinction, and frontend type/lint validation.
+Cover multi-tenant authorization, phase gates, required-test gates, test provenance, sync idempotency, commit linking, unlinked changes, importer behavior, direct/headless distinction, frontend type/lint validation, and a standalone end-to-end control-plane flow that does not require BuildSense.
 
 ## 13. Verification matrix
 
@@ -441,3 +462,5 @@ Cover multi-tenant authorization, phase gates, required-test gates, test provena
 - **False completion from commits:** require test, review, acceptance, and delivery evidence; make inferred status explainable.
 - **Missed or duplicated repository events:** use sync cursors, provider event IDs, commit SHA uniqueness, retry-safe jobs, and visible sync freshness.
 - **Direct-mode reporting gap:** distinguish imported and user-reported evidence from platform-observed execution.
+- **Testing the wrong product:** keep the control-plane suite self-contained and treat BuildSense coverage as integration evidence only.
+- **Agent-authored test bias:** record authoring provenance and require criterion-derived, pre-existing, invariant, or independently reviewed tests for completion gates.
