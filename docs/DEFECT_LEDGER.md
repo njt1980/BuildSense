@@ -518,3 +518,15 @@ A second pass was run the same day against a live local rebuild that had picked 
 * **Root Cause:** New provider-failure handling correctly treats malformed required synthesis and extraction responses as visible failures, while the older tests assumed broad fallback behavior or ignored the first LLM boundary.
 * **Resolution:** Update the interview fixtures to provide synthesis-shaped report JSON after confirmation and an extraction-shaped JSON response before clarification-question generation.
 * **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/tests/test_interview.py`.
+
+## [BUG-062] - Date: 2026-08-24
+* **Issue:** The broad pre-commit backend suite failed in `tests/test_orchestrator.py::test_blank_canvas_seed_and_story` because the test returned free-form question text for the extraction LLM boundary.
+* **Root Cause:** Provider-failure handling now treats malformed extraction responses as visible failures, so the stale mock never reached the consultant question prompt it intended to assert.
+* **Resolution:** Supply an extraction-shaped JSON response before the seed-and-story question response in the blank-canvas test fixture.
+* **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/tests/test_orchestrator.py`.
+
+## [BUG-063] - Date: 2026-08-24
+* **Issue:** The broad backend suite still allowed local-fallback routing and sanitization tests to inherit the developer machine's configured Anthropic key, causing attempted live network calls and provider-failure states.
+* **Root Cause:** These tests asserted offline/local behavior but did not explicitly disable `HAS_ANTHROPIC` after provider-failure handling made live-call failures visible.
+* **Resolution:** Patch `HAS_ANTHROPIC` to `False` in the local-routing and filler-stripping tests so they remain deterministic and offline.
+* **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/tests/test_orchestrator.py`, `apps/api/tests/test_sanitization.py`.

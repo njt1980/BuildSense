@@ -44,7 +44,8 @@ async def test_sanitize_node_filler_stripping() -> None:
         "metadata": {}
     }
 
-    with patch.object(orchestrator, "_save_intermediate_state", AsyncMock()):
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch.object(orchestrator, "_save_intermediate_state", AsyncMock()):
         updates = await orchestrator._node_sanitize_input(state)
         
         # Verify status is ROUTING (valid business logic path)

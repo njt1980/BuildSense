@@ -4,6 +4,7 @@ Tests verify state machine transitions, context pruning, cost controls,
 untrusted output XML containment, and HITL check boundaries.
 """
 
+import json
 from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 from app.models.state import SessionState, SessionMode, SessionStatus, Message, ProcessComponents
@@ -55,7 +56,8 @@ async def test_orchestrator_incomplete_input_routing() -> None:
         messages=[Message(role="user", content="too short")]
     )
 
-    with patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save:
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save:
         updated_state = await orchestrator.run_pipeline(state)
         
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
@@ -424,7 +426,8 @@ async def test_orchestrator_starter_chip_routing() -> None:
         messages=[Message(role="user", content="Walk through a typical customer order")]
     )
 
-    with patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save:
+    with patch("app.core.orchestrator.HAS_ANTHROPIC", False), \
+         patch.object(orchestrator.db, "save_session_state", AsyncMock()) as mock_save:
         updated_state = await orchestrator.run_pipeline(state)
         
         assert updated_state.status == SessionStatus.AWAITING_CLARIFICATION
@@ -510,8 +513,16 @@ async def test_blank_canvas_seed_and_story() -> None:
 
         mock_client = AsyncMock()
         mock_anthropic.return_value = mock_client
-        mock_response = make_mock_response("Conversational seed and story question text here.")
-        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        mock_extract = make_mock_response(json.dumps({
+            "trigger": None,
+            "actor": None,
+            "activity": None,
+            "system": None,
+            "friction": None,
+            "location": None,
+        }))
+        mock_question = make_mock_response("Conversational seed and story question text here.")
+        mock_client.messages.create = AsyncMock(side_effect=[mock_extract, mock_question])
 
         orchestrator = Orchestrator()
         updated_state = await orchestrator.run_pipeline(state)
