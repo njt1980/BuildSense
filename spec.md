@@ -93,3 +93,18 @@ This update also covers the 2026-08-24 provider-authentication observation where
 - Approved and committed `spec.md` and `design.md` following the repository phase gate.
 - Source, tests, dependency, documentation, and generated-agent-rule updates described by the approved design.
 - Test results and a concise change/remaining-risk report.
+
+## 6. Phase 3 Continuation Addendum — 2026-08-24
+
+This addendum does not change the product requirements above. It records the
+remaining implementation scope after the first Phase 3 micro-commit so the
+repository phase gate can recognize the continuation checkpoint.
+
+The remaining work is to complete Atomic Steps 2–11 in `design.md`: commit the
+Anthropic SDK compatibility checkpoint, finish explicit failure handling across
+intake and synthesis, complete persona coverage/playback/evidence and adaptive
+contingency safeguards, enforce synthesis grounding and completion gates, audit
+backend persistence/integration boundaries, make frontend degraded states
+actionable, synchronize agent policies, and implement deterministic Anthropic
+prompt-cache construction and telemetry. Each step remains subject to targeted
+tests, the repository’s defect-ledger rule, and an isolated micro-commit.
