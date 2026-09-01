@@ -28,6 +28,16 @@ Pin the Anthropic SDK to the version validated by the repository and add a mocke
 
 `AGENTS.md` remains the source of truth. Add the mandatory error-handling policy there, then regenerate `CLAUDE.md` and `.cursorrules` with `scripts/sync_agent_rules.py`. Do not hand-edit generated mirrors.
 
+### 2.5 Prompt-cache boundary
+
+Construct Anthropic requests from a deterministic reusable prefix and a request-specific suffix. The prefix will contain versioned system instructions, tool definitions, and response-schema material, ending at an explicit cache breakpoint. Session content, timestamps, request identifiers, mutable counters, and other per-request values will remain outside that boundary. Cache usage will be recorded from provider response metadata without treating missing fields as zero.
+
+### 2.6 Adaptive diagnostic and contingency gate
+
+Represent diagnostic coverage as explicit state rather than inferring completion from the five workflow slots alone. The intake planner will identify missing dimensions and material risk signals, then select one context-specific follow-up at a time. A risk signal can indicate a dependency on a person, system, supplier, process, cash position, demand pattern, or another domain-relevant condition; the implementation must not encode a single fixed key-person question.
+
+For a material contingency signal, the follow-up evidence will capture the scenario, expected impact, current workaround, response owner, and whether the workaround is documented. Synthesis may proceed only when the required coverage is satisfied or an explicit skip decision and user-visible report limitation are recorded. A message that combines confirmation/correction with consequential human-impact information will first produce an acknowledgment event before the planner advances or synthesis begins.
+
 ## 3. Data Flow
 
 ```text
@@ -101,7 +111,7 @@ Modify:
 
 Replace silent catches around sanitization, process extraction, clarification generation, confirmation classification, and required synthesis calls with typed handling. Intentional question fallbacks must carry explicit degraded metadata; integrity-critical extraction/synthesis failures must prevent a healthy-looking report.
 
-### Step 4: Repair evidence, playback, and constraint capture
+### Step 4: Repair evidence, playback, constraints, and adaptive contingency capture
 
 Read:
 
@@ -119,7 +129,9 @@ Modify:
 
 Replace the eight-word evidence trigger with ordinary-claim extraction and provenance, reconcile playback flag transitions and persistence, preserve the user's original voice during sanitization, and require budget/technology-comfort capture before paid recommendations.
 
-### Step 5: Add synthesis citation and recommendation guardrails
+Add risk-signal and coverage tracking that selects context-relevant contingency questions, records scenario/impact/workaround/owner/documentation evidence, and prevents report completion when a material failure mode is neither explored nor explicitly skipped. Add a pre-synthesis acknowledgment path for consequential disclosures bundled with confirmation or correction.
+
+### Step 5: Add synthesis citation, recommendation, and completion guardrails
 
 Read:
 
@@ -133,7 +145,7 @@ Modify:
 - `apps/api/app/core/prompts.py`
 - `apps/api/tests/test_eval_guardrails.py`
 
-Require current-session tool evidence for named studies, reports, indexes, or citations. Add deterministic guardrail tests for unsupported named citations and for paid recommendations when constraints are missing.
+Require current-session tool evidence for named studies, reports, indexes, or citations. Add deterministic guardrail tests for unsupported named citations, including correction-triggered re-synthesis; paid recommendations when constraints are missing; incomplete pillar/contingency coverage; and missing acknowledgment turns before synthesis.
 
 ### Step 6: Harden API, audio, MCP, and infrastructure boundaries
 
@@ -228,6 +240,24 @@ Modify only when required by validation findings:
 
 Run targeted tests after each prior step, then backend tests/type checks, frontend type-check/lint, the phase-gate checks, and applicable evals. Record any failed-test defect before retrying a checkpoint. Produce the required test-results and code-diff artifacts before final completion.
 
+### Step 11: Improve Anthropic prompt-cache reuse and savings telemetry
+
+Read:
+
+- `apps/api/app/telemetry/llm.py`
+- `apps/api/app/core/orchestrator.py`
+- `apps/api/app/models/state.py`
+- `apps/api/tests/test_resilience.py`
+
+Modify:
+
+- `apps/api/app/telemetry/llm.py`
+- `apps/api/app/core/orchestrator.py`
+- `apps/api/app/models/state.py`
+- `apps/api/tests/test_resilience.py`
+
+Introduce a deterministic cache-prefix builder and request assembly boundary for eligible Anthropic calls. Add explicit cache-control metadata at the stable-prefix breakpoint, keep session-specific content in the uncached suffix, and version the prefix based on prompt/tool/schema configuration. Extend sanitized LLM usage telemetry with cache creation tokens, cache read tokens, and estimated savings while preserving unknown values when the provider omits usage fields. Add focused tests that compare equivalent requests byte-for-byte, detect dynamic or nondeterministically ordered prefix content, verify intentional version invalidation, and confirm that cache misses do not alter correctness or trigger cache-chasing retries.
+
 ## 5. Verification Matrix
 
 | Requirement | Verification |
@@ -240,6 +270,9 @@ Run targeted tests after each prior step, then backend tests/type checks, fronte
 | Playback persistence | State save/load and multi-turn interview tests |
 | Voice preservation | Sanitization tests comparing factual and stylistic content |
 | Paid recommendation constraints | Interview/synthesis tests with missing and supplied budget answers |
+| Adaptive contingency probing | Risk-signal fixtures covering person, system, supplier, and process dependencies; assert structured evidence and completion gating |
+| Consequential disclosure acknowledgment | Mixed confirmation/disclosure interview fixture asserting acknowledgment precedes synthesis |
+| Prompt-cache reuse and savings | Deterministic request-fixture tests, explicit cache breakpoint assertions, and cache usage telemetry tests |
 | Frontend handling | `npm run type-check`, `npm run lint`, and SSE integration verification |
 | Rule synchronization | `python scripts/sync_agent_rules.py --check` |
 
@@ -249,3 +282,24 @@ Run targeted tests after each prior step, then backend tests/type checks, fronte
 - Some current fallback tests may encode silent behavior. Update them to assert explicit degraded metadata rather than removing intentional product fallbacks.
 - A live provider smoke test can be flaky and can spend money. Keep the default contract test offline and document live validation as separately gated.
 - The repository requires Phase 3 in a fresh chat. After design approval, verify both checkpoint commits and approval notes, then stop for the user to open a new task before source edits.
+
+## 7. Phase 3 Continuation Addendum â€” 2026-08-24
+
+The remaining implementation continues with the atomic steps already defined
+in Section 4. Step 2â€™s dependency and offline contract test are prepared but
+must be committed after this refreshed design checkpoint. Steps 3â€“11 then
+proceed in order, with no more than four source files in context per step,
+targeted validation before each micro-commit, and defect-ledger entries before
+retrying any failed checkpoint. Existing unrelated persona-report and cycle
+artifacts remain outside the implementation commits.
+
+## 8. Phase 3 Gate Refresh â€” 2026-08-24
+
+Atomic Step 2 is committed as `14c620d`. The next Step 3 checkpoint adds
+focused resilience coverage for both process extraction and confirmation
+classification failures. The implementation continues to use the existing
+typed `_provider_failure_updates` contract: these integrity-critical model
+failures return `FAILED`, preserve bounded failure metadata, and do not permit
+generic clarification or completed-report fallbacks. This refresh only
+re-baselines the phase gate after the Step 2 commit; it does not expand the
+approved architecture or alter the Step 3 file scope.

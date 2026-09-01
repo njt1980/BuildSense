@@ -62,5 +62,21 @@
     "design_commit": "2ca1427a1b936bea6564f180b96382cbbde50d85",
     "source_commits": [],
     "date": "2026-08-24"
+  },
+  {
+    "ticket": "BS-9",
+    "slug": "buildsense-reliability-and-persona-run",
+    "spec_commit": "0cfc05612d01dda927a0e37773e1b8e30a8f6794",
+    "design_commit": "f6a7f7d8c2591026476f5ced20e3e26f25bb1ef4",
+    "source_commits": [],
+    "date": "2026-08-24"
+  },
+  {
+    "ticket": "BS-10",
+    "slug": "buildsense-reliability-and-persona-run",
+    "spec_commit": "c2dbb82fe0a107adde3ef8f54a7b171c77b81b25",
+    "design_commit": "f1aa4cc5f97bffdc2434355dc916f1aa4dc5c4af",
+    "source_commits": [],
+    "date": "2026-08-24"
   }
 ]

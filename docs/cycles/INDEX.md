@@ -12,3 +12,5 @@ Generated from `docs/cycles/index.json` by `scripts/archive_checkpoint.py`. Do n
 | BS-6 | persona-testing-bug-fixes-bs | 1d7ff9c063c087fb502daaec2fb9e3e22d689db1 | 2d330986e1d64639d383e84d8f088f67d306c4c9 | 2026-08-22 | - |
 | BS-7 | persona-testing-bug-fixes-bs | 024b121b5de4d13417541c47b3d88fccb0c2b91d | 27d96f1b02e297935e0f918ff919a670d27f94e3 | 2026-08-24 | - |
 | BS-8 | buildsense-reliability-and-persona-run | 9bfb5784d99e80c71622e0ad70c66d919a6e7558 | 2ca1427a1b936bea6564f180b96382cbbde50d85 | 2026-08-24 | - |
+| BS-9 | buildsense-reliability-and-persona-run | 0cfc05612d01dda927a0e37773e1b8e30a8f6794 | f6a7f7d8c2591026476f5ced20e3e26f25bb1ef4 | 2026-08-24 | - |
+| BS-10 | buildsense-reliability-and-persona-run | c2dbb82fe0a107adde3ef8f54a7b171c77b81b25 | f1aa4cc5f97bffdc2434355dc916f1aa4dc5c4af | 2026-08-24 | - |

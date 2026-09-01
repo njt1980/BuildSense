@@ -530,3 +530,14 @@ A second pass was run the same day against a live local rebuild that had picked 
 * **Root Cause:** These tests asserted offline/local behavior but did not explicitly disable `HAS_ANTHROPIC` after provider-failure handling made live-call failures visible.
 * **Resolution:** Patch `HAS_ANTHROPIC` to `False` in the local-routing and filler-stripping tests so they remain deterministic and offline.
 * **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/tests/test_orchestrator.py`, `apps/api/tests/test_sanitization.py`.
+
+## [BUG-065] - 2026-08-24
+* **Issue:** The Step 2 source/test micro-commit was rejected because the phase gate requires `spec.md` and `design.md` checkpoints newer than the prior Step 1 source commit.
+* **Impact:** The configured gate prevents the approved design's sequential Phase 3 micro-commit workflow from committing a second atomic step without repeating documentation approvals.
+* **Status:** Open; no `--no-verify` bypass was used. Step 2 remains validated but unstaged changes are pending a phase-gate policy decision or fresh approved checkpoints.
+
+## [BUG-064] - 2026-08-24
+* **Issue:** The first Step 1 micro-commit attempt failed three existing telemetry tests after `log_event` forwarded its logger-redacted mapping to the local development event store.
+* **Root Cause:** The logger's default `redact_raw=True` contract is intentionally stricter than the local store's `redact_raw=False` contract, which preserves approved prompt/message/tool-input context while still redacting secret-key fields.
+* **Resolution:** Restore the original event-store input contract and keep the new failure-reason redaction and logger-boundary assertions isolated to their respective boundaries.
+* **Files Touched:** `docs/DEFECT_LEDGER.md`, `apps/api/app/telemetry/logging.py`, `apps/api/tests/test_resilience.py`.
